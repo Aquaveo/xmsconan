@@ -70,8 +70,8 @@ jobs:
         run: |
           python setup.py bdist_wheel
       # Publish Wheel
-      - name: Publish package to AquaPi
-        uses: pypa/gh-action-publish@release/v1
+      - name: Publish Wheel to Aquapi
+        uses: pypa/gh-action-pypi-publish@v1.5.0
         with:
           user: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           password: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
