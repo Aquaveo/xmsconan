@@ -9,6 +9,7 @@ cmake-build-debug/
 cmake-build-release/
 test_package/build/
 *.egg-info/
+dist/
 
 # Doxygen
 Doxygen/doxy_warn.log
