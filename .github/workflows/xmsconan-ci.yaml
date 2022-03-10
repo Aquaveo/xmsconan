@@ -55,7 +55,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install wheel setuptools
+          pip install wheel setuptools devpi
       # Get Tag Name
       - name: Get Tag
         id: gitTag
@@ -66,13 +66,9 @@ jobs:
           python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + '\Tag: ${{ steps.gitTag.outputs.tag }}')"
           python -c "from xmsconan import __version__; exit(0 if __version__ == '${{ steps.gitTag.outputs.tag }}' else 1)"
       # Build Wheel
-      - name: Build Wheel
+      - name: Build Wheel and Upload
         run: |
           python setup.py bdist_wheel
-      # Publish Wheel
-      - name: Publish Wheel to Aquapi
-        uses: pypa/gh-action-pypi-publish@v1.5.0
-        with:
-          user: ${{ secrets.AQUAPI_USERNAME_SECRET }}
-          password: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-          repository_url: ${{ secrets.APUAPI_URL_STABLE }}
+          devpi use ${{ secrets.APUAPI_URL_STABLE }}
+          devpi login ${{ secrets.AQUAPI_USERNAME_SECRET }} --password ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+          devpi upload --from-dir dist
