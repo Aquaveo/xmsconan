@@ -74,6 +74,12 @@ class XmsConanFile(ConanFile):
                                  'Visual Studio')
 
         self.options['boost'].wchar_t = self.options.wchar_t
+        
+        for dependency in self.xms_dependencies:
+            dep_name, _, _ = dependency.split('/')
+            self.options[dep_name].pybind = self.option.pybind
+            self.options[dep_name].testing = self.option.testing
+            self.options[dep_name].wchar_t = self.option.wchar_t
 
     def build(self):
         """
