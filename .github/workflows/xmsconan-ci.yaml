@@ -62,12 +62,12 @@ jobs:
         uses: little-core-labs/get-git-tag@v3.0.2
       # Check Tag
       - name: Check Tag Against Version
-      - run: |
+        run: |
           python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + '\Tag: ${{ steps.gitTag.outputs.tag }}')"
           python -c "from xmsconan import __version__; exit(0 if __version__ == '${{ steps.gitTag.outputs.tag }}' else 1)"
       # Build Wheel
       - name: Build Wheel
-      - run: |
+        run: |
           python setup.py bdist_wheel
       # Publish Wheel
       - name: Publish package to AquaPi
