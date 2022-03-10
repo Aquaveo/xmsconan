@@ -3,10 +3,12 @@ Setup.py file for the xms.core python package.
 """
 from setuptools import setup
 
+from xmsconan import __version__
+
 requires = []
 
 
-version = '0.0.0'
+version = __version__
 
 setup(
     python_requires='>=3.10',
