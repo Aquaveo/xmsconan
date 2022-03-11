@@ -77,7 +77,7 @@ class XmsConanFile(ConanFile):
                                  'Visual Studio')
 
         self.options['boost'].wchar_t = self.options.wchar_t
-        
+
         for dependency in self.xms_dependencies:
             dep_name, _, _ = dependency.split('/')
             self.options[dep_name].pybind = self.options.pybind
@@ -203,7 +203,7 @@ class XmsConanFile(ConanFile):
         """
         self.copy('*', src=f'{self.name}', dst=f'{self.name}')
         self.copy('*', src='_package', dst='_package')
-        
+
         for item in self.extra_export_sources:
             self.copy('*', src=f'{item}', dst=f'{item}')
 
@@ -213,6 +213,6 @@ class XmsConanFile(ConanFile):
         """
         self.copy('CMakeLists.txt')
         self.copy('LICENSE')
-        
+
         for item in self.extra_exports:
             self.copy(f'{item}')
