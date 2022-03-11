@@ -20,6 +20,9 @@ class XmsConanFile(ConanFile):
     }
     generators = "cmake", "txt"
     build_requires = "cxxtest/4.4@aquaveo/stable"
+    xms_dependencies = []
+    extra_exports = []
+    extra_export_sources = []
 
     default_options = {
         'wchar_t': 'builtin',
@@ -74,6 +77,12 @@ class XmsConanFile(ConanFile):
                                  'Visual Studio')
 
         self.options['boost'].wchar_t = self.options.wchar_t
+
+        for dependency in self.xms_dependencies:
+            dep_name, _, _ = dependency.split('/')
+            self.options[dep_name].pybind = self.options.pybind
+            self.options[dep_name].testing = self.options.testing
+            self.options[dep_name].wchar_t = self.options.wchar_t
 
     def build(self):
         """
@@ -130,7 +139,7 @@ class XmsConanFile(ConanFile):
         A function to run the cxx_tests.
         """
         try:
-            cmake.test()
+            cmake.test(output_on_failure=True)
         except ConanException:
             raise
         finally:
@@ -192,9 +201,14 @@ class XmsConanFile(ConanFile):
         """
         Specify sources to be exported.
         """
-        self.output.info('----- RUNNING EXPORT_SOURCES()')
         self.copy('*', src=f'{self.name}', dst=f'{self.name}')
         self.copy('*', src='_package', dst='_package')
+
+        for item in self.extra_export_sources:
+            if os.path.isdir(item):
+                self.copy('*', src=f'{item}', dst=f'{item}')
+            else:
+                self.copy(f'{item}')
 
     def export(self):
         """
@@ -202,3 +216,9 @@ class XmsConanFile(ConanFile):
         """
         self.copy('CMakeLists.txt')
         self.copy('LICENSE')
+
+        for item in self.extra_exports:
+            if os.path.isdir(item):
+                self.copy('*', src=f'{item}', dst=f'{item}')
+            else:
+                self.copy(f'{item}')

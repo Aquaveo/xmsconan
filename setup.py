@@ -11,7 +11,7 @@ requires = []
 version = __version__
 
 setup(
-    python_requires='>=3.10',
+    python_requires='>=3.6',
     name='xmsconan',
     version=version,
     packages=['xmsconan'],
