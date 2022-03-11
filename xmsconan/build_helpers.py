@@ -31,7 +31,6 @@ def get_builder(library_name):
         # General Options
         env_vars.update({
             'XMS_VERSION': xms_version,
-            'VERBOSE': 1,
             'PYTHON_TARGET_VERSION': python_target_version,
             'RELEASE_PYTHON': release_python,
             'AQUAPI_USERNAME': aquapi_username,

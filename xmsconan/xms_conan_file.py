@@ -205,7 +205,11 @@ class XmsConanFile(ConanFile):
         self.copy('*', src='_package', dst='_package')
 
         for item in self.extra_export_sources:
-            self.copy('*', src=f'{item}', dst=f'{item}')
+            if os.path.isdir(item):
+                self.copy('*', src=f'{item}', dst=f'{item}')
+            else:
+                self.copy(f'{item}')
+                
 
     def export(self):
         """
@@ -215,4 +219,7 @@ class XmsConanFile(ConanFile):
         self.copy('LICENSE')
 
         for item in self.extra_exports:
-            self.copy(f'{item}')
+            if os.path.isdir(item):
+                self.copy('*', src=f'{item}', dst=f'{item}')
+            else:
+                self.copy(f'{item}')
