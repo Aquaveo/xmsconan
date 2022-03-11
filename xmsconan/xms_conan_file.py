@@ -209,7 +209,6 @@ class XmsConanFile(ConanFile):
                 self.copy('*', src=f'{item}', dst=f'{item}')
             else:
                 self.copy(f'{item}')
-                
 
     def export(self):
         """
