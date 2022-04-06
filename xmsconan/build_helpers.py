@@ -28,6 +28,9 @@ def get_builder(library_name):
     aquapi_password = os.getenv('AQUAPI_PASSWORD', None)
     aquapi_url = os.getenv('AQUAPI_URL', None)
 
+    if ci_commit_tag != 'False':
+        release_python = 'True'
+
     for settings, options, env_vars, _, _ in builder.items:
         # General Options
         env_vars.update({
