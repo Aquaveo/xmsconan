@@ -170,7 +170,7 @@ class XmsConanFile(ConanFile):
             # We are uploading to aquapi here instead of pypi because pypi doesn't accept
             # the type of package 'linux_x86_64 that we want to upload. They only accept
             # manylinux1 as the plat-tag
-            is_release = self.env.get("RELEASE_PYTHON", 'False') == 'True'
+            is_release = self.env.get("RELEASE_PYTHON", 'False') == 'True' or self.env.get('CI_COMMIT_TAG', 'FALSE') != 'FALSE'
             is_mac_os = self.settings.os == 'Macos'
             is_gcc_6 = self.settings.os == "Linux" and float(
                 self.settings.compiler.version.value) == 6.0
