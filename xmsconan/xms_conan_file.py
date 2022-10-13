@@ -172,11 +172,11 @@ class XmsConanFile(ConanFile):
             # manylinux1 as the plat-tag
             is_release = self.env.get("RELEASE_PYTHON", 'False') == 'True'
             is_mac_os = self.settings.os == 'Macos'
-            is_gcc_6 = self.settings.os == "Linux" and float(
-                self.settings.compiler.version.value) == 6.0
+            is_gcc_7 = self.settings.os == "Linux" and float(
+                self.settings.compiler.version.value) == 7.0
             is_windows_md = (self.settings.os == "Windows" and str(
                 self.settings.compiler.runtime) == "MD")
-            if is_release and (is_mac_os or is_gcc_6 or is_windows_md):
+            if is_release and (is_mac_os or is_gcc_7 or is_windows_md):
                 self.upload_python_package()
 
     def upload_python_package(self):
