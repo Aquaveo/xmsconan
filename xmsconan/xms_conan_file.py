@@ -154,7 +154,7 @@ class XmsConanFile(ConanFile):
         with tools.pythonpath(self):
 
             # Install required packages for python testing.
-            packages_to_install = ['numpy', 'wheel']
+            packages_to_install = ['"numpy<2.0"', 'wheel']
             if not self.settings.os == "Macos":
                 self.run(f'pip install --user {" ".join(packages_to_install)}')
             else:
