@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-18.04]
+        platform: [ubuntu-latest]
         python-version: ["3.10"]
 
     steps:
