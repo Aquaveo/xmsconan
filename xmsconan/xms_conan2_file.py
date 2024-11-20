@@ -93,11 +93,6 @@ class XmsConan2File(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
 
-        # CxxTest doesn't play nice with PyBind. Also, it would be nice to not
-        # have tests in release code. Thus, if we want to run tests, we will
-        # build a test version (without python), run the tests, and then (on
-        # success) rebuild the library without tests.
-        # breakpoint()
         tc.variables["IS_PYTHON_BUILD"] = self.options.pybind
         tc.variables["BUILD_TESTING"] = self.options.testing
         tc.variables["XMS_TEST_PATH"] = "test_files"
@@ -106,8 +101,10 @@ class XmsConan2File(ConanFile):
         tc.variables["XMS_VERSION"] = '{}'.format(self.version)
         tc.variables["PYTHON_TARGET_VERSION"] = os.environ.get("PYTHON_TARGET_VERSION", "3.10")
 
+        # Generate toolchain
         tc.generate()
 
+        # Generate dependencies
         deps = CMakeDeps(self)
         deps.generate()
 
