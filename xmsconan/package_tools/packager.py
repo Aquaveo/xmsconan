@@ -17,7 +17,6 @@ configurations = {
         'compiler.cppstd': ['17'],
         'compiler.version': ['192'],
         'compiler.runtime': ['dynamic', 'static'],
-        'arch': ['x86_64'],
     },
     'linux':{
         'os': ['Linux'],
@@ -26,22 +25,21 @@ configurations = {
         'arch': ['x86_64'],
         'compiler': ['gcc'],
         'compiler.version': ['7'],
-        'arch': ['x86_64'],
     },
     'darwin':{  # macos
         'os': ['Macos'],
-        'cppstd': ['gnu17'],
         'build_type': ['Release', 'Debug'],
-        'arch': ['x86_64'],
+        'arch': ['armv8'],
         'compiler': ['apple-clang'],
-        'compiler.version': ['14'],
-        'arch': ['x86_64'],
+        'compiler.version': ['16'],
+        'compiler.cppstd': ['gnu17'],
+        'compiler.libcxx': ['libc++'],
     },
 }
 
 
 class XmsConanPackager(object):
-    
+
     def __init__(self, libary_name, conanfile_path='.'):
         self._library_name = libary_name
         self._conanfile_path = conanfile_path
@@ -56,7 +54,7 @@ class XmsConanPackager(object):
     @property
     def library_name(self):
         return self._library_name
-    
+
     @property
     def configurations(self):
         return self._configurations
@@ -65,7 +63,7 @@ class XmsConanPackager(object):
         if self._builder is None:
             self._builder = self._get_builder()
         return self._builder
-    
+
     def _get_builder(self):
         builder = None
         return builder
@@ -144,7 +142,7 @@ class XmsConanPackager(object):
 
         self._configurations = combinations
         return combinations
-    
+
     def run(self):
         self.printer.print_ascci_art()
         self.print_configuration_table(self.configurations)
@@ -156,7 +154,7 @@ class XmsConanPackager(object):
             self.printer.print_profile(profile_path)
             cmd = ['conan', 'create', self._conanfile_path, '--profile', profile_path]
             try:
-                subprocess.call(cmd, shell=True)
+                subprocess.call(cmd)
                 self.printer.print_message(f'Finished building configuration {i+1} of {len(self.configurations)}')
             except subprocess.CalledProcessError as e:
                 self.printer.print_message(f'ERROR building configuration {i+1} of {len(self.configurations)}')
@@ -191,7 +189,7 @@ class XmsConanPackager(object):
             # For example, you can print the path to the temporary profile file
             print(f'Temporary profile created at: {temp_profile_path}')
             return temp_profile_path
-        
+
     def print_configuration_table(self, configurations):
         headers = ["#", "cppstd", "build_type", "compiler", "compiler.version", "arch", "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
         table = []
