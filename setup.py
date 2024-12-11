@@ -5,7 +5,9 @@ from setuptools import setup
 
 from xmsconan import __version__
 
-requires = []
+requires = [
+    'tabulate'
+]
 
 
 version = __version__

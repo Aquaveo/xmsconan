@@ -19,6 +19,7 @@ class XmsConan2File(ConanFile):
     license = "FreeBSD Software License"
     settings = "os", "compiler", "build_type", "arch"
     options = {
+        "wchar_t": ["builtin", "typedef"],
         "pybind": [True, False],
         "testing": [True, False],
     }
@@ -27,6 +28,7 @@ class XmsConan2File(ConanFile):
     extra_export_sources = []
 
     default_options = {
+        'wchar_t': 'builtin',
         'pybind': False,
         'testing': False,
     }
