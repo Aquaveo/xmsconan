@@ -24,7 +24,7 @@ configurations = {
         'build_type': ['Release', 'Debug'],
         'arch': ['x86_64'],
         'compiler': ['gcc'],
-        'compiler.version': ['7'],
+        'compiler.version': ['12'],
     },
     'darwin':{  # macos
         'os': ['Macos'],
