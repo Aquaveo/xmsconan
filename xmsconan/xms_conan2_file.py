@@ -55,7 +55,7 @@ class XmsConan2File(ConanFile):
             self.requires('cxxtest/4.4')
         # Pybind if not clang
         if not self.settings.compiler == "clang" and self.options.pybind:
-            self.requires("pybind11/2.9.1@aquaveo/stable")
+            self.requires("pybind11/2.13.6")
 
         for dependency in self.xms_dependencies:
             self.requires(dependency)
@@ -166,30 +166,30 @@ class XmsConan2File(ConanFile):
 
     def run_python_tests_and_upload(self):
         """A method to run the python tests, and upload if this is a release."""
-        with tools.pythonpath(self):
+        # with tools.pythonpath(self):
 
-            # Install required packages for python testing.
-            packages_to_install = ['"numpy<2.0"', 'wheel']
-            if not self.settings.os == "Macos":
-                self.run(f'pip install --user {" ".join(packages_to_install)}')
-            else:
-                self.run(f'pip install {" ".join(packages_to_install)}')
+        # Install required packages for python testing.
+        packages_to_install = ['"numpy<2.0"', 'wheel']
+        if not self.settings.os == "Macos":
+            self.run(f'pip install --user {" ".join(packages_to_install)}')
+        else:
+            self.run(f'pip install {" ".join(packages_to_install)}')
 
-            # Run python tests.
-            path_to_python_tests = os.path.join(self.source_folder, '_package', 'tests')
-            self.run(f'python -m unittest discover -v -p *_pyt.py -s {path_to_python_tests}',
-                     cwd=os.path.join(self.package_folder, "_package"))
+        # Run python tests.
+        path_to_python_tests = os.path.join(self.source_folder, '_package', 'tests')
+        self.run(f'python -m unittest discover -v -p *_pyt.py -s {path_to_python_tests}',
+                    cwd=os.path.join(self.package_folder, "_package"))
 
-            # Create and upload wheel to aquapi if release and windows
-            # We are uploading to aquapi here instead of pypi because pypi doesn't accept
-            # the type of package 'linux_x86_64 that we want to upload. They only accept
-            # manylinux1 as the plat-tag
-            is_release = os.environ.get("RELEASE_PYTHON", 'False') == 'True'
-            is_mac_os = self.settings.os == 'Macos'
-            is_gcc_7 = self.settings.os == "Linux" and float(self.settings.compiler.version.value) == 7.0
-            is_windows_md = (self.settings.os == "Windows" and str(self.settings.compiler.runtime) == "MD")
-            if is_release and (is_mac_os or is_gcc_7 or is_windows_md):
-                self.upload_python_package()
+        # Create and upload wheel to aquapi if release and windows
+        # We are uploading to aquapi here instead of pypi because pypi doesn't accept
+        # the type of package 'linux_x86_64 that we want to upload. They only accept
+        # manylinux1 as the plat-tag
+        is_release = os.environ.get("RELEASE_PYTHON", 'False') == 'True'
+        is_mac_os = self.settings.os == 'Macos'
+        is_gcc_7 = self.settings.os == "Linux" and float(self.settings.compiler.version.value) == 7.0
+        is_windows_md = (self.settings.os == "Windows" and str(self.settings.compiler.runtime) == "MD")
+        if is_release and (is_mac_os or is_gcc_7 or is_windows_md):
+            self.upload_python_package()
 
     def upload_python_package(self):
         """Upload the python package to AQUAPI_URL."""
