@@ -129,10 +129,14 @@ class XmsConanFile(ConanFile):
         """
         self.env_info.PYTHONPATH.append(
             os.path.join(self.package_folder, "_package"))
+        
         if self.settings.build_type == 'Debug':
             self.cpp_info.libs = [f'{self.name}lib_d']
         else:
             self.cpp_info.libs = [f'{self.name}lib']
+
+        self.cpp_info.includedirs = [os.path.join(self.package_folder, 'include')]
+        self.cpp_info.bindirs = [os.path.join(self.package_folder, 'bin')]
 
     def run_cxx_tests(self, cmake):
         """

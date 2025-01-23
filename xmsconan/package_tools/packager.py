@@ -164,6 +164,18 @@ class XmsConanPackager(object):
         else:
             self.printer.print_message('All configurations built successfully.')
 
+    def upload(self, version):
+        self.printer.print_message('Uploading packages to the server.')
+        cmd = ['conan', 'upload', f'{self._library_name}/{version}*', '-r', 'aquaveo', '--confirm']
+        try:
+            subprocess.call(cmd)
+            self.printer.print_message(f'Finished uploading')
+        except subprocess.CalledProcessError as e:
+            self.printer.print_message(f'ERROR uploading')
+            return
+        self.printer.print_message('*-'*40 + '\n')
+        self.printer.print_message('All packages uploaded successfully.')
+
     def create_build_profile(self, configuration):
         settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv']}
 
@@ -178,7 +190,7 @@ class XmsConanPackager(object):
 
             f.write('\n[options]\n')
             for k, v in configuration['options'].items():
-                f.write(f'{k}={v}\n')
+                f.write(f'&:{k}={v}\n')
 
             f.write('\n[buildenv]\n')
             for k, v in configuration['buildenv'].items():
@@ -190,12 +202,13 @@ class XmsConanPackager(object):
             return temp_profile_path
 
     def print_configuration_table(self, configurations):
-        headers = ["#", "cppstd", "build_type", "compiler", "compiler.version", "arch", "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
+
+        headers = ["#", "cppstd", "runtime", "build_type", "compiler", "compiler.version", "arch", "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
         table = []
 
         # Create the header row
-        header_row = "| {:^3} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(*headers)
-        separator = "+-----+----------+--------------+----------------+--------------------+--------+-------------------+------------------+-------------------+"
+        header_row = "| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(*headers)
+        separator = "+-----+----------+----------+--------------+----------------+--------------------+--------+-------------------+------------------+-------------------+"
 
         # Add the header row and separator to the table
         table.append(separator)
@@ -207,9 +220,10 @@ class XmsConanPackager(object):
             wchar_t_option = config['options'].get('wchar_t', False)
             pybind_option = config['options'].get('pybind', False)
             testing_option = config['options'].get('testing', False)
-            row = "| {:^3} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(
+            row = "| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(
                 i,
-                config.get("cppstd", ""),
+                config.get("compiler.cppstd", ""),
+                config.get("compiler.runtime", ""),
                 config.get("build_type", ""),
                 config.get("compiler", ""),
                 config.get("compiler.version", ""),
@@ -222,5 +236,6 @@ class XmsConanPackager(object):
             table.append(separator)
 
         # Print the table
+        print('\n')
         for line in table:
             print(line)

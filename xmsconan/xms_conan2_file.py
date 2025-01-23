@@ -38,15 +38,6 @@ class XmsConan2File(ConanFile):
         git = Git(self, self.recipe_folder)
         self.version = git.run("describe --tags")
 
-    # def __init__(self, *args, **kwargs):
-    #     """Initialize things."""
-    #     super(ConanFile, self).__init__(*args, **kwargs)
-    #     env = Environment()
-    #     envvars = env.vars(self)
-    #     self.output.warning(f"env: {env.dumps()}")
-    #     # else:
-    #         # self.generators = ["CMakeDeps", "CMakeToolchain"]
-
     def requirements(self):
         """Requirements."""
         self.requires("boost/1.86.0")
@@ -84,7 +75,7 @@ class XmsConan2File(ConanFile):
             raise ConanException("Clang > 9.0 is required for Mac.")
 
         for dependency in self.xms_dependencies:
-            dep_name, _, _ = dependency.split('/')
+            dep_name, _ = dependency.split('/')
             self.options[dep_name].pybind = self.options.pybind
             self.options[dep_name].testing = self.options.testing
 
@@ -97,7 +88,7 @@ class XmsConan2File(ConanFile):
 
         tc.variables["IS_PYTHON_BUILD"] = self.options.pybind
         tc.variables["BUILD_TESTING"] = self.options.testing
-        tc.variables["XMS_TEST_PATH"] = "test_files"
+        # tc.variables["XMS_TEST_PATH"] = "test_files"
 
         # Version Info
         tc.variables["XMS_VERSION"] = '{}'.format(self.version)
@@ -117,7 +108,7 @@ class XmsConan2File(ConanFile):
         variables = {}
         variables["IS_PYTHON_BUILD"] = self.options.pybind
         variables["BUILD_TESTING"] = self.options.testing
-        variables["XMS_TEST_PATH"] = "test_files"
+        # variables["XMS_TEST_PATH"] = "test_files"
 
         # Version Info
         variables["XMS_VERSION"] = '{}'.format(self.version)
@@ -140,16 +131,22 @@ class XmsConan2File(ConanFile):
         """The package method of the conan class."""
         cmake = CMake(self)
         cmake.install()
+
         copy(self, "license", src=os.path.join(self.source_folder), dst=os.path.join(self.package_folder, "licenses"), ignore_case=True, keep_path=False)
+
 
     def package_info(self):
         """The package_info method of the conan class."""
         if self.options.pybind:
             self.env_info.PYTHONPATH.append(os.path.join(self.package_folder, "_package"))
+            
         if self.settings.build_type == 'Debug':
             self.cpp_info.libs = [f'{self.name}lib_d']
         else:
             self.cpp_info.libs = [f'{self.name}lib']
+
+        self.cpp_info.includedirs = [os.path.join(self.package_folder, 'include')]
+        self.cpp_info.bindirs = [os.path.join(self.package_folder, 'bin')]
 
     def run_cxx_tests(self, cmake):
         """A function to run the cxx_tests."""

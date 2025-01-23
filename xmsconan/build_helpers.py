@@ -3,7 +3,8 @@ A group of functions to aid in conan builds.
 """
 import os
 
-from cpt.packager import ConanMultiPackager
+# from cpt.packager import ConanMultiPackager
+from xmsconan.package_tools import packager2
 
 
 def get_builder(library_name):
@@ -16,7 +17,8 @@ def get_builder(library_name):
     Returns:
         List: A list of BuildConfig objects for the conan build.
     """
-    builder = ConanMultiPackager()
+    # builder = ConanMultiPackager()
+    builder = packager2.AquaveoConanMultiPackager()
     builder.add_common_builds()
 
     # Add environment variables to build definitions
