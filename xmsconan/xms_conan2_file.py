@@ -195,7 +195,7 @@ class XmsConan2File(ConanFile):
         # Step 6: Run tests using the virtual environment's Python
         tests_path = os.path.join(self.source_folder, "_package", "tests")
         unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_path}"
-        package_folder = cwd=os.path.join(self.package_folder, "_package")
+        package_folder = os.path.join(self.package_folder, "_package")
         self.run(unittest_command, cwd=package_folder)
 
         # Step 7: Upload the package if it's a release
