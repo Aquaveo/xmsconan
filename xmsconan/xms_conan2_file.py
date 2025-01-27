@@ -173,7 +173,6 @@ class XmsConan2File(ConanFile):
         # Run python tests.
         path_to_python_tests = os.path.join(self.source_folder, '_package', 'tests')
         self.run('set PYTHONPATH', env='conanrun')
-        self.run('env', env='conanrun')
         self.run(f'python -m unittest discover -v -p *_pyt.py -s {path_to_python_tests}',
                  cwd=os.path.join(self.package_folder, "_package"), env='conanrun')
 
