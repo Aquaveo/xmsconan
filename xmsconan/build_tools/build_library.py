@@ -209,9 +209,16 @@ def get_cmake_options(args):
         lib_version = input('Library Version [99.99.99]:') or "99.99.99"
     cmake_options.append('-DXMS_VERSION={}'.format(lib_version))
 
+    toolchain_path = 'build/build/generators/conan_toolchain.cmake',
+    if not os.name == 'nt':
+        build_type = 'Release'
+        if args.profile.lower().endswith('_d'):
+            build_type = 'Debug'
+        toolchain_path = f'build/build/{build_type}/generators/conan_toolchain.cmake'
+
     # Extra toolchains
     exta_toolchains = [
-        'build/build/generators/conan_toolchain.cmake',
+        toolchain_path,
     ]
     for tc in exta_toolchains:
         cmake_options.append(f'-DCMAKE_TOOLCHAIN_FILE={tc}')
