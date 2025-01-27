@@ -170,17 +170,17 @@ class XmsConan2File(ConanFile):
             python_executable = os.path.join(build_venv_dir, "bin", "python")
             pip_executable = os.path.join(build_venv_dir, "bin", "pip")
 
-        # Step 1: Create a virtual environment
+        # Create a virtual environment
         self.run(f"{sys.executable} -m venv {build_venv_dir}")
 
-        # Step 2: Upgrade pip in the virtual environment
+        # Upgrade pip in the virtual environment
         self.run(f"{python_executable} -m pip install --upgrade pip")
 
-        # Step 3: Install numpy and wheel together
+        # Install numpy and wheel together
         general_dependencies = ["numpy", "wheel"]
         self.run(f"{pip_executable} install {' '.join(general_dependencies)}")
 
-        # Step 4: Install xms_dependencies one by one
+        # Install xms_dependencies one by one
         for dependency_name in self.xms_dependencies:
             if dependency_name in self.dependencies.host:
                 dependency = self.dependencies.host[dependency_name]
@@ -188,17 +188,13 @@ class XmsConan2File(ConanFile):
                     package_path = os.path.join(dependency.package_folder, "_package")
                     self.run(f"{pip_executable} install {package_path} --no-deps")
 
-        # Step 5: Install our own package
-        package_path = os.path.join(self.package_folder, "_package")
-        self.run(f"{pip_executable} install {package_path}")
-
-        # Step 6: Run tests using the virtual environment's Python
+        # Run tests using the virtual environment's Python
         tests_path = os.path.join(self.source_folder, "_package", "tests")
         unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_path}"
         package_folder = os.path.join(self.package_folder, "_package")
         self.run(unittest_command, cwd=package_folder)
 
-        # Step 7: Upload the package if it's a release
+        # Upload the package if it's a release
         # We are uploading to aquapi here instead of pypi because pypi doesn't accept
         # the type of package 'linux_x86_64 that we want to upload. They only accept
         # manylinux1 as the plat-tag
