@@ -2,6 +2,7 @@
 Conanfile base for the xmscore projects compatible with Conan 2.x.
 """
 import os
+import sys
 
 from conan import ConanFile
 from conan.errors import ConanException
@@ -160,21 +161,44 @@ class XmsConan2File(ConanFile):
                         self.output.info(no_newline)
 
     def run_python_tests_and_upload(self):
-        """A method to run the python tests, and upload if this is a release."""
-        # Install required packages for python testing.
-        packages_to_install = ['"numpy<2.0"', 'wheel']
-        if not self.settings.os == "Macos":
-            self.run(f'pip install --user {" ".join(packages_to_install)}', env='conanrun')
+        """Run Python tests in a virtual environment and optionally upload."""
+        build_venv_dir = os.path.join(self.build_folder, "venv")
+        if sys.platform == "win32":
+            python_executable = os.path.join(build_venv_dir, "Scripts", "python")
+            pip_executable = os.path.join(build_venv_dir, "Scripts", "pip")
         else:
-            self.run(f'pip install {" ".join(packages_to_install)}', env='conanrun')
+            python_executable = os.path.join(build_venv_dir, "bin", "python")
+            pip_executable = os.path.join(build_venv_dir, "bin", "pip")
 
-        # Run python tests.
-        path_to_python_tests = os.path.join(self.source_folder, '_package', 'tests')
-        self.run('set PYTHONPATH', env='conanrun')
-        self.run(f'python -m unittest discover -v -p *_pyt.py -s {path_to_python_tests}',
-                 cwd=os.path.join(self.package_folder, "_package"), env='conanrun')
+        # Step 1: Create a virtual environment
+        self.run(f"{sys.executable} -m venv {build_venv_dir}")
 
-        # Create and upload wheel to aquapi if release and windows
+        # Step 2: Upgrade pip in the virtual environment
+        self.run(f"{python_executable} -m pip install --upgrade pip")
+
+        # Step 3: Install numpy and wheel together
+        general_dependencies = ["numpy", "wheel"]
+        self.run(f"{pip_executable} install {' '.join(general_dependencies)}")
+
+        # Step 4: Install xms_dependencies one by one
+        for dependency_name in self.xms_dependencies:
+            if dependency_name in self.dependencies.host:
+                dependency = self.dependencies.host[dependency_name]
+                if dependency.package_folder:
+                    package_path = os.path.join(dependency.package_folder, "_package")
+                    self.run(f"{pip_executable} install {package_path} --no-deps")
+
+        # Step 5: Install our own package
+        package_path = os.path.join(self.package_folder, "_package")
+        self.run(f"{pip_executable} install {package_path}")
+
+        # Step 6: Run tests using the virtual environment's Python
+        tests_path = os.path.join(self.source_folder, "_package", "tests")
+        unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_path}"
+        package_folder = cwd=os.path.join(self.package_folder, "_package")
+        self.run(unittest_command, cwd=package_folder)
+
+        # Step 7: Upload the package if it's a release
         # We are uploading to aquapi here instead of pypi because pypi doesn't accept
         # the type of package 'linux_x86_64 that we want to upload. They only accept
         # manylinux1 as the plat-tag
