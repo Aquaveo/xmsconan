@@ -1,25 +1,21 @@
-
 """
-The build.py file for the xms project.
+conanfile.py for the {{ library_name }} project.
 """
-import argparse
-
-from xmsconan.package_tools import packager
-
-import conanfile
-
-# arg parse for skip build and skip upload
-parser = argparse.ArgumentParser()
-parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
-parser.add_argument("--skip-upload", help="Skip the upload step", action="store_true")
-parser.add_argument("--version", help="Version to upload", default='*')
+from xmsconan.xms_conan2_file import XmsConan2File
 
 
-if __name__ == "__main__":
-    args = parser.parse_args()
-    builder = packager.XmsConanPackager(conanfile.LIBRARY_NAME, conanfile.__file__)
-    builder.generate_configurations()
-    if not args.skip_build:
-        builder.run()
-    if not args.skip_upload:
-        builder.upload(version=args.version)
+class {{ library_name|title }}ConanFile(XmsConan2File):
+    """
+    {{ library_name|title }}ConanFile class used for defining the conan info.
+    """
+    name = "{{ library_name }}"
+    url = "https://github.com/Aquaveo/{{ library_name }}"
+    description = "{{ description }}"
+    xms_dependencies = [
+        {%- for dependency in xms_dependencies -%}{{'\n        '}}"{{ dependency.name }}/{{ dependency.version }}",{% endfor %}
+    ]
+    {% if has_test_files -%}
+    extra_export_sources = ['test_files']
+    {%- endif %}
+
+LIBRARY_NAME = {{ library_name|title }}ConanFile.name
