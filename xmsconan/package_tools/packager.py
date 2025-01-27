@@ -163,14 +163,20 @@ class XmsConanPackager(object):
             self.printer.print_profile(profile_path)
             cmd = ['conan', 'create', self._conanfile_path, '--profile', profile_path]
             try:
-                subprocess.call(cmd)
-                self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
-            except subprocess.CalledProcessError:
-                self.printer.print_message(f'ERROR building configuration {i + 1} of {len(self.configurations)}')
-                failing_configurations.append(i + 1)
+                exit_code = subprocess.call(cmd)
+                if exit_code == 0:
+                    self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
+                else:
+                    self.printer.print_message(f'ERROR building configuration {i + 1} of {len(self.configurations)}')
+                    failing_configurations.append(f'{i + 1}')
+            except subprocess.CalledProcessError as e:
+                self.printer.print_message(
+                    f'ERROR running build of configuration {i + 1} of {len(self.configurations)}')
+                failing_configurations.append(f'{i + 1}')
             self.printer.print_message('*-' * 40 + '\n')
         if len(failing_configurations) > 0:
-            self.printer.print_message(f'One or more configurations failed to build. ({",".join(failing_configurations)})')
+            self.printer.print_message(
+                f'One or more configurations failed to build. ({",".join(failing_configurations)})')
         else:
             self.printer.print_message('All configurations built successfully.')
 

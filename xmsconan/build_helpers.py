@@ -4,7 +4,7 @@ A group of functions to aid in conan builds.
 import os
 
 # from cpt.packager import ConanMultiPackager
-from xmsconan.package_tools import packager2
+from xmsconan.package_tools import packager
 
 
 def get_builder(library_name):
@@ -18,7 +18,7 @@ def get_builder(library_name):
         List: A list of BuildConfig objects for the conan build.
     """
     # builder = ConanMultiPackager()
-    builder = packager2.AquaveoConanMultiPackager()
+    builder = packager.AquaveoConanMultiPackager()
     builder.add_common_builds()
 
     # Add environment variables to build definitions
@@ -85,7 +85,7 @@ def get_builder(library_name):
         # Pybind builds are built for 64-bit, non-debug MD(d) builds.
         if settings['build_type'] != 'Debug' and \
            (settings['compiler'] != 'Visual Studio' or settings['compiler.runtime'] in ['MD', 'MDd']):
-            # Pybind is only built for visual studio versions greater than 12.
+            # Pybind is only built for Visual Studio versions greater than 12.
             if settings['compiler'] == 'Visual Studio' and int(settings['compiler.version']) <= 12:
                 continue
             # Update conan options and add a build configuration
