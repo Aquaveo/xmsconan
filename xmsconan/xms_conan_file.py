@@ -129,7 +129,7 @@ class XmsConanFile(ConanFile):
         """
         self.env_info.PYTHONPATH.append(
             os.path.join(self.package_folder, "_package"))
-        
+
         if self.settings.build_type == 'Debug':
             self.cpp_info.libs = [f'{self.name}lib_d']
         else:

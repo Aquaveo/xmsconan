@@ -62,11 +62,13 @@ def render_template_with_toml(toml_file_path: str, template_dir: str, output_dir
 
 
 def main():
+    """Main function to parse arguments and render templates using TOML data."""
     default_template_dir = Path(__file__).parent / "templates"
     parser = argparse.ArgumentParser(description="Render templates using a single TOML file.")
     parser.add_argument("--template_dir", default=default_template_dir, help="Directory containing template files.")
     parser.add_argument("--output_dir", default=None,
-                        help="Directory to store rendered output files. Defaults to the TOML file's directory if not specified.")
+                        help="Directory to store rendered output files. Defaults"
+                             " to the TOML file's directory if not specified.")
     parser.add_argument("toml_file", help="Path to the required TOML file (always the last argument).")
 
     args = parser.parse_args()

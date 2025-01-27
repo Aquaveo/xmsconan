@@ -3,13 +3,11 @@ Conanfile base for the xmscore projects compatible with Conan 2.x.
 """
 import os
 
-import conan
-from conan import ConanFile, tools
-from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps, cmake_layout
-from conan.tools.env import Environment
+from conan import ConanFile
+from conan.errors import ConanException
+from conan.tools.cmake import CMake, cmake_layout, CMakeDeps, CMakeToolchain
 from conan.tools.files import copy
 from conan.tools.scm import Git
-from conan.errors import ConanException
 
 
 class XmsConan2File(ConanFile):
@@ -84,6 +82,7 @@ class XmsConan2File(ConanFile):
         cmake_layout(self)
 
     def generate(self):
+        """The generate method for the conan class."""
         tc = CMakeToolchain(self)
 
         tc.variables["IS_PYTHON_BUILD"] = self.options.pybind
@@ -114,7 +113,6 @@ class XmsConan2File(ConanFile):
         variables["XMS_VERSION"] = '{}'.format(self.version)
         variables["PYTHON_TARGET_VERSION"] = os.environ.get("PYTHON_TARGET_VERSION", "3.10")
 
-
         cmake.configure(variables=variables)
         cmake.build()
         cmake.install()
@@ -132,8 +130,8 @@ class XmsConan2File(ConanFile):
         cmake = CMake(self)
         cmake.install()
 
-        copy(self, "license", src=os.path.join(self.source_folder), dst=os.path.join(self.package_folder, "licenses"), ignore_case=True, keep_path=False)
-
+        copy(self, "license", src=os.path.join(self.source_folder), dst=os.path.join(self.package_folder, "licenses"),
+             ignore_case=True, keep_path=False)
 
     def package_info(self):
         """The package_info method of the conan class."""
@@ -194,18 +192,22 @@ class XmsConan2File(ConanFile):
         devpi_password = os.environ.get("AQUAPI_PASSWORD", 'NO_PASSWORD')
         self.run('devpi use {}'.format(devpi_url))
         self.run('devpi login {} --password {}'.format(devpi_username, devpi_password))
-        self.run('python setup.py bdist_wheel --dist-dir {}'.format(os.path.join(self.build_folder, "dist")), cwd=os.path.join(self.package_folder, "_package"))
+        self.run('python setup.py bdist_wheel --dist-dir {}'.format(os.path.join(self.build_folder, "dist")),
+                 cwd=os.path.join(self.package_folder, "_package"))
         self.run('devpi upload --from-dir {}'.format(os.path.join(self.build_folder, "dist")), cwd=".")
 
     def export_sources(self):
         """Specify sources to be exported."""
-        copy(self, '*', src=os.path.join(self.recipe_folder, f'{self.name}'), dst=os.path.join(self.export_sources_folder, f'{self.name}'))
-        copy(self, '*', src=os.path.join(self.recipe_folder, '_package'), dst=os.path.join(self.export_sources_folder, '_package'))
+        copy(self, '*', src=os.path.join(self.recipe_folder, f'{self.name}'),
+             dst=os.path.join(self.export_sources_folder, f'{self.name}'))
+        copy(self, '*', src=os.path.join(self.recipe_folder, '_package'),
+             dst=os.path.join(self.export_sources_folder, '_package'))
         copy(self, 'CMakeLists.txt', src=self.recipe_folder, dst=self.export_sources_folder)
 
         for item in self.extra_export_sources:
             if os.path.isdir(item):
-                copy(self, '*', src=os.path.join(self.recipe_folder, f'{item}'), dst=os.path.join(self.export_sources_folder, f'{item}'))
+                copy(self, '*', src=os.path.join(self.recipe_folder, f'{item}'),
+                     dst=os.path.join(self.export_sources_folder, f'{item}'))
             else:
                 copy(self, f'{item}', src=self.recipe_folder, dst=self.export_sources_folder)
 
@@ -215,6 +217,7 @@ class XmsConan2File(ConanFile):
         copy(self, 'LICENSE', src=self.recipe_folder, dst=self.export_folder)
         for item in self.extra_exports:
             if os.path.isdir(item):
-                copy(self, '*', src=os.path.join(self.recipe_folder, f'{item}'), dst=os.path.join(self.export_folder, f'{item}'))
+                copy(self, '*', src=os.path.join(self.recipe_folder, f'{item}'),
+                     dst=os.path.join(self.export_folder, f'{item}'))
             else:
                 copy(self, f'{item}', src=self.recipe_folder, dst=self.export_folder)

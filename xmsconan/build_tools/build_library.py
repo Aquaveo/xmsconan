@@ -1,21 +1,20 @@
-# -*- coding: utf-8 -*-
 """
-Build library from source
+Build library from source.
 """
 import argparse
 import os
-import re
 import subprocess
 
 GENERATORS = {
     'make': None,
     'ninja': 'Ninja',
-	'vs2019': 'Visual Studio 16 2019',
+    'vs2019': 'Visual Studio 16 2019',
 }
+
 
 def is_dir(_dir_name):
     """
-    Check if the given directory is actually a directory
+    Check if the given directory is actually a directory.
 
     Args:
         _dir_name (str): path to a directory
@@ -55,7 +54,7 @@ def is_file(_file_name):
 
 def get_args():
     """
-    Get arguments for test script
+    Get arguments for test script.
 
     Returns:
         parsed used args to be used with the run_tests function
@@ -105,17 +104,17 @@ def get_args():
     if not parsed_args.cmake_dir:
         parsed_args.cmake_dir = input("CMakeList.txt location [{}]:".format(
             parsed_args.cmake_dir or '.') or parsed_args.cmake_dir or '.')
-        
+
     if not parsed_args.build_dir:
         parsed_args.build_dir = input("build location [{}]:".format(
             parsed_args.build_dir or '.') or parsed_args.build_dir or '.')
-        
+
     if not parsed_args.profile or parsed_args.profile not in precompile_profiles.keys():
         print("Available Profiles: {}".format(', '.join(precompile_profiles.keys())))
         parsed_args.profile = input("profile [{}]:".format(
             parsed_args.profile or '.\\default') or parsed_args.profile or '.\\default')
 
-    if not parsed_args.profile in precompile_profiles.keys():
+    if parsed_args.profile not in precompile_profiles.keys():
         parsed_args.profile = is_file(parsed_args.profile)
     else:
         parsed_args.profile = precompile_profiles[parsed_args.profile]
@@ -123,15 +122,14 @@ def get_args():
     # Generators
     if parsed_args.generator not in GENERATORS:
         msg = 'specified generator not supported "{}". ' \
-                    'Must be one of [{}]'.format(
-                        parsed_args.generator, ", ".join(GENERATORS.keys())
-                        )
+              'Must be one of [{}]'.format(parsed_args.generator, ", ".join(GENERATORS.keys()))
         raise TypeError(msg)
 
     return parsed_args
 
 
 def conan_install(_profile, _cmake_dir, _build_dir):
+    """Install conan dependencies."""
     print("------------------------------------------------------------------")
     print(" Generating conan info")
     print("------------------------------------------------------------------")
@@ -139,7 +137,7 @@ def conan_install(_profile, _cmake_dir, _build_dir):
     if not os.path.isdir(_build_dir):
         print("Creating build directory: {}".format(_build_dir))
         os.makedirs(_build_dir)
-        
+
     subprocess.call([
         'conan', 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'
@@ -147,6 +145,7 @@ def conan_install(_profile, _cmake_dir, _build_dir):
 
 
 def get_cmake_options(args):
+    """Get cmake options."""
     print("------------------------------------------------------------------")
     print(" Setting up cmake options")
     print("------------------------------------------------------------------")
@@ -224,6 +223,7 @@ def get_cmake_options(args):
 
 
 def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
+    """Run cmake."""
     print("------------------------------------------------------------------")
     print(" Running cmake")
     print("------------------------------------------------------------------")
@@ -238,6 +238,7 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
 
 
 def main():
+    """Main function."""
     args = get_args()
     conan_install(args.profile, args.cmake_dir, args.build_dir)
     my_cmake_options = get_cmake_options(args)
