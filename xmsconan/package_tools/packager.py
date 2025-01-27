@@ -169,7 +169,7 @@ class XmsConanPackager(object):
                 else:
                     self.printer.print_message(f'ERROR building configuration {i + 1} of {len(self.configurations)}')
                     failing_configurations.append(f'{i + 1}')
-            except subprocess.CalledProcessError as e:
+            except subprocess.CalledProcessError:
                 self.printer.print_message(
                     f'ERROR running build of configuration {i + 1} of {len(self.configurations)}')
                 failing_configurations.append(f'{i + 1}')
