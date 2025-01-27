@@ -65,31 +65,31 @@ def get_args():
     """
     arguments = argparse.ArgumentParser(description="Run Conan Python tests.")
     arguments.add_argument(
-        '-cmake_dir', '-cd', type=str, nargs='?',
+        '--cmake_dir', '-c', type=str, nargs='?',
         help='location of CMakeList.txt'
     )
     arguments.add_argument(
-        '-build_dir', '-bd', type=str, nargs='?',
+        '--build_dir', '-b', type=str, nargs='?',
         help='location of build files'
     )
     arguments.add_argument(
-        '-profile', '-p', type=str, nargs='?',
+        '--profile', '-p', type=str, nargs='?',
         help='profile to build'
     )
     arguments.add_argument(
-        '-generator', '-gen', type=str, nargs='?',
+        '--generator', '-g', type=str, nargs='?',
         help='files to generate. (vs2013, vs2015, or make)'
     )
     arguments.add_argument(
-        '-python_version', '-pv', type=str, nargs='?',
+        '--python_version', type=str, nargs='?',
         help='version for python'
     )
     arguments.add_argument(
-        '-xms_version', '-xv', type=str, nargs='?',
+        '--xms_version', '-x', type=str, nargs='?',
         help='version for xms'
     )
     arguments.add_argument(
-        '-test_files', '-tf', type=str, nargs='?',
+        '--test_files', '-t', type=str, nargs='?',
         help='path to test files'
     )
     parsed_args = arguments.parse_args()
@@ -144,7 +144,6 @@ def conan_install(_profile, _cmake_dir, _build_dir):
         'conan', 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'
     ])
-    os.system("pause")
 
 
 def get_cmake_options(args):
@@ -221,7 +220,6 @@ def get_cmake_options(args):
     print("Cmake Options:")
     for o in cmake_options:
         print("\t{}".format(o))
-    os.system("pause")
     return cmake_options
 
 
@@ -237,7 +235,6 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
     cmd += ['-S', _cmake_dir, '-B', _build_dir]
     print(' '.join(cmd))
     subprocess.run(cmd)
-    os.system("pause")
 
 
 def main():
