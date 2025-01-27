@@ -1,0 +1,5 @@
+include(../base/vs_2019)
+include(../base/debug)
+include(../base/x64)
+include(../base/testing)
+include(../base/dynamic)

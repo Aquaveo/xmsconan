@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'xmsconan_gen = xmsconan.generator_tools.build_file_generator:main',
+            'xmsconan_build = xmsconan.build_tools.build_library:main',
         ]
     }
 )

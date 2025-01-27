@@ -1,0 +1,4 @@
+include(../base/gcc_6)
+include(../base/release)
+include(../base/x64)
+include(../base/pybind)

@@ -1,0 +1,4 @@
+include(../base/gcc_5)
+include(../base/release)
+include(../base/x64)
+include(../base/testing)

@@ -1,0 +1,5 @@
+include(../base/vs_2019)
+include(../base/release)
+include(../base/x64)
+include(../base/pybind)
+include(../base/static)
