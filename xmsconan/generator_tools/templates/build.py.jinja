@@ -11,7 +11,7 @@ import conanfile
 # arg parse for skip build and skip upload
 parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
-parser.add_argument("--skip-upload", help="Skip the upload step", action="store_true")
+parser.add_argument("--upload", help="Complete the conan upload.", action="store_true")
 parser.add_argument("--version", help="Version to upload", default='*')
 
 
@@ -21,5 +21,5 @@ if __name__ == "__main__":
     builder.generate_configurations()
     if not args.skip_build:
         builder.run()
-    if not args.skip_upload:
+    if args.upload:
         builder.upload(version=args.version)
