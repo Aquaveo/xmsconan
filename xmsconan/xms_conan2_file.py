@@ -32,11 +32,6 @@ class XmsConan2File(ConanFile):
         'testing': False,
     }
 
-    def set_version(self):
-        """Set the version of the conanfile."""
-        git = Git(self, self.recipe_folder)
-        self.version = git.run("describe --tags")
-
     def requirements(self):
         """Requirements."""
         self.requires("boost/1.86.0")
