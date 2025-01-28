@@ -8,7 +8,6 @@ from conan import ConanFile
 from conan.errors import ConanException
 from conan.tools.cmake import CMake, cmake_layout, CMakeDeps, CMakeToolchain
 from conan.tools.files import copy
-from conan.tools.scm import Git
 
 
 class XmsConan2File(ConanFile):
