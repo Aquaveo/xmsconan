@@ -1,0 +1,3 @@
+include(../base/clang_9)
+include(../base/debug)
+include(../base/x64)

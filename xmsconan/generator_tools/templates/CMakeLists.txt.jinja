@@ -237,6 +237,7 @@ if (IS_PYTHON_BUILD)
     install(DIRECTORY "_package/" DESTINATION "_package"
             FILES_MATCHING PATTERN "*.py"
             PATTERN "_package/tests" EXCLUDE)
+    install(FILES "_package/pyproject.toml" DESTINATION "_package")
 endif ()
 
 

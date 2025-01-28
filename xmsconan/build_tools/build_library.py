@@ -166,6 +166,10 @@ def get_cmake_options(args):
     if 'wchar_t' in profile.lower():
         conan_options['wchar_t'] = 'True'
 
+    build_type = 'Release'
+    if args.profile.lower().endswith('_d'):
+        build_type = 'Debug'
+
     cmake_options = []
     cmake_options.append('-DBUILD_TESTING={}'.format(
         conan_options.get('testing', 'False')))
@@ -176,6 +180,7 @@ def get_cmake_options(args):
     cmake_options.append('-DCMAKE_INSTALL_PREFIX={}'.format(
         os.path.join(args.build_dir, "install")
     ))
+    cmake_options.append('-DCMAKE_BUILD_TYPE={}'.format(build_type))
 
     uses_python = conan_options.get('pybind', 'False')
     is_testing = conan_options.get('testing', 'False')
@@ -211,9 +216,6 @@ def get_cmake_options(args):
 
     toolchain_path = 'build/build/generators/conan_toolchain.cmake',
     if not os.name == 'nt':
-        build_type = 'Release'
-        if args.profile.lower().endswith('_d'):
-            build_type = 'Debug'
         toolchain_path = f'build/build/{build_type}/generators/conan_toolchain.cmake'
 
     # Extra toolchains
