@@ -172,7 +172,7 @@ class XmsConanPackager(object):
     def run(self):
         """Run the build process."""
         self.printer.print_ascci_art()
-        self.print_configuration_table(self.configurations)
+        self.print_configuration_table()
         failing_configurations = []
         for i, combination in enumerate(self.configurations):
             self.printer.print_message('*-' * 40 + '\n')
@@ -236,9 +236,20 @@ class XmsConanPackager(object):
             # For example, you can print the path to the temporary profile file
             print(f'Temporary profile created at: {temp_profile_path}')
             return temp_profile_path
+        
 
-    def print_configuration_table(self):
-        """Print the configuration table."""
+    def print_configuration_table(self, configurations_to_print=None):
+        """
+        Print the configuration table.
+        
+        Args:
+            configurations_to_print (list): A list of configurations indexes to print.
+        """
+        if configurations_to_print is None:
+            # print all configurations
+            configurations_to_print = range(len(self.configurations))
+
+
         headers = ["#", "cppstd", "runtime", "build_type", "compiler", "compiler.version", "arch",
                    "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
         table = []
@@ -255,7 +266,8 @@ class XmsConanPackager(object):
         table.append(separator)
 
         # Create the data rows
-        for i, config in enumerate(self.configurations, start=1):
+        for i in configurations_to_print:
+            config = self.configurations[i]
             wchar_t_option = config['options'].get('wchar_t', False)
             pybind_option = config['options'].get('pybind', False)
             testing_option = config['options'].get('testing', False)
