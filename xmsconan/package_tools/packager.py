@@ -219,7 +219,7 @@ class XmsConanPackager(object):
             print(f'Temporary profile created at: {temp_profile_path}')
             return temp_profile_path
 
-    def print_configuration_table(self, configurations):
+    def print_configuration_table(self):
         """Print the configuration table."""
         headers = ["#", "cppstd", "runtime", "build_type", "compiler", "compiler.version", "arch",
                    "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
@@ -237,7 +237,7 @@ class XmsConanPackager(object):
         table.append(separator)
 
         # Create the data rows
-        for i, config in enumerate(configurations, start=1):
+        for i, config in enumerate(self.configurations, start=1):
             wchar_t_option = config['options'].get('wchar_t', False)
             pybind_option = config['options'].get('pybind', False)
             testing_option = config['options'].get('testing', False)
