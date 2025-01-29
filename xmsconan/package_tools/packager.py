@@ -150,6 +150,24 @@ class XmsConanPackager(object):
 
         self._configurations = combinations
         return combinations
+    
+    def filter_configurations(self, filter_dict):
+        """Filter the configurations based on the filter_dict."""
+        if self.configurations is None:
+            return
+        filtered_configurations = []
+        for configuration in self.configurations:
+            include_configuration = True
+            for key, value in filter_dict.items():
+                if key in ['options', 'buildenv']:
+                    for option_key, option_value in value.items():
+                        if option_key in configuration[key].keys() and configuration[key].get(option_key) != option_value:
+                            include_configuration = False
+                elif key in configuration.keys() and configuration.get(key) != value:
+                    include_configuration = False
+            if include_configuration:
+                filtered_configurations.append(configuration)
+        self._configurations = filtered_configurations
 
     def run(self):
         """Run the build process."""

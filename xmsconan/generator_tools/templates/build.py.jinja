@@ -1,8 +1,8 @@
-
 """
 The build.py file for the xms project.
 """
 import argparse
+import json
 
 from xmsconan.package_tools import packager
 
@@ -14,15 +14,19 @@ parser.add_argument("--skip-build", help="Skip the build step", action="store_tr
 parser.add_argument("--upload", help="Complete the conan upload.", action="store_true")
 parser.add_argument("--version", help="Version to upload", default='*')
 parser.add_argument("--preview", help="Preview the configurations that will be build", action="store_true")
-
+parser.add_argument("--filter", help="Filter dictionary in JSON format")
 
 if __name__ == "__main__":
     args = parser.parse_args()
     builder = packager.XmsConanPackager(conanfile.LIBRARY_NAME, conanfile.__file__)
     builder.generate_configurations()
+    if args.filter:
+        filter_options = json.loads(args.filter)
+        builder.filter_configurations(filter_options)
     if args.preview:
-        builder.print_configurations()
-        return
+        builder.print_configuration_table()
+        exit(0)
+        # Use config_dict as needed
     if not args.skip_build:
         builder.run()
     if args.upload:
