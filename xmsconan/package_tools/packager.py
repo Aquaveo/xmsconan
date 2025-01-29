@@ -186,14 +186,14 @@ class XmsConanPackager(object):
                     self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
                 else:
                     self.printer.print_message(f'ERROR building configuration {i + 1} of {len(self.configurations)}')
-                    failing_configurations.append(f'{i + 1}')
+                    failing_configurations.append(i)
             except subprocess.CalledProcessError:
                 self.printer.print_message(
                     f'ERROR running build of configuration {i + 1} of {len(self.configurations)}')
                 failing_configurations.append(f'{i + 1}')
             self.printer.print_message('*-' * 40 + '\n')
         if len(failing_configurations) > 0:
-            self.printer.print_message('The following configurations failed to build:')
+            self.printer.print_message(f'The following configurations failed to build:')
             self.print_configuration_table(failing_configurations)
         else:
             self.printer.print_message('All configurations built successfully.')
