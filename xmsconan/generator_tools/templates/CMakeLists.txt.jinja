@@ -102,7 +102,7 @@ if (WIN32)
 endif ()
 
 if (IS_PYTHON_BUILD)
-    find_package(Python3 ${PYTHON_TARGET_VERSION} REQUIRED COMPONENTS Interpreter Development)
+    find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED COMPONENTS Interpreter Development)
 {%- if pybind_root %}
     find_package(pybind11 REQUIRED)
 {%- endif %}
