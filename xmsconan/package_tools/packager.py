@@ -102,6 +102,7 @@ class XmsConanPackager(object):
             release_python = 'True'
 
         for combination in combinations:
+            pass
             combination['options'] = {
                 'wchar_t': 'builtin',
                 'pybind': False,
@@ -118,33 +119,33 @@ class XmsConanPackager(object):
             }
 
         wchar_t_updated_builds = []
-        for combination in combinations:
-            if combination['compiler'] == 'msvc':
-                wchar_t_options = copy.deepcopy(combination)
-                wchar_t_options['options'].update({
-                    'wchar_t': 'typedef',
-                })
-                wchar_t_updated_builds.append(wchar_t_options)
+        # for combination in combinations:
+        #     if combination['compiler'] == 'msvc':
+        #         wchar_t_options = copy.deepcopy(combination)
+        #         wchar_t_options['options'].update({
+        #             'wchar_t': 'typedef',
+        #         })
+        #         wchar_t_updated_builds.append(wchar_t_options)
 
         pybind_updated_builds = []
-        for combination in combinations:
-            if combination['build_type'] != 'Debug' and \
-                    (combination['compiler'] != 'Visual Studio' or combination['compiler.runtime'] in ['MD', 'MDd']):
-                if combination['compiler'] == 'Visual Studio' and int(combination['compiler.version']) <= 12:
-                    continue
-                pybind_options = copy.deepcopy(combination)
-                pybind_options['options'].update({
-                    'pybind': True,
-                })
-                pybind_updated_builds.append(pybind_options)
+        # for combination in combinations:
+        #     if combination['build_type'] != 'Debug' and \
+        #             (combination['compiler'] != 'Visual Studio' or combination['compiler.runtime'] in ['MD', 'MDd']):
+        #         if combination['compiler'] == 'Visual Studio' and int(combination['compiler.version']) <= 12:
+        #             continue
+        #         pybind_options = copy.deepcopy(combination)
+        #         pybind_options['options'].update({
+        #             'pybind': True,
+        #         })
+        #         pybind_updated_builds.append(pybind_options)
 
         testing_updated_builds = []
-        for combination in combinations:
-            testing_options = copy.deepcopy(combination)
-            testing_options['options'].update({
-                'testing': True,
-            })
-            testing_updated_builds.append(testing_options)
+        # for combination in combinations:
+        #     testing_options = copy.deepcopy(combination)
+        #     testing_options['options'].update({
+        #         'testing': True,
+        #     })
+        #     testing_updated_builds.append(testing_options)
 
         combinations = combinations + wchar_t_updated_builds + pybind_updated_builds + testing_updated_builds
 
@@ -224,9 +225,9 @@ class XmsConanPackager(object):
             for k, v in settings.items():
                 f.write(f'{k}={v}\n')
 
-            f.write('\n[options]\n')
-            for k, v in configuration['options'].items():
-                f.write(f'&:{k}={v}\n')
+            # f.write('\n[options]\n')
+            # for k, v in configuration['options'].items():
+            #     f.write(f'&:{k}={v}\n')
 
             f.write('\n[buildenv]\n')
             for k, v in configuration['buildenv'].items():
