@@ -2,6 +2,7 @@
 Conanfile base for the xmscore projects compatible with Conan 2.x.
 """
 import os
+import shutil
 import sys
 
 from conan import ConanFile
@@ -68,7 +69,8 @@ class XmsConan2File(ConanFile):
             raise ConanException("Clang > 9.0 is required for Mac.")
 
         for dependency in self.xms_dependencies:
-            dep_name, _ = dependency.split('/')
+            dep_split = dependency.split('/')
+            dep_name = dep_split[0]
             self.options[dep_name].pybind = self.options.pybind
             self.options[dep_name].testing = self.options.testing
 
@@ -157,6 +159,8 @@ class XmsConan2File(ConanFile):
     def run_python_tests_and_upload(self):
         """Run Python tests in a virtual environment and optionally upload."""
         build_venv_dir = os.path.join(self.build_folder, "venv")
+        tests_dest_dir = os.path.join(self.build_folder, "tests")  # Destination for tests
+
         if sys.platform == "win32":
             python_executable = os.path.join(build_venv_dir, "Scripts", "python")
             pip_executable = os.path.join(build_venv_dir, "Scripts", "pip")
@@ -170,7 +174,7 @@ class XmsConan2File(ConanFile):
         # Upgrade pip in the virtual environment
         self.run(f"{python_executable} -m pip install --upgrade pip")
 
-        # Install numpy and wheel together
+        # Install general dependencies
         general_dependencies = ["numpy", "wheel"]
         self.run(f"{pip_executable} install {' '.join(general_dependencies)}")
 
@@ -182,11 +186,19 @@ class XmsConan2File(ConanFile):
                     package_path = os.path.join(dependency.package_folder, "_package")
                     self.run(f"{pip_executable} install {package_path} --no-deps")
 
-        # Run tests using the virtual environment's Python
-        tests_path = os.path.join(self.source_folder, "_package", "tests")
-        unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_path}"
+        # Install the current package into the virtual environment
         package_folder = os.path.join(self.package_folder, "_package")
-        self.run(unittest_command, cwd=package_folder)
+        self.run(f"{pip_executable} install .", cwd=package_folder)
+
+        # Copy the tests folder into the build directory
+        tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
+        if os.path.exists(tests_dest_dir):
+            shutil.rmtree(tests_dest_dir)  # Remove existing folder to avoid conflicts
+        shutil.copytree(tests_src_dir, tests_dest_dir)
+
+        # Run tests using the virtual environment's Python
+        unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_dest_dir}"
+        self.run(unittest_command, cwd=self.build_folder)
 
         # Upload the package if it's a release
         # We are uploading to aquapi here instead of pypi because pypi doesn't accept
