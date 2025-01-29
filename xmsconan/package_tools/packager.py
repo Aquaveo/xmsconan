@@ -150,7 +150,7 @@ class XmsConanPackager(object):
 
         self._configurations = combinations
         return combinations
-    
+
     def filter_configurations(self, filter_dict):
         """Filter the configurations based on the filter_dict."""
         if self.configurations is None:
