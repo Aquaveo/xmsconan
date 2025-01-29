@@ -193,8 +193,8 @@ class XmsConanPackager(object):
                 failing_configurations.append(f'{i + 1}')
             self.printer.print_message('*-' * 40 + '\n')
         if len(failing_configurations) > 0:
-            self.printer.print_message(
-                f'One or more configurations failed to build. ({",".join(failing_configurations)})')
+            self.printer.print_message('The following configurations failed to build:')
+            self.print_configuration_table(failing_configurations)
         else:
             self.printer.print_message('All configurations built successfully.')
 
@@ -272,7 +272,7 @@ class XmsConanPackager(object):
             pybind_option = config['options'].get('pybind', False)
             testing_option = config['options'].get('testing', False)
             row = "| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(
-                i,
+                i+1,
                 config.get("compiler.cppstd", ""),
                 config.get("compiler.runtime", ""),
                 config.get("build_type", ""),
