@@ -193,7 +193,7 @@ class XmsConanPackager(object):
                 failing_configurations.append(f'{i + 1}')
             self.printer.print_message('*-' * 40 + '\n')
         if len(failing_configurations) > 0:
-            self.printer.print_message(f'The following configurations failed to build:')
+            self.printer.print_message('The following configurations failed to build:')
             self.print_configuration_table(failing_configurations)
         else:
             self.printer.print_message('All configurations built successfully.')
@@ -236,19 +236,17 @@ class XmsConanPackager(object):
             # For example, you can print the path to the temporary profile file
             print(f'Temporary profile created at: {temp_profile_path}')
             return temp_profile_path
-        
 
     def print_configuration_table(self, configurations_to_print=None):
         """
         Print the configuration table.
-        
+
         Args:
             configurations_to_print (list): A list of configurations indexes to print.
         """
         if configurations_to_print is None:
             # print all configurations
             configurations_to_print = range(len(self.configurations))
-
 
         headers = ["#", "cppstd", "runtime", "build_type", "compiler", "compiler.version", "arch",
                    "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
@@ -272,7 +270,7 @@ class XmsConanPackager(object):
             pybind_option = config['options'].get('pybind', False)
             testing_option = config['options'].get('testing', False)
             row = "| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(
-                i+1,
+                i + 1,
                 config.get("compiler.cppstd", ""),
                 config.get("compiler.runtime", ""),
                 config.get("build_type", ""),
