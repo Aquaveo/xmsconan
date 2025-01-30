@@ -23,6 +23,7 @@ class XmsConan2File(ConanFile):
         "testing": [True, False],
     }
     xms_dependencies = []
+    extra_dependencies = []
     extra_exports = []
     extra_export_sources = []
 
@@ -43,6 +44,9 @@ class XmsConan2File(ConanFile):
             self.requires("pybind11/2.13.6")
 
         for dependency in self.xms_dependencies:
+            self.requires(dependency)
+
+        for dependency in self.extra_dependencies:
             self.requires(dependency)
 
     def configure_options(self):
