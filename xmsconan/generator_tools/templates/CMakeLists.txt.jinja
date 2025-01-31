@@ -5,6 +5,7 @@
 cmake_minimum_required(VERSION 3.11.0)
 cmake_policy(SET CMP0015 NEW) # Link Directory Pathing
 cmake_policy(SET CMP0091 NEW)
+cmake_policy(SET CMP0148 NEW)
 set(CMAKE_DEBUG_POSTFIX _d)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -226,6 +227,7 @@ if (IS_PYTHON_BUILD)
     target_link_libraries(_{{ library_name }}
             PRIVATE
             ${EXT_LIBS}
+            PUBLIC
             ${PROJECT_NAME}
     )
     set_target_properties(_{{ library_name }} PROPERTIES
