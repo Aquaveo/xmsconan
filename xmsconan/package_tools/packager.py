@@ -20,11 +20,12 @@ configurations = {
     },
     'linux': {
         'os': ['Linux'],
-        'cppstd': ['17'],
         'build_type': ['Release', 'Debug'],
         'arch': ['x86_64'],
         'compiler': ['gcc'],
         'compiler.version': ['12'],
+        'compiler.cppstd': ['gnu17'],
+        'compiler.libcxx': ['libstdc++11'],
     },
     'darwin': {  # macos
         'os': ['Macos'],
