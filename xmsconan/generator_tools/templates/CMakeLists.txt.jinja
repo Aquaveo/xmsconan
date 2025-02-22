@@ -31,14 +31,6 @@ set({{ library_name }}_headers
     {%- for header in library_headers -%}{{ '\n    ' }}{{ header }}{% endfor %}
 )
 
-if (APPLE OR WIN32 OR IS_EMSCRIPTEN_BUILD)
-    # Target C++17 on MacOS and Windows. If building with version of Visual Studio without
-    # support, has no effect.
-    set(CMAKE_CXX_STANDARD 17)
-else ()
-    set(CMAKE_CXX_STANDARD 11)
-endif ()
-
 if (APPLE)
     set(CMAKE_POSITION_INDEPENDENT_CODE False)
 else ()
