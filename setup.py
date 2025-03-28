@@ -6,7 +6,8 @@ from setuptools import setup
 from xmsconan import __version__
 
 requires = [
-    'tabulate'
+    'tabulate',
+    'toml',
 ]
 
 
