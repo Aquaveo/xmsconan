@@ -28,6 +28,9 @@ if __name__ == "__main__":
         exit(0)
         # Use config_dict as needed
     if not args.skip_build:
-        builder.run()
+        err_count = builder.run()
+        if err_count > 0:
+            print("errors when building... exiting...")
+            exit(1)
     if args.upload:
         builder.upload(version=args.version)

@@ -196,8 +196,10 @@ class XmsConanPackager(object):
         if len(failing_configurations) > 0:
             self.printer.print_message('The following configurations failed to build:')
             self.print_configuration_table(failing_configurations)
+            return len(failing_configurations)
         else:
             self.printer.print_message('All configurations built successfully.')
+            return 0
 
     def upload(self, version):
         """Upload the packages to the server."""
