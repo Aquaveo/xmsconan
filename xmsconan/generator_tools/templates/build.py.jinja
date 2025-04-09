@@ -32,5 +32,6 @@ if __name__ == "__main__":
         if err_count > 0:
             print("errors when building... exiting...")
             exit(1)
+
     if args.upload:
         builder.upload(version=args.version)
