@@ -92,7 +92,7 @@ class XmsConan2File(ConanFile):
 
         # Version Info
         tc.variables["XMS_VERSION"] = '{}'.format(self.version)
-        tc.variables["PYTHON_TARGET_VERSION"] = os.environ.get("PYTHON_TARGET_VERSION", "3.10")
+        tc.variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.10")
 
         # Generate toolchain
         tc.generate()
@@ -112,7 +112,7 @@ class XmsConan2File(ConanFile):
 
         # Version Info
         variables["XMS_VERSION"] = '{}'.format(self.version)
-        variables["PYTHON_TARGET_VERSION"] = os.environ.get("PYTHON_TARGET_VERSION", "3.10")
+        variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.10")
 
         cmake.configure(variables=variables)
         cmake.build()
@@ -208,7 +208,7 @@ class XmsConan2File(ConanFile):
         # We are uploading to aquapi here instead of pypi because pypi doesn't accept
         # the type of package 'linux_x86_64 that we want to upload. They only accept
         # manylinux1 as the plat-tag
-        is_release = os.environ.get("RELEASE_PYTHON", 'False') == 'True'
+        is_release = self.buildenv.vars(self).get("RELEASE_PYTHON", 'False') == 'True'
         is_mac_os = self.settings.os == 'Macos'
         is_gcc_7 = self.settings.os == "Linux" and float(self.settings.compiler.version.value) == 7.0
         is_windows_md = (self.settings.os == "Windows" and str(self.settings.compiler.runtime) == "MD")
@@ -217,9 +217,9 @@ class XmsConan2File(ConanFile):
 
     def upload_python_package(self):
         """Upload the python package to AQUAPI_URL."""
-        devpi_url = os.environ.get("AQUAPI_URL", 'NO_URL')
-        devpi_username = os.environ.get("AQUAPI_USERNAME", 'NO_USERNAME')
-        devpi_password = os.environ.get("AQUAPI_PASSWORD", 'NO_PASSWORD')
+        devpi_url = self.buildenv.vars(self).get("AQUAPI_URL", 'NO_URL')
+        devpi_username = self.buildenv.vars(self).get("AQUAPI_USERNAME", 'NO_USERNAME')
+        devpi_password = self.buildenv.vars(self).get("AQUAPI_PASSWORD", 'NO_PASSWORD')
         self.run('devpi use {}'.format(devpi_url))
         self.run('devpi login {} --password {}'.format(devpi_username, devpi_password))
         self.run('python setup.py bdist_wheel --dist-dir {}'.format(os.path.join(self.build_folder, "dist")),
