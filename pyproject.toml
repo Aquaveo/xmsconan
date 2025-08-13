@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xmsconan"
+version = "1.0.5"
+description = "Methods and Modules used to aid in xmsconan projects"
+authors = [
+    {name = "Gage Larsen"}
+]
+license = "BSD-2-Clause"
+readme = "README.md"
+requires-python = ">=3.6"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "tabulate",
+    "toml",
+    "jinja2",
+]
+
+[project.scripts]
+xmsconan_gen = "xmsconan.generator_tools.build_file_generator:main"
+xmsconan_build = "xmsconan.build_tools.build_library:main"
+
+[project.urls]
+Homepage = "https://github.com/Aquaveo/xmsconan"
+Repository = "https://github.com/Aquaveo/xmsconan"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xmsconan*"]
+
+[tool.setuptools.package-data]
+"xmsconan.generator_tools" = ["templates/**/*"]
+"xmsconan.build_tools" = ["profiles/**/*"]
