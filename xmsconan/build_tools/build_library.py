@@ -9,6 +9,7 @@ GENERATORS = {
     'make': None,
     'ninja': 'Ninja',
     'vs2019': 'Visual Studio 16 2019',
+    'vs2022': 'Visual Studio 17 2022',
 }
 
 
@@ -214,10 +215,10 @@ def get_cmake_options(args):
         lib_version = input('Library Version [99.99.99]:') or "99.99.99"
     cmake_options.append('-DXMS_VERSION={}'.format(lib_version))
 
-    toolchain_path = '/build/generators/conan_toolchain.cmake',
-    if not os.name == 'nt':
-        build_dir = args.build_dir if args.build_dir else "build"
-        toolchain_path = f'{build_dir}/build/{build_type}/generators/conan_toolchain.cmake'
+    toolchain_path = 'build/generators/conan_toolchain.cmake',
+    # if not os.name == 'nt':
+    build_dir = args.build_dir if args.build_dir else "build"
+    toolchain_path = f'{build_dir}/build/generators/conan_toolchain.cmake'
 
     # Extra toolchains
     exta_toolchains = [

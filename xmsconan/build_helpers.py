@@ -57,7 +57,7 @@ def get_builder(library_name):
                 settings.update({'cppstd': '17'})
         elif settings['compiler'] == 'apple-clang':
             settings.update({'cppstd': 'gnu17'})
-        elif settings['compiler'] == 'Visual Studio':
+        elif settings['compiler'] == 'msvc':
             settings.update({'cppstd': '17'})
 
         # These options are mutually exclusive. wchar_t:builtin == True
@@ -70,8 +70,8 @@ def get_builder(library_name):
     # wchar_t builders
     wchar_t_update_builds = []
     for settings, options, env_vars, build_requires, _ in builder.items:
-        # wchar_t builds are only built for Visual Studio builds.
-        if settings['compiler'] == 'Visual Studio':
+        # wchar_t builds are only built for msvc builds.
+        if settings['compiler'] == 'msvc':
             # Set wchar_t options and add a build configuration
             wchar_t_options = dict(options)
             wchar_t_options.update({
@@ -84,9 +84,9 @@ def get_builder(library_name):
     for settings, options, env_vars, build_requires, _ in builder.items:
         # Pybind builds are built for 64-bit, non-debug MD(d) builds.
         if settings['build_type'] != 'Debug' and \
-           (settings['compiler'] != 'Visual Studio' or settings['compiler.runtime'] in ['MD', 'MDd']):
-            # Pybind is only built for Visual Studio versions greater than 12.
-            if settings['compiler'] == 'Visual Studio' and int(settings['compiler.version']) <= 12:
+           (settings['compiler'] != 'msvc' or settings['compiler.runtime'] in ['MD', 'MDd']):
+            # Pybind is only built for msvc versions greater than 12.
+            if settings['compiler'] == 'msvc' and int(settings['compiler.version']) <= 12:
                 continue
             # Update conan options and add a build configuration
             pybind_options = dict(options)

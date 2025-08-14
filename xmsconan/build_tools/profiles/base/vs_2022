@@ -1,5 +1,5 @@
 [settings]
 compiler=msvc
-compiler.version=193
+compiler.version=194
 compiler.cppstd=17
 os=Windows

@@ -8,6 +8,7 @@ import sys
 from conan import ConanFile
 from conan.errors import ConanException
 from conan.tools.cmake import CMake, cmake_layout, CMakeDeps, CMakeToolchain
+from conan.tools.microsoft import VCVars
 from conan.tools.files import copy
 
 
@@ -85,6 +86,7 @@ class XmsConan2File(ConanFile):
     def generate(self):
         """The generate method for the conan class."""
         tc = CMakeToolchain(self)
+        
 
         tc.variables["IS_PYTHON_BUILD"] = self.options.pybind
         tc.variables["BUILD_TESTING"] = self.options.testing
