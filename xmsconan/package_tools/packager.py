@@ -15,7 +15,7 @@ configurations = {
         'arch': ['x86_64'],
         'compiler': ['msvc'],
         'compiler.cppstd': ['17'],
-        'compiler.version': ['192'],
+        'compiler.version': ['193'],
         'compiler.runtime': ['dynamic', 'static'],
     },
     'linux': {
