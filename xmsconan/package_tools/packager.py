@@ -32,7 +32,7 @@ configurations = {
         'build_type': ['Release', 'Debug'],
         'arch': ['armv8'],
         'compiler': ['apple-clang'],
-        'compiler.version': ['16'],
+        'compiler.version': ['17'],
         'compiler.cppstd': ['gnu17'],
         'compiler.libcxx': ['libc++'],
     },
