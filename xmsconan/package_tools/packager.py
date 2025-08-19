@@ -92,7 +92,7 @@ class XmsConanPackager(object):
         combinations = [dict(zip(keys, combination)) for combination in itertools.product(*values)]
 
         xms_version = os.getenv('XMS_VERSION', None)
-        python_target_version = os.getenv('PYTHON_TARGET_VERSION', "3.12")
+        python_target_version = os.getenv('PYTHON_TARGET_VERSION', "3.13")
         ci_commit_tag = os.environ.get('CI_COMMIT_TAG', 'False')  # Gitlab
         release_python = os.getenv('RELEASE_PYTHON', 'False')
         aquapi_username = os.getenv('AQUAPI_USERNAME', None)
