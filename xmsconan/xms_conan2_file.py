@@ -223,16 +223,18 @@ class XmsConan2File(ConanFile):
         self.run('devpi use {}'.format(devpi_url))
         self.run('devpi login {} --password {}'.format(devpi_username, devpi_password))
         # Create platform-specific wheels with compiled extensions
-        dist_dir = os.path.join(self.build_folder, "dist")
+        dist_dir = os.path.join(self.package_folder, "dist")
         if not os.path.exists(dist_dir):
             os.makedirs(dist_dir)
 
         package_dir = os.path.join(self.package_folder, "_package")
 
         # Use pip wheel which is better at detecting binary content and creating platform-specific wheels
-        self.run('pip wheel . --wheel-dir {} --no-build-isolation --no-deps'.format(dist_dir),
-                 cwd=package_dir)
-        self.run('devpi upload --from-dir {}'.format(os.path.join(self.build_folder, "dist")), cwd=".")
+        print('Creating wheel...')
+        self.run(f'ls {package_dir}')
+        print(f'pip wheel . --wheel-dir {dist_dir} --no-build-isolation --no-deps')
+        self.run(f'pip wheel {package_dir} --wheel-dir {dist_dir} --no-build-isolation --no-deps')
+        self.run(f'devpi upload --from-dir {dist_dir}', cwd=".")
 
     def export_sources(self):
         """Specify sources to be exported."""
