@@ -212,9 +212,9 @@ class XmsConan2File(ConanFile):
         # manylinux1 as the plat-tag
         is_release = self.buildenv.vars(self).get("RELEASE_PYTHON", 'False') == 'True'
         is_mac_os = self.settings.os == 'Macos'
-        is_gcc_7 = self.settings.os == "Linux" and float(self.settings.compiler.version.value) == 7.0
-        is_windows_md = (self.settings.os == "Windows" and str(self.settings.compiler.runtime) == "MD")
-        if is_release and (is_mac_os or is_gcc_7 or is_windows_md):
+        is_gcc_13 = self.settings.os == "Linux" and float(self.settings.compiler.version.value) == 13.0
+        is_windows_md = (self.settings.os == "Windows" and str(self.settings.compiler.runtime) == "dynamic")
+        if is_release and (is_mac_os or is_gcc_13 or is_windows_md):
             self.upload_python_package()
 
     def upload_python_package(self):
@@ -224,7 +224,7 @@ class XmsConan2File(ConanFile):
         devpi_password = self.buildenv.vars(self).get("AQUAPI_PASSWORD", 'NO_PASSWORD')
         self.run('devpi use {}'.format(devpi_url))
         self.run('devpi login {} --password {}'.format(devpi_username, devpi_password))
-        self.run('python setup.py bdist_wheel --dist-dir {}'.format(os.path.join(self.build_folder, "dist")),
+        self.run('python -m build --wheel --outdir {}'.format(os.path.join(self.build_folder, "dist")),
                  cwd=os.path.join(self.package_folder, "_package"))
         self.run('devpi upload --from-dir {}'.format(os.path.join(self.build_folder, "dist")), cwd=".")
 
