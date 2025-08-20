@@ -230,10 +230,8 @@ class XmsConan2File(ConanFile):
         package_dir = os.path.join(self.package_folder, "_package")
 
         # Use pip wheel which is better at detecting binary content and creating platform-specific wheels
-        print('Creating wheel...')
         self.run(f'ls {package_dir}')
-        print(f'pip wheel . --wheel-dir {dist_dir} --no-build-isolation --no-deps')
-        self.run(f'cibuildwheel . --output-dir {dist_dir}', cwd=package_dir)
+        self.run(f'python -m cibuildwheel . --output-dir {dist_dir}', cwd=package_dir)
         self.run(f'devpi upload --from-dir {dist_dir}', cwd=".")
 
     def export_sources(self):
