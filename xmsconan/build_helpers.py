@@ -84,7 +84,7 @@ def get_builder(library_name):
     for settings, options, env_vars, build_requires, _ in builder.items:
         # Pybind builds are built for 64-bit, non-debug MD(d) builds.
         if settings['build_type'] != 'Debug' and \
-           (settings['compiler'] != 'msvc' or settings['compiler.runtime'] in ['MD', 'MDd']):
+           (settings['compiler'] != 'msvc' or settings['compiler.runtime'] in ['dynamic']):
             # Pybind is only built for msvc versions greater than 12.
             if settings['compiler'] == 'msvc' and int(settings['compiler.version']) <= 12:
                 continue

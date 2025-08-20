@@ -224,8 +224,16 @@ class XmsConan2File(ConanFile):
         devpi_password = self.buildenv.vars(self).get("AQUAPI_PASSWORD", 'NO_PASSWORD')
         self.run('devpi use {}'.format(devpi_url))
         self.run('devpi login {} --password {}'.format(devpi_username, devpi_password))
-        self.run('python -m build --wheel --outdir {}'.format(os.path.join(self.build_folder, "dist")),
-                 cwd=os.path.join(self.package_folder, "_package"))
+        # Create platform-specific wheels with compiled extensions
+        dist_dir = os.path.join(self.build_folder, "dist")
+        if not os.path.exists(dist_dir):
+            os.makedirs(dist_dir)
+
+        package_dir = os.path.join(self.package_folder, "_package")
+
+        # Use pip wheel which is better at detecting binary content and creating platform-specific wheels
+        self.run('pip wheel . --wheel-dir {} --no-build-isolation --no-deps'.format(dist_dir),
+                 cwd=package_dir)
         self.run('devpi upload --from-dir {}'.format(os.path.join(self.build_folder, "dist")), cwd=".")
 
     def export_sources(self):

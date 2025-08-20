@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,8 +23,13 @@ dependencies = [
 include = ["xms*"]
 
 [tool.setuptools.package-data]
-# Include additional data files
-"*" = ["*.pyd", "*.so"]
+# Include additional data files (compiled extensions)
+"*" = ["*.pyd", "*.so", "*.dll", "*.dylib"]
+
+# Force platform-specific wheel creation
+[tool.setuptools]
+# This ensures that wheels are platform-specific when binary files are present
+zip-safe = false
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
