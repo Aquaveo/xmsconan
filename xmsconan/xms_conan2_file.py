@@ -179,7 +179,7 @@ class XmsConan2File(ConanFile):
         self.run(f"{python_executable} -m pip install --upgrade pip")
 
         # Install general dependencies
-        general_dependencies = ["numpy", "wheel"]
+        general_dependencies = ["numpy", "wheel", "cibuildwheel"]
         self.run(f"{pip_executable} install {' '.join(general_dependencies)}")
 
         # Install xms_dependencies one by one
@@ -233,7 +233,7 @@ class XmsConan2File(ConanFile):
         print('Creating wheel...')
         self.run(f'ls {package_dir}')
         print(f'pip wheel . --wheel-dir {dist_dir} --no-build-isolation --no-deps')
-        self.run(f'pip wheel {package_dir} --wheel-dir {dist_dir} --no-build-isolation --no-deps')
+        self.run(f'cibuildwheel . --output-dir {dist_dir}', cwd=package_dir)
         self.run(f'devpi upload --from-dir {dist_dir}', cwd=".")
 
     def export_sources(self):
