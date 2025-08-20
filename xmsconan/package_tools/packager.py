@@ -130,7 +130,7 @@ class XmsConanPackager(object):
         pybind_updated_builds = []
         for combination in combinations:
             if combination['build_type'] != 'Debug' and \
-                    (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['MD', 'MDd']):
+                    (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
                     continue
                 pybind_options = copy.deepcopy(combination)
