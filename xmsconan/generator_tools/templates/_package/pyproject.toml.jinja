@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel", "cibuildwheel"]
+requires = ["setuptools>=75", "wheel", "cibuildwheel>=2.20"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -42,7 +42,7 @@ python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
 build = "cp313-*"
 
 [tool.cibuildwheel.windows]
-archs = "amd64"
+archs = "AMD64"
 
 [tool.cibuildwheel.macos]
 archs = "x86_64"
