@@ -40,6 +40,7 @@ python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
 
 [tool.cibuildwheel]
 build = "cp313-*"
+skip = ["*-musllinux_*"]
 
 [tool.cibuildwheel.windows]
 archs = "AMD64"
@@ -50,4 +51,4 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.cibuildwheel.linux]
 archs = "x86_64"
-repair-wheel-command = "bash -lc 'auditwheel repair --plat manylinux_2_39_x86_64 -w {dest_dir} {wheel}'"
+repair-wheel-command = "bash -lc 'cp {wheel} {dest_dir}'"
