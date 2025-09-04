@@ -50,4 +50,4 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.cibuildwheel.linux]
 archs = "x86_64"
-manylinux-x86_64-image = "manylinux_2_28"
+repair-wheel-command = "bash -lc 'auditwheel repair --plat manylinux_2_39_x86_64 -w {dest_dir} {wheel}'"
