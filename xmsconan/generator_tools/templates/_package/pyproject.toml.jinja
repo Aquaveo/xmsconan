@@ -34,11 +34,17 @@ zip-safe = false
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
 
+[tool.cibuildwheel]
+build = "cp313"
+
 [tool.cibuildwheel.windows]
-build = "cp313-win_amd64"
+platform: "win"
+arch = "amd64"
 
 [tool.cibuildwheel.macos]
-build = "cp313-macosx_x86_64"
+platform: "macos"
+arch = "x86_64"
 
 [tool.cibuildwheel.linux]
-build = "cp313-linux_x86_64"
+platform: "linux"
+arch = "x86_64"
