@@ -27,6 +27,7 @@ include = ["xms*"]
 "xms.{{ python_namespaced_dir }}" = ["*.pyd", "*.so", "*.dll", "*.dylib"]
 
 [tool.setuptools.ext_modules."xms.{{ python_namespaced_dir }}._{{ library_name }}]
+sources = []
 
 # Force platform-specific wheel creation
 [tool.setuptools]
