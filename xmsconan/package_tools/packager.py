@@ -14,8 +14,9 @@ configurations = {
         'build_type': ['Release', 'Debug'],
         'arch': ['x86_64'],
         'compiler': ['msvc'],
-        'compiler.cppstd': ['17'],
+        'compiler.cppstd': ['gnu17'],
         'compiler.version': ['194'],
+        'compiler.libcxx': ['libc++11'],
         'compiler.runtime': ['dynamic', 'static'],
     },
     'linux': {
@@ -23,8 +24,8 @@ configurations = {
         'build_type': ['Release', 'Debug'],
         'arch': ['x86_64'],
         'compiler': ['gcc'],
-        'compiler.version': ['13'],
         'compiler.cppstd': ['gnu17'],
+        'compiler.version': ['13'],
         'compiler.libcxx': ['libstdc++11'],
     },
     'darwin': {  # macos
@@ -32,9 +33,9 @@ configurations = {
         'build_type': ['Release', 'Debug'],
         'arch': ['armv8'],
         'compiler': ['apple-clang'],
-        'compiler.version': ['17'],
         'compiler.cppstd': ['gnu17'],
-        'compiler.libcxx': ['libc++'],
+        'compiler.version': ['17'],
+        'compiler.libcxx': ['libc++11'],
     },
 }
 
