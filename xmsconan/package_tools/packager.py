@@ -16,7 +16,7 @@ configurations = {
         'compiler': ['msvc'],
         'compiler.cppstd': ['gnu17'],
         'compiler.version': ['194'],
-        'compiler.libcxx': ['libc++11'],
+        'compiler.libcxx': ['libc++'],
         'compiler.runtime': ['dynamic', 'static'],
     },
     'linux': {
@@ -26,7 +26,7 @@ configurations = {
         'compiler': ['gcc'],
         'compiler.cppstd': ['gnu17'],
         'compiler.version': ['13'],
-        'compiler.libcxx': ['libstdc++11'],
+        'compiler.libcxx': ['libstdc++'],
     },
     'darwin': {  # macos
         'os': ['Macos'],
@@ -35,7 +35,7 @@ configurations = {
         'compiler': ['apple-clang'],
         'compiler.cppstd': ['gnu17'],
         'compiler.version': ['17'],
-        'compiler.libcxx': ['libc++11'],
+        'compiler.libcxx': ['libc++'],
     },
 }
 
