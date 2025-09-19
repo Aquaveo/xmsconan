@@ -14,7 +14,7 @@ configurations = {
         'build_type': ['Release', 'Debug'],
         'arch': ['x86_64'],
         'compiler': ['msvc'],
-        'compiler.cppstd': ['gnu17'],
+        'compiler.cppstd': ['17'],
         'compiler.version': ['194'],
         'compiler.libcxx': ['libc++'],
         'compiler.runtime': ['dynamic', 'static'],
