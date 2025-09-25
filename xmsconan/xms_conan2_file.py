@@ -253,6 +253,7 @@ class XmsConan2File(ConanFile):
         """Specify files to be exported."""
         self.output.info("Exporting files...")
         copy(self, 'LICENSE', src=self.recipe_folder, dst=self.export_folder)
+        
         for item in self.extra_exports:
             if os.path.isdir(item):
                 copy(self, '*', src=os.path.join(self.recipe_folder, f'{item}'),

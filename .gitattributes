@@ -1,0 +1,3 @@
+*.j2     text eol=lf
+*.jinja  text eol=lf
+*.tmpl   text eol=lf

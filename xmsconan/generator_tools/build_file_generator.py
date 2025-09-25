@@ -48,7 +48,7 @@ def render_template_with_toml(toml_file_path: str, version: str, template_dir: s
         template_content = template_file.read_text()
 
         # Load the template with Jinja2
-        template = Template(template_content, keep_trailing_newline=True)
+        template = Template(template_content, keep_trailing_newline=True, newline_sequence="\n")
 
         # Render the template with the TOML data
         rendered_content = template.render(toml_data)
