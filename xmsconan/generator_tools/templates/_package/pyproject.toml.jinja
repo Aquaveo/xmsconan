@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=75", "wheel", "cibuildwheel>=2.20"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,12 +24,31 @@ include = ["xms*"]
 
 [tool.setuptools.package-data]
 # Include additional data files (compiled extensions)
-"*" = ["*.pyd", "*.so", "*.dll", "*.dylib"]
+"xms.{{ python_namespaced_dir }}" = ["*.pyd", "*.so", "*.dll", "*.dylib"]
 
 # Force platform-specific wheel creation
 [tool.setuptools]
 # This ensures that wheels are platform-specific when binary files are present
 zip-safe = false
+include-package-data = true
+ext-modules = [
+  { name = "xms.{{ python_namespaced_dir }}._{{ library_name }}", sources = [], optional = true }
+]
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
+
+[tool.cibuildwheel]
+build = "cp313-*"
+skip = ["*-musllinux_*"]
+
+[tool.cibuildwheel.windows]
+archs = "AMD64"
+
+[tool.cibuildwheel.macos]
+archs = "x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
+
+[tool.cibuildwheel.linux]
+archs = "x86_64"
+repair-wheel-command = "bash -lc 'cp {wheel} {dest_dir}'"
