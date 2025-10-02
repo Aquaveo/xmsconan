@@ -188,11 +188,16 @@ class XmsConan2File(ConanFile):
                 dependency = self.dependencies.host[dependency_name]
                 if dependency.package_folder:
                     package_path = os.path.join(dependency.package_folder, "_package")
-                    self.run(f"{pip_executable} install {package_path} --no-deps -i https://public.aquapi.aquaveo.com/aquaveo/stable/ -i https://public.aquapi.aquaveo.com/aquaveo/dev/")
+                    self.run(f"{pip_executable} install {package_path} --no-deps "
+                             f"-i https://public.aquapi.aquaveo.com/aquaveo/stable/ "
+                             f"-i https://public.aquapi.aquaveo.com/aquaveo/dev/")
 
         # Install the current package into the virtual environment
         package_folder = os.path.join(self.package_folder, "_package")
-        self.run(f"{pip_executable} install . -i https://public.aquapi.aquaveo.com/aquaveo/stable/ -i https://public.aquapi.aquaveo.com/aquaveo/dev/", cwd=package_folder)
+        self.run(f"{pip_executable} install . "
+                 f"-i https://public.aquapi.aquaveo.com/aquaveo/stable/ "
+                 f"-i https://public.aquapi.aquaveo.com/aquaveo/dev/",
+                 cwd=package_folder)
 
         # Copy the tests folder into the build directory
         tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
@@ -252,7 +257,7 @@ class XmsConan2File(ConanFile):
         """Specify files to be exported."""
         self.output.info("Exporting files...")
         copy(self, 'LICENSE', src=self.recipe_folder, dst=self.export_folder)
-        
+
         for item in self.extra_exports:
             if os.path.isdir(item):
                 copy(self, '*', src=os.path.join(self.recipe_folder, f'{item}'),
