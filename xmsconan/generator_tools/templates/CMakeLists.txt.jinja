@@ -111,8 +111,9 @@ if (IS_PYTHON_BUILD)
     list(APPEND EXT_INCLUDE_DIRS
             ${Python3_INCLUDE_DIRS}
     )
-    list(APPEND EXT_LIBS ${Python3_LIBRARIES})
-    list(APPEND LIBRARY_DIRS ${Python3_LIBRARY_DIRS})
+    # Linking to python is causing problems... We didn't do it in conan1
+    # list(APPEND EXT_LIBS ${Python3_LIBRARIES})
+    # list(APPEND LIBRARY_DIRS ${Python3_LIBRARY_DIRS})
 endif ()
 
 if (BUILD_TESTING)
