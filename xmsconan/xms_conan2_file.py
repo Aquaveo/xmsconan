@@ -41,7 +41,7 @@ class XmsConan2File(ConanFile):
             self.requires('cxxtest/4.4')
         # Pybind if not clang
         if not self.settings.compiler == "clang" and self.options.pybind:
-            self.requires("pybind11/2.13.6")
+            self.requires("pybind11/3.0.1")
 
         for dependency in self.xms_dependencies:
             self.requires(dependency)
