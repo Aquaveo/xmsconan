@@ -2,5 +2,5 @@
 compiler=apple-clang
 compiler.cppstd=gnu17
 compiler.libcxx=libc++
-compiler.version=17.0
+compiler.version=17
 os=Macos
