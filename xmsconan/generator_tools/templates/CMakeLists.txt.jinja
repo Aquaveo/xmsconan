@@ -203,7 +203,7 @@ if (IS_PYTHON_BUILD)
     message(STATUS "PYTHON_INCLUDE: ${PYTHON_INCLUDE_DIRS}")
     message(STATUS "PYTHON_LIBS: ${PYTHON_LIBRARIES}")
 
-    add_library(_xmscore MODULE
+    add_library(_{{ library_name }} MODULE
         {{ '${' }}{{ library_name }}_py} {{ '${' }}{{ library_name }}_py_headers}
     )
     target_include_directories(_{{ library_name }}
@@ -230,12 +230,12 @@ if (IS_PYTHON_BUILD)
         set_target_properties(_{{ library_name }} PROPERTIES
             SUFFIX ".so"
         )
-        target_link_libraries(_{{ library_name }} PRIVATE Python::Python)
+        target_link_libraries(_{{ library_name }} PRIVATE Python3::Python)
     elseif(WIN32)
         set_target_properties(_{{ library_name }} PROPERTIES
             SUFFIX ".pyd"
         )
-        target_link_libraries(_{{ library_name }} PRIVATE Python::Python)
+        target_link_libraries(_{{ library_name }} PRIVATE Python3::Python)
     endif()
 
     install(
