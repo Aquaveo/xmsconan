@@ -100,20 +100,13 @@ endif ()
 
 if (IS_PYTHON_BUILD)
     find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED COMPONENTS Interpreter Development)
-{%- if pybind_root %}
     find_package(pybind11 REQUIRED)
-{%- endif %}
     list(APPEND EXT_INCLUDE_DIRS
             ${pybind11_INCLUDE_DIR}
     )
-
-    # Have to add this after conda because it doesn't get the path for pybind if we don't.
     list(APPEND EXT_INCLUDE_DIRS
             ${Python3_INCLUDE_DIRS}
     )
-    # Linking to python is causing problems... We didn't do it in conan1
-    # list(APPEND EXT_LIBS ${Python3_LIBRARIES})
-    # list(APPEND LIBRARY_DIRS ${Python3_LIBRARY_DIRS})
 endif ()
 
 if (BUILD_TESTING)
@@ -210,8 +203,8 @@ if (IS_PYTHON_BUILD)
     message(STATUS "PYTHON_INCLUDE: ${PYTHON_INCLUDE_DIRS}")
     message(STATUS "PYTHON_LIBS: ${PYTHON_LIBRARIES}")
 
-    pybind11_add_module(_{{ library_name }}
-            {{ '${' }}{{ library_name }}_py} {{ '${' }}{{ library_name }}_py_headers}
+    add_library(_xmscore MODULE
+        {{ '${' }}{{ library_name }}_py} {{ '${' }}{{ library_name }}_py_headers}
     )
     target_include_directories(_{{ library_name }}
             PRIVATE
@@ -219,13 +212,29 @@ if (IS_PYTHON_BUILD)
     )
     target_link_libraries(_{{ library_name }}
             PRIVATE
-            ${EXT_LIBS}
-            PUBLIC
             ${PROJECT_NAME}
+            ${EXT_LIBS}
     )
     set_target_properties(_{{ library_name }} PROPERTIES
-            LINKER_LANGUAGE CXX
+        PREFIX ""
+        CXX_VISIBILITY_PRESET "hidden"
+        VISIBILITY_INLINES_HIDDEN ON
     )
+
+    if(APPLE)
+        set_target_properties(_{{ library_name }} PROPERTIES
+            SUFFIX ".so"
+            LINK_FLAGS "-undefined dynamic_lookup"
+        )
+    elseif(UNIX)
+        set_target_properties(_{{ library_name }} PROPERTIES
+            SUFFIX ".so"
+        )
+    elseif(WIN32)
+        set_target_properties(_{{ library_name }} PROPERTIES
+            SUFFIX ".pyd"
+        )
+    endif()
 
     install(
             TARGETS _{{ library_name }}
