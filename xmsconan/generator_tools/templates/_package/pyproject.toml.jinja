@@ -32,6 +32,9 @@ include = ["xms*"]
 zip-safe = false
 include-package-data = true
 
+[tool.setuptools.ext-modules]
+"xms.{{ python_namespaced_dir }}._{{ library_name }}" = {}
+
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
 
