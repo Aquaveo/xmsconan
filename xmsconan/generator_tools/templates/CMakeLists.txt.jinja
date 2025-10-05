@@ -230,12 +230,12 @@ if (IS_PYTHON_BUILD)
         set_target_properties(_{{ library_name }} PROPERTIES
             SUFFIX ".so"
         )
-        target_link_libraries(_{{ library_name }} PRIVATE ${PYTHON3_LIBRARIES})
+        target_link_libraries(_{{ library_name }} PRIVATE ${Python3_LIBRARIES})
     elseif(WIN32)
         set_target_properties(_{{ library_name }} PROPERTIES
             SUFFIX ".pyd"
         )
-        target_link_libraries(_{{ library_name }} PRIVATE ${PYTHON3_LIBRARIES})
+        target_link_libraries(_{{ library_name }} PRIVATE ${Python3_LIBRARIES})
     endif()
 
     install(
