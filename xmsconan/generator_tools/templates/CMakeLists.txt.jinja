@@ -214,11 +214,13 @@ if (IS_PYTHON_BUILD)
             PRIVATE
             ${PROJECT_NAME}
             ${EXT_LIBS}
+            pybind11:pybind11
     )
     set_target_properties(_{{ library_name }} PROPERTIES
         PREFIX ""
         CXX_VISIBILITY_PRESET "hidden"
         VISIBILITY_INLINES_HIDDEN ON
+        LINKER_LANGUAGE CXX
     )
 
     if(APPLE)
