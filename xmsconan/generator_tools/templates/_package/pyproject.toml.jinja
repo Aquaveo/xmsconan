@@ -31,9 +31,6 @@ include = ["xms*"]
 # This ensures that wheels are platform-specific when binary files are present
 zip-safe = false
 include-package-data = true
-ext-modules = [
-  { name = "xms.{{ python_namespaced_dir }}._{{ library_name }}", sources = [], optional = true }
-]
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
