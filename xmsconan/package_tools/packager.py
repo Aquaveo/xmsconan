@@ -133,6 +133,8 @@ class XmsConanPackager(object):
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
                     continue
+                if combination['compiler'] == 'apple-clang':
+                    continue
                 pybind_options = copy.deepcopy(combination)
                 pybind_options['options'].update({
                     'pybind': True,

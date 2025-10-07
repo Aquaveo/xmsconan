@@ -222,21 +222,11 @@ if (IS_PYTHON_BUILD)
         LINKER_LANGUAGE CXX
     )
 
-    if(APPLE)
-        set_target_properties(_{{ library_name }} PROPERTIES
-            SUFFIX ".so"
-            LINK_FLAGS "-undefined dynamic_lookup"
-        )
-    elseif(UNIX)
-        set_target_properties(_{{ library_name }} PROPERTIES
-            SUFFIX ".so"
-        )
-        target_link_libraries(_{{ library_name }} PRIVATE ${Python3_LIBRARIES})
-    elseif(WIN32)
-        set_target_properties(_{{ library_name }} PROPERTIES
-            SUFFIX ".pyd"
-        )
-        target_link_libraries(_{{ library_name }} PRIVATE ${Python3_LIBRARIES})
+    # An attempt to get pybind working on mac. Come back to this.
+    if (APPLE)
+        set(CMAKE_INSTALL_RPATH "@loader_path")
+        set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+        target_link_options(_{{ library_name }} PRIVATE "-undefined" "dynamic_lookup")
     endif()
 
     install(

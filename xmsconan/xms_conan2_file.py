@@ -40,7 +40,7 @@ class XmsConan2File(ConanFile):
         if self.options.testing:
             self.requires('cxxtest/4.4')
         if self.options.pybind:
-            self.requires("pybind11/2.13.6")
+            self.requires("pybind11/3.0.1")
 
         for dependency in self.xms_dependencies:
             self.requires(dependency)
