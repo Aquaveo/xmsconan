@@ -203,7 +203,7 @@ if (IS_PYTHON_BUILD)
     message(STATUS "PYTHON_INCLUDE: ${PYTHON_INCLUDE_DIRS}")
     message(STATUS "PYTHON_LIBS: ${PYTHON_LIBRARIES}")
 
-    add_library(_{{ library_name }} MODULE
+    pybind11_add_module(_{{ library_name }} MODULE
         {{ '${' }}{{ library_name }}_py} {{ '${' }}{{ library_name }}_py_headers}
     )
     target_include_directories(_{{ library_name }}
