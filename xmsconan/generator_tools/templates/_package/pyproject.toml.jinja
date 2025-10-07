@@ -31,6 +31,9 @@ include = ["xms*"]
 # This ensures that wheels are platform-specific when binary files are present
 zip-safe = false
 include-package-data = true
+ext-modules = [
+  { name = "xms.{{ python_namespaced_dir }}._{{ library_name }}", sources = [], optional = true }
+]
 
 [tool.setuptools.ext-modules]
 "xms.{{ python_namespaced_dir }}._{{ library_name }}" = {}
