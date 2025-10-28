@@ -183,21 +183,18 @@ class XmsConan2File(ConanFile):
         self.run(f"{pip_executable} install {' '.join(general_dependencies)}")
 
         # Install xms_dependencies one by one
-        for dependency_name in self.xms_dependencies:
+        for dependency_spec in self.xms_dependencies:
+            # Extract package name from version constraint (e.g., "xmscore/[>=7.0.0]" -> "xmscore")
+            dependency_name = dependency_spec.split('/')[0]
             if dependency_name in self.dependencies.host:
                 dependency = self.dependencies.host[dependency_name]
                 if dependency.package_folder:
                     package_path = os.path.join(dependency.package_folder, "_package")
-                    self.run(f"{pip_executable} install {package_path} --no-deps "
-                             f"-i https://public.aquapi.aquaveo.com/aquaveo/stable/ "
-                             f"-i https://public.aquapi.aquaveo.com/aquaveo/dev/")
+                    self.run(f"{pip_executable} install {package_path} --no-deps ")
 
         # Install the current package into the virtual environment
         package_folder = os.path.join(self.package_folder, "_package")
-        self.run(f"{pip_executable} install . "
-                 f"-i https://public.aquapi.aquaveo.com/aquaveo/stable/ "
-                 f"-i https://public.aquapi.aquaveo.com/aquaveo/dev/",
-                 cwd=package_folder)
+        self.run(f"{pip_executable} install .", cwd=package_folder)
 
         # Copy the tests folder into the build directory
         tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
