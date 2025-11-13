@@ -173,14 +173,14 @@ class XmsConan2File(ConanFile):
             pip_executable = os.path.join(build_venv_dir, "bin", "pip")
 
         # Create a virtual environment
-        self.run(f"{sys.executable} -m venv {build_venv_dir}")
+        self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
 
         # Upgrade pip in the virtual environment
-        self.run(f"{python_executable} -m pip install --upgrade pip")
+        self.run(f'"{sys.executable}" -m pip install --upgrade pip')
 
         # Install general dependencies
         general_dependencies = ["numpy", "wheel", "cibuildwheel"]
-        self.run(f"{pip_executable} install {' '.join(general_dependencies)}")
+        self.run(f'"{pip_executable}" install {' '.join(general_dependencies)}')
 
         # Install xms_dependencies one by one
         for dependency_spec in self.xms_dependencies:
@@ -190,11 +190,11 @@ class XmsConan2File(ConanFile):
                 dependency = self.dependencies.host[dependency_name]
                 if dependency.package_folder:
                     package_path = os.path.join(dependency.package_folder, "_package")
-                    self.run(f"{pip_executable} install {package_path} --no-deps ")
+                    self.run(f'"{pip_executable}" install {package_path} --no-deps ')
 
         # Install the current package into the virtual environment
         package_folder = os.path.join(self.package_folder, "_package")
-        self.run(f"{pip_executable} install .", cwd=package_folder)
+        self.run(f'"{pip_executable}" install .', cwd=package_folder)
 
         # Copy the tests folder into the build directory
         tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
