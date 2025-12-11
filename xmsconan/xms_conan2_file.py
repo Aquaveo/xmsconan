@@ -176,7 +176,7 @@ class XmsConan2File(ConanFile):
         self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
 
         # Upgrade pip in the virtual environment
-        self.run(f'"{sys.executable}" -m pip install --upgrade pip')
+        self.run(f'"{python_executable}" -m pip install --upgrade pip')
 
         # Install general dependencies
         general_dependencies = ["numpy", "wheel", "cibuildwheel"]
