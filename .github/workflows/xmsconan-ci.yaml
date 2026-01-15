@@ -68,7 +68,8 @@ jobs:
       # Build Wheel
       - name: Build Wheel and Upload
         run: |
-          python setup.py bdist_wheel
+          python -m pip install --upgrade build
+          pyton -m build --wheel
           devpi use https://public.aquapi.aquaveo.com/aquaveo/dev/
           devpi login ${{ secrets.AQUAPI_USERNAME_SECRET }} --password ${{ secrets.AQUAPI_PASSWORD_SECRET }}
           devpi upload --from-dir dist
