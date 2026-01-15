@@ -1,0 +1,5 @@
+include(../base/vs_2022)
+include(../base/debug)
+include(../base/x64)
+include(../base/testing)
+include(../base/static)

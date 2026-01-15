@@ -48,7 +48,7 @@ class XmsConanFile(ConanFile):
         if self.settings.build_type != "Release":
             del self.options.pybind
 
-        if self.settings.compiler != 'Visual Studio':
+        if self.settings.compiler != 'msvc':
             del self.options.wchar_t
 
     def configure(self):
@@ -72,9 +72,9 @@ class XmsConanFile(ConanFile):
                 and float(s_compiler_version.value) < 9.0:
             raise ConanException("Clang > 9.0 is required for Mac.")
 
-        if (self.options.wchar_t == 'typedef' and self.settings.compiler != 'Visual Studio'):
+        if (self.options.wchar_t == 'typedef' and self.settings.compiler != 'msvc'):
             raise ConanException('wchar_t==typedef is only supported for'
-                                 'Visual Studio')
+                                 'msvc')
 
         self.options['boost'].wchar_t = self.options.wchar_t
 
@@ -129,10 +129,14 @@ class XmsConanFile(ConanFile):
         """
         self.env_info.PYTHONPATH.append(
             os.path.join(self.package_folder, "_package"))
+
         if self.settings.build_type == 'Debug':
             self.cpp_info.libs = [f'{self.name}lib_d']
         else:
             self.cpp_info.libs = [f'{self.name}lib']
+
+        self.cpp_info.includedirs = [os.path.join(self.package_folder, 'include')]
+        self.cpp_info.bindirs = [os.path.join(self.package_folder, 'bin')]
 
     def run_cxx_tests(self, cmake):
         """

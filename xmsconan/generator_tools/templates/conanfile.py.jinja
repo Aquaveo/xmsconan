@@ -1,0 +1,27 @@
+"""
+conanfile.py for the {{ library_name }} project.
+"""
+from xmsconan.xms_conan2_file import XmsConan2File
+
+
+class {{ library_name|title }}ConanFile(XmsConan2File):
+    """
+    {{ library_name|title }}ConanFile class used for defining the conan info.
+    """
+    name = "{{ library_name }}"
+    url = "https://github.com/Aquaveo/{{ library_name }}"
+    description = "{{ description }}"
+    version = "{{ version }}"
+    xms_dependencies = [
+        {%- for dependency in xms_dependencies -%}{{'\n        '}}"{{ dependency.name }}/[>={{ dependency.version }}]",{% endfor %}
+    ]
+    extra_dependencies = [
+        {%- for dependency in extra_dependencies -%}{{'\n        '}}"{{ dependency }}",{% endfor %}
+    ]
+    {% if extra_export_sources -%}
+    extra_export_sources = [
+        {%- for source in extra_export_sources -%}{{'\n        '}}"{{ source }}",{% endfor %}
+    ]
+    {%- endif %}
+
+LIBRARY_NAME = {{ library_name|title }}ConanFile.name

@@ -1,0 +1,3 @@
+include(../base/gcc_7)
+include(../base/release)
+include(../base/x64)

@@ -1,0 +1,6 @@
+*.j2     text eol=lf
+*.jinja  text eol=lf
+*.tmpl   text eol=lf
+
+# Force LF for all text files
+* text eol=lf

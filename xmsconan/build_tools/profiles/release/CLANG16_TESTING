@@ -1,0 +1,4 @@
+include(../base/clang_16)
+include(../base/release)
+include(../base/armv8)
+include(../base/testing)
