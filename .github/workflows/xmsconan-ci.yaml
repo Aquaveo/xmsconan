@@ -63,7 +63,7 @@ jobs:
       # Check Tag
       - name: Check Tag Against Version
         run: |
-          python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + '\Tag: ${{ steps.gitTag.outputs.tag }}')"
+          python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + '\\Tag: ${{ steps.gitTag.outputs.tag }}')"
           python -c "from xmsconan import __version__; exit(0 if __version__ == '${{ steps.gitTag.outputs.tag }}' else 1)"
       # Build Wheel
       - name: Build Wheel and Upload
