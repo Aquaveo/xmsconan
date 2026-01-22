@@ -10,6 +10,7 @@ GENERATORS = {
     'ninja': 'Ninja',
     'vs2019': 'Visual Studio 16 2019',
     'vs2022': 'Visual Studio 17 2022',
+    'xcode': 'Xcode',
 }
 
 
