@@ -8,6 +8,19 @@ import tempfile
 
 from xmsconan.package_tools.printer import Printer
 
+
+def get_current_arch():
+    """Get the current architecture in Conan format."""
+    machine = platform.machine().lower()
+    arch_map = {
+        'x86_64': 'x86_64',
+        'amd64': 'x86_64',
+        'aarch64': 'armv8',
+        'arm64': 'armv8',
+    }
+    return arch_map.get(machine, machine)
+
+
 configurations = {
     'windows': {
         'os': ['Windows'],
@@ -42,11 +55,21 @@ configurations = {
 class XmsConanPackager(object):
     """The packager class."""
 
-    def __init__(self, libary_name, conanfile_path='.'):
-        """Initialize the packager."""
+    def __init__(self, libary_name, conanfile_path='.', enable_macos_pybind=False, build_missing=False):
+        """Initialize the packager.
+
+        Args:
+            libary_name: Name of the library to build.
+            conanfile_path: Path to the conanfile.
+            enable_macos_pybind: If True, enable pybind builds for macOS (apple-clang).
+                                 By default, pybind builds are skipped on macOS for CI compatibility.
+            build_missing: If True, build missing dependencies from source.
+        """
         self._library_name = libary_name
         self._conanfile_path = conanfile_path
         self._configurations = None
+        self._enable_macos_pybind = enable_macos_pybind
+        self._build_missing = build_missing
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
@@ -84,7 +107,10 @@ class XmsConanPackager(object):
             system_platform = platform.system().lower()
 
         # Get the current system_platform configuration
-        system_platform_configuration = configurations.get(system_platform)
+        system_platform_configuration = configurations.get(system_platform).copy()
+
+        # Override arch with detected architecture
+        system_platform_configuration['arch'] = [get_current_arch()]
 
         # Get the cartesian product of all the configurations
         keys = system_platform_configuration.keys()
@@ -117,6 +143,9 @@ class XmsConanPackager(object):
                 'AQUAPI_PASSWORD': aquapi_password,
                 'AQUAPI_URL': aquapi_url,
             }
+            # Set macOS deployment target for consistent wheel builds
+            if combination.get('os') == 'Macos':
+                combination['buildenv']['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
 
         wchar_t_updated_builds = []
         for combination in combinations:
@@ -133,7 +162,8 @@ class XmsConanPackager(object):
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
                     continue
-                if combination['compiler'] == 'apple-clang':
+                # Skip apple-clang pybind builds unless explicitly enabled
+                if combination['compiler'] == 'apple-clang' and not self._enable_macos_pybind:
                     continue
                 pybind_options = copy.deepcopy(combination)
                 pybind_options['options'].update({
@@ -172,7 +202,7 @@ class XmsConanPackager(object):
                 filtered_configurations.append(configuration)
         self._configurations = filtered_configurations
 
-    def run(self):
+    def run(self, build_missing=False):
         """Run the build process."""
         self.printer.print_ascci_art()
         self.print_configuration_table()
@@ -183,6 +213,8 @@ class XmsConanPackager(object):
             profile_path = self.create_build_profile(combination)
             self.printer.print_profile(profile_path)
             cmd = ['conan', 'create', self._conanfile_path, '--profile', profile_path]
+            if self._build_missing:
+                cmd.append('--build=missing')
             try:
                 exit_code = subprocess.call(cmd)
                 if exit_code == 0:

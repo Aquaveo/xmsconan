@@ -15,10 +15,17 @@ parser.add_argument("--upload", help="Complete the conan upload.", action="store
 parser.add_argument("--version", help="Version to upload", default='*')
 parser.add_argument("--preview", help="Preview the configurations that will be build", action="store_true")
 parser.add_argument("--filter", help="Filter dictionary in JSON format")
+parser.add_argument("--enable-macos-pybind", help="Enable pybind builds for macOS (apple-clang)", action="store_true")
+parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    builder = packager.XmsConanPackager(conanfile.LIBRARY_NAME, conanfile.__file__)
+    builder = packager.XmsConanPackager(
+        conanfile.LIBRARY_NAME,
+        conanfile.__file__,
+        enable_macos_pybind=args.enable_macos_pybind,
+        build_missing=args.build_missing
+    )
     builder.generate_configurations()
     if args.filter:
         filter_options = json.loads(args.filter)
@@ -28,7 +35,7 @@ if __name__ == "__main__":
         exit(0)
         # Use config_dict as needed
     if not args.skip_build:
-        err_count = builder.run()
+        err_count = builder.run(build_missing=args.build_missing)
         if err_count > 0:
             print("errors when building... exiting...")
             exit(1)
