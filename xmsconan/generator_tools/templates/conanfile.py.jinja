@@ -12,6 +12,7 @@ class {{ library_name|title }}ConanFile(XmsConan2File):
     url = "https://github.com/Aquaveo/{{ library_name }}"
     description = "{{ description }}"
     version = "{{ version }}"
+    testing_framework = "{{ testing_framework }}"
     xms_dependencies = [
         {%- for dependency in xms_dependencies -%}{{'\n        '}}"{{ dependency.name }}/[>={{ dependency.version }}]",{% endfor %}
     ]

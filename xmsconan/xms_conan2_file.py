@@ -26,6 +26,7 @@ class XmsConan2File(ConanFile):
     extra_dependencies = []
     extra_exports = []
     extra_export_sources = []
+    testing_framework = "cxxtest"  # Options: "cxxtest" or "gtest"
 
     default_options = {
         'wchar_t': 'builtin',
@@ -38,7 +39,10 @@ class XmsConan2File(ConanFile):
         self.requires("boost/1.86.0")
         self.requires("zlib/1.3.1")
         if self.options.testing:
-            self.requires('cxxtest/4.4')
+            if self.testing_framework == "cxxtest":
+                self.requires('cxxtest/4.4')
+            elif self.testing_framework == "gtest":
+                self.requires('gtest/1.17.0')
         if self.options.pybind:
             self.requires("pybind11/3.0.1")
 
@@ -87,6 +91,7 @@ class XmsConan2File(ConanFile):
 
         tc.variables["IS_PYTHON_BUILD"] = self.options.pybind
         tc.variables["BUILD_TESTING"] = self.options.testing
+        tc.variables["XMS_TESTING_FRAMEWORK"] = self.testing_framework
         # tc.variables["XMS_TEST_PATH"] = "test_files"
 
         # Version Info
@@ -108,6 +113,7 @@ class XmsConan2File(ConanFile):
         variables = {}
         variables["IS_PYTHON_BUILD"] = self.options.pybind
         variables["BUILD_TESTING"] = self.options.testing
+        variables["XMS_TESTING_FRAMEWORK"] = self.testing_framework
         # variables["XMS_TEST_PATH"] = "test_files"
 
         # Version Info

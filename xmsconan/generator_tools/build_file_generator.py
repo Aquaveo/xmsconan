@@ -41,6 +41,9 @@ def render_template_with_toml(toml_file_path: str, version: str, template_dir: s
     toml_data = toml.loads(toml_content)
     toml_data["version"] = version
 
+    # Set defaults for optional keys
+    toml_data.setdefault("testing_framework", "cxxtest")
+
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
