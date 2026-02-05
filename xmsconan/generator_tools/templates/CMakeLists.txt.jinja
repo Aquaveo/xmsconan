@@ -115,7 +115,6 @@ endif ()
 if (BUILD_TESTING)
     message(STATUS "Adding test dependencies...")
     add_definitions(-DXMS_TEST_PATH="${XMS_TEST_PATH}/")
-    add_definitions(-DCXX_TEST -DCXXTEST4)
 
     list(APPEND {{ library_name }}_headers
          {%- for header in testing_headers -%}{{ '\n         ' }}{{ header }}{% endfor %}
@@ -126,6 +125,57 @@ if (BUILD_TESTING)
          {%- for source in testing_sources -%}{{ '\n         ' }}{{ source }}{% endfor %}
     )
 {% endif %}
+{% if testing_framework == "gtest" %}
+    # Google Test configuration
+    # Tests are in *.cpp files guarded by #ifdef GTEST_ENABLED, with fixtures declared in *.t.h
+    # Also define CXX_TEST for compatibility with xmscore/testing/TestTools.h and friend declarations
+    add_definitions(-DGTEST_ENABLED -DCXX_TEST)
+    find_package(GTest REQUIRED)
+    list(APPEND EXT_INCLUDE_DIRS ${GTest_INCLUDE_DIRS})
+    enable_testing()
+
+    include(GoogleTest)
+
+    # Generate minimal runner that provides main() - tests self-register from library
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/runner.cpp
+        "#include <gtest/gtest.h>\n"
+        "int main(int argc, char **argv) {\n"
+        "    ::testing::InitGoogleTest(&argc, argv);\n"
+        "    return RUN_ALL_TESTS();\n"
+        "}\n"
+    )
+
+    # Collect test source files (cpp files that implement TEST_F) - they need to be compiled
+    # directly into the runner, not just linked from the library
+    file(GLOB_RECURSE gtest_sources ${CMAKE_CURRENT_LIST_DIR}/{{ library_name }}/*.cpp)
+    # Filter to only files that contain GTEST_ENABLED
+    set(test_cpp_sources)
+    foreach(source ${gtest_sources})
+        file(READ ${source} source_content)
+        string(FIND "${source_content}" "GTEST_ENABLED" found_pos)
+        if (NOT found_pos EQUAL -1)
+            list(APPEND test_cpp_sources ${source})
+        endif()
+    endforeach()
+
+    add_executable(runner ${CMAKE_CURRENT_BINARY_DIR}/runner.cpp ${test_cpp_sources})
+    target_link_libraries(runner
+        ${PROJECT_NAME}
+        GTest::gtest
+        ${EXT_LIBS}
+    )
+    target_compile_definitions(runner PRIVATE GTEST_ENABLED CXX_TEST)
+    target_include_directories(runner PRIVATE ${EXT_INCLUDE_DIRS})
+    gtest_discover_tests(runner)
+
+    if (WIN32)
+        set(RUNNERNAME "runner.exe")
+    else ()
+        set(RUNNERNAME "runner")
+    endif ()
+{% else %}
+    # CxxTest configuration (default)
+    add_definitions(-DCXX_TEST -DCXXTEST4)
     find_package(cxxtest REQUIRED)
     list(APPEND EXT_INCLUDE_DIRS ${cxxtest_INCLUDE_DIRS})
 
@@ -149,6 +199,7 @@ if (BUILD_TESTING)
             set(RUNNERNAME "runner")
         endif ()
     endif ()
+{% endif %}
 endif ()
 
 
