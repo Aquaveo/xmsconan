@@ -13,6 +13,10 @@ class {{ library_name|title }}ConanFile(XmsConan2File):
     description = "{{ description }}"
     version = "{{ version }}"
     testing_framework = "{{ testing_framework }}"
+    python_binding_type = "{{ python_binding_type | default('pybind11') }}"
+    {%- if xms_dependency_options is defined and xms_dependency_options %}
+    xms_dependency_options = {{ xms_dependency_options }}
+    {%- endif %}
     xms_dependencies = [
         {%- for dependency in xms_dependencies -%}{{'\n        '}}"{{ dependency.name }}/[>={{ dependency.version }}]",{% endfor %}
     ]

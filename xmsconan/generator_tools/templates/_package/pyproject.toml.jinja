@@ -25,16 +25,19 @@ include = ["xms*"]
 [tool.setuptools.package-data]
 # Include additional data files (compiled extensions)
 "xms.{{ python_namespaced_dir }}" = ["*.pyd", "*.so", "*.dll", "*.dylib"]
-
+{% if python_binding_type | default('pybind11') == 'vtk_wrap' %}
+"xms.{{ python_namespaced_dir }}.*" = ["*.pyd", "*.so", "*.dll", "*.dylib"]
+{% endif %}
 # Force platform-specific wheel creation
 [tool.setuptools]
 # This ensures that wheels are platform-specific when binary files are present
 zip-safe = false
 include-package-data = true
+{% if python_binding_type | default('pybind11') == 'pybind11' %}
 ext-modules = [
   { name = "xms.{{ python_namespaced_dir }}._{{ library_name }}", sources = [], optional = true }
 ]
-
+{% endif %}
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
 
