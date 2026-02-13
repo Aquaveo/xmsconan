@@ -101,7 +101,7 @@ if (WIN32)
         endforeach ()
     endif ()
 endif ()
-
+{% if python_binding_type | default('pybind11') == 'pybind11' %}
 if (IS_PYTHON_BUILD)
     find_package(pybind11 REQUIRED)
     list(APPEND EXT_INCLUDE_DIRS
@@ -111,7 +111,7 @@ if (IS_PYTHON_BUILD)
             ${Python3_INCLUDE_DIRS}
     )
 endif ()
-
+{% endif %}
 if (BUILD_TESTING)
     message(STATUS "Adding test dependencies...")
     add_definitions(-DXMS_TEST_PATH="${XMS_TEST_PATH}/")
@@ -241,8 +241,7 @@ target_link_libraries(${PROJECT_NAME}
 if (UNIX AND NOT APPLE)
     target_link_libraries(${PROJECT_NAME} rt)
 endif ()
-
-
+{% if python_binding_type | default('pybind11') == 'pybind11' %}
 # Pybind11
 if (IS_PYTHON_BUILD)
     # Pybind11 sources
@@ -294,7 +293,10 @@ if (IS_PYTHON_BUILD)
             PATTERN "_package/tests" EXCLUDE)
     install(FILES "_package/pyproject.toml" DESTINATION "_package")
 endif ()
-
+{% endif %}
+{%- if post_library_cmake_text %}
+{{ post_library_cmake_text }}
+{%- endif %}
 
 # Install recipe
 install(
