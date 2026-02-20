@@ -4,6 +4,7 @@ Build library from source.
 import argparse
 import os
 import subprocess
+import sys
 
 GENERATORS = {
     'make': None,
@@ -67,10 +68,12 @@ def get_args():
     arguments = argparse.ArgumentParser(description="Run Conan Python tests.")
     arguments.add_argument(
         '--cmake_dir', '-c', type=str, nargs='?',
+        default='.',
         help='location of CMakeList.txt'
     )
     arguments.add_argument(
         '--build_dir', '-b', type=str, nargs='?',
+        default=os.path.join('.', 'builds'),
         help='location of build files'
     )
     arguments.add_argument(
@@ -79,7 +82,8 @@ def get_args():
     )
     arguments.add_argument(
         '--generator', '-g', type=str, nargs='?',
-        help='files to generate. (vs2013, vs2015, or make)'
+        default='vs2022' if os.name == 'nt' else 'ninja',
+        help='files to generate. (ninja, vs2019, vs2022, make, xcode)'
     )
     arguments.add_argument(
         '--python_version', type=str, nargs='?',
@@ -103,18 +107,13 @@ def get_args():
         for f in files:
             precompile_profiles[f] = os.path.abspath(os.path.join(root, f))
 
-    if not parsed_args.cmake_dir:
-        parsed_args.cmake_dir = input("CMakeList.txt location [{}]:".format(
-            parsed_args.cmake_dir or '.') or parsed_args.cmake_dir or '.')
-
-    if not parsed_args.build_dir:
-        parsed_args.build_dir = input("build location [{}]:".format(
-            parsed_args.build_dir or '.') or parsed_args.build_dir or '.')
-
     if not parsed_args.profile or parsed_args.profile not in precompile_profiles.keys():
-        print("Available Profiles: {}".format(', '.join(precompile_profiles.keys())))
-        parsed_args.profile = input("profile [{}]:".format(
-            parsed_args.profile or '.\\default') or parsed_args.profile or '.\\default')
+        if parsed_args.profile and os.path.isfile(parsed_args.profile):
+            parsed_args.profile = is_file(parsed_args.profile)
+        else:
+            available = ', '.join(sorted(precompile_profiles.keys()))
+            msg = 'A valid --profile is required. Available profiles: [{}]'.format(available)
+            raise TypeError(msg)
 
     if parsed_args.profile not in precompile_profiles.keys():
         parsed_args.profile = is_file(parsed_args.profile)
@@ -140,10 +139,10 @@ def conan_install(_profile, _cmake_dir, _build_dir):
         print("Creating build directory: {}".format(_build_dir))
         os.makedirs(_build_dir)
 
-    subprocess.call([
+    subprocess.run([
         'conan', 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'
-    ])
+    ], check=True)
 
 
 def get_cmake_options(args):
@@ -190,14 +189,14 @@ def get_cmake_options(args):
         if args.python_version:
             python_target_version = args.python_version
         else:
-            python_target_version = input('Target Python Version [3.6]:') or "3.6"
+            python_target_version = "3.13"
         cmake_options.append('-DPYTHON_TARGET_VERSION={}'.format(
             python_target_version
         ))
     elif is_testing != 'False':
         test_files = args.test_files
         if not test_files:
-            test_files = input('Path to test files [./test_files]:') or "./test_files"
+            test_files = "./test_files"
         has_test_files = test_files not in ['NONE', '']
         if not os.path.isdir(test_files) and has_test_files:
             print("Specified path to test files does not exist! Aborting...")
@@ -213,7 +212,7 @@ def get_cmake_options(args):
     if args.xms_version:
         lib_version = args.xms_version
     else:
-        lib_version = input('Library Version [99.99.99]:') or "99.99.99"
+        lib_version = "99.99.99"
     cmake_options.append('-DXMS_VERSION={}'.format(lib_version))
 
     toolchain_path = 'build/generators/conan_toolchain.cmake',
@@ -246,7 +245,7 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
     cmd += _cmake_options
     cmd += ['-S', _cmake_dir, '-B', _build_dir]
     print(' '.join(cmd))
-    subprocess.run(cmd)
+    subprocess.run(cmd, check=True)
 
 
 def main():
@@ -258,4 +257,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

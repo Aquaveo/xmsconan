@@ -2,11 +2,17 @@
 # 1. Standard python modules
 import argparse
 import os
+import sys
 from pathlib import Path
 
 # 2. Third party modules
-from jinja2 import Template
-import toml  # Could use `import tomllib` if Python 3.11+
+from jinja2 import Environment, StrictUndefined
+import toml
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None
 
 
 def _write_text_lf(path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -36,9 +42,14 @@ def render_template_with_toml(toml_file_path: str, version: str, template_dir: s
     if not toml_file.exists():
         raise FileNotFoundError(f"The specified TOML file does not exist: {toml_file_path}")
 
+    if not template_dir.exists() or not template_dir.is_dir():
+        raise FileNotFoundError(f"The specified template directory does not exist: {template_dir}")
+
     # Parse the TOML file into a dictionary
-    toml_content = toml_file.read_text()
-    toml_data = toml.loads(toml_content)
+    if tomllib:
+        toml_data = tomllib.loads(toml_file.read_text(encoding="utf-8"))
+    else:
+        toml_data = toml.loads(toml_file.read_text(encoding="utf-8"))
     toml_data["version"] = version
 
     # Set defaults for optional keys
@@ -48,23 +59,25 @@ def render_template_with_toml(toml_file_path: str, version: str, template_dir: s
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Get all template files in the specified template directory
-    template_files = list(template_dir.glob("*.jinja"))
+    template_files = sorted(template_dir.glob("*.jinja"))
     if not template_files:
         raise FileNotFoundError(
             f"No template files (with .jinja extension) were found in the directory: {template_dir}"
         )
 
+    env = Environment(
+        keep_trailing_newline=True,
+        newline_sequence="\n",
+        undefined=StrictUndefined,
+    )
+
     # Iterate through each template file and render it with TOML data
     for template_file in template_files:
         # Read the template content
-        template_content = template_file.read_text()
+        template_content = template_file.read_text(encoding="utf-8")
 
         # Load the template with Jinja2, force LF for generated newlines
-        template = Template(
-            template_content,
-            keep_trailing_newline=True,
-            newline_sequence="\n",
-        )
+        template = env.from_string(template_content)
 
         # Render the template with the TOML data
         rendered_content = template.render(toml_data)
@@ -101,14 +114,18 @@ def main():
             template_dir=args.template_dir,
             output_dir=args.output_dir,
         )
-        render_template_with_toml(
-            toml_file_path=args.toml_file,
-            version=args.version,
-            template_dir=os.path.join(args.template_dir, "_package"),
-            output_dir=os.path.join(args.output_dir, "_package"),
-        )
+
+        package_template_dir = os.path.join(args.template_dir, "_package")
+        if os.path.isdir(package_template_dir):
+            render_template_with_toml(
+                toml_file_path=args.toml_file,
+                version=args.version,
+                template_dir=package_template_dir,
+                output_dir=os.path.join(args.output_dir, "_package"),
+            )
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        raise SystemExit(1) from e
 
 
 if __name__ == "__main__":
