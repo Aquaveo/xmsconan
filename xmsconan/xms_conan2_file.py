@@ -99,7 +99,7 @@ class XmsConan2File(ConanFile):
 
         # Version Info
         tc.variables["XMS_VERSION"] = '{}'.format(self.version)
-        tc.variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.10")
+        tc.variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
 
         # Generate toolchain
         tc.generate()
@@ -122,7 +122,7 @@ class XmsConan2File(ConanFile):
 
         # Version Info
         variables["XMS_VERSION"] = '{}'.format(self.version)
-        variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.10")
+        variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
 
         cmake.configure(variables=variables)
         cmake.build()
