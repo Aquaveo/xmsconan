@@ -107,11 +107,29 @@ pybind_sources = [
 xmsconan_gen --version 9.0.0 build.toml
 ```
 
+#### Example generation dry-run
+
+```bash
+xmsconan_gen --dry-run -v --version 9.0.0 build.toml
+```
+
 #### Example build into a shared builds folder
 
 ```bash
 xmsconan_build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TESTING --generator vs2022
 ```
+
+#### Example build dry-run
+
+```bash
+xmsconan_build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TESTING --generator vs2022 --dry-run -v
+```
+
+#### Useful build flags
+
+- `--allow-missing-test-files`: Continue when test data path is missing
+- `--dry-run`: Print Conan/CMake commands and options without executing
+- `-v` / `-q`: Increase debug output or suppress informational logs
 
 ## License
 

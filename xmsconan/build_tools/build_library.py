@@ -2,6 +2,7 @@
 Build library from source.
 """
 import argparse
+import logging
 import os
 import shutil
 import subprocess
@@ -15,22 +16,92 @@ GENERATORS = {
     'xcode': 'Xcode',
 }
 
+LOGGER = logging.getLogger(__name__)
+
+
+def _configure_logging(args):
+    """Configure logger from CLI verbosity flags."""
+    if args.quiet:
+        level = logging.ERROR
+    elif args.verbose > 0:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
+
+
+def _parse_bool_option(value):
+    """Parse common profile option boolean-like values."""
+    if value is None:
+        return 'False'
+    normalized = str(value).strip().lower()
+    return 'True' if normalized in ('true', '1', 'yes', 'on', 'builtin') else 'False'
+
+
+def _parse_profile_options(profile_path, visited=None):
+    """Parse Conan profile files (including include() directives) for root options."""
+    if visited is None:
+        visited = set()
+
+    abs_profile = os.path.abspath(profile_path)
+    if abs_profile in visited or not os.path.isfile(abs_profile):
+        return {}
+    visited.add(abs_profile)
+
+    options = {}
+    current_section = None
+    profile_dir = os.path.dirname(abs_profile)
+
+    with open(abs_profile, 'r', encoding='utf-8') as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            if line.lower().startswith('include(') and line.endswith(')'):
+                include_target = line[len('include('):-1].strip()
+                include_path = include_target if os.path.isabs(include_target) else os.path.join(profile_dir, include_target)
+                options.update(_parse_profile_options(include_path, visited))
+                continue
+
+            if line.startswith('[') and line.endswith(']'):
+                current_section = line[1:-1].strip().lower()
+                continue
+
+            if current_section != 'options' or '=' not in line:
+                continue
+
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+
+            if key.startswith('&:'):
+                key = key[2:]
+
+            if '/' in key or ':' in key:
+                continue
+
+            options[key] = value
+
+    return options
+
 
 def _resolve_tool(tool_name):
     """
     Resolve a tool executable path.
-    
+
     Checks in order:
     1. System PATH via shutil.which()
     2. Current Python venv Scripts directory
     3. Raises helpful error if not found
-    
+
     Args:
         tool_name (str): Name of the tool (e.g., 'conan', 'cmake')
-        
+
     Returns:
         str: Resolved path to the tool
-        
+
     Raises:
         RuntimeError: If tool cannot be found
     """
@@ -38,12 +109,12 @@ def _resolve_tool(tool_name):
     tool_path = shutil.which(tool_name)
     if tool_path:
         return tool_path
-    
+
     # Try current venv Scripts directory
     venv_scripts = os.path.join(sys.prefix, 'Scripts', f'{tool_name}.exe' if os.name == 'nt' else tool_name)
     if os.path.isfile(venv_scripts):
         return venv_scripts
-    
+
     # Not found - provide helpful error
     raise RuntimeError(
         f"Tool '{tool_name}' not found. "
@@ -138,6 +209,18 @@ def get_args():
         '--allow-missing-test-files', action='store_true',
         help='Continue build even if test files directory is missing'
     )
+    arguments.add_argument(
+        '--dry-run', action='store_true',
+        help='Show commands and options without executing Conan/CMake'
+    )
+    arguments.add_argument(
+        '-v', '--verbose', action='count', default=0,
+        help='Increase output verbosity (use -v for debug details)'
+    )
+    arguments.add_argument(
+        '-q', '--quiet', action='store_true',
+        help='Only show errors'
+    )
     parsed_args = arguments.parse_args()
 
     # Profiles
@@ -172,26 +255,28 @@ def get_args():
 
 def conan_install(_profile, _cmake_dir, _build_dir):
     """Install conan dependencies."""
-    print("------------------------------------------------------------------")
-    print(" Generating conan info")
-    print("------------------------------------------------------------------")
-    print(_profile)
+    LOGGER.info("------------------------------------------------------------------")
+    LOGGER.info(" Generating conan info")
+    LOGGER.info("------------------------------------------------------------------")
+    LOGGER.info(_profile)
     if not os.path.isdir(_build_dir):
-        print("Creating build directory: {}".format(_build_dir))
+        LOGGER.info("Creating build directory: %s", _build_dir)
         os.makedirs(_build_dir)
 
     conan_exe = _resolve_tool('conan')
-    subprocess.run([
+    cmd = [
         conan_exe, 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'
-    ], check=True)
+    ]
+    LOGGER.debug("Conan command: %s", ' '.join(cmd))
+    return cmd
 
 
 def get_cmake_options(args):
     """Get cmake options."""
-    print("------------------------------------------------------------------")
-    print(" Setting up cmake options")
-    print("------------------------------------------------------------------")
+    LOGGER.info("------------------------------------------------------------------")
+    LOGGER.info(" Setting up cmake options")
+    LOGGER.info("------------------------------------------------------------------")
     conan_options = {
         'testing': 'False',
         'pybind': 'False',
@@ -199,15 +284,12 @@ def get_cmake_options(args):
     }
 
     profile = os.path.basename(args.profile)
-    print(profile)
-    if 'testing' in profile.lower():
-        conan_options['testing'] = 'True'
-
-    if 'pybind' in profile.lower():
-        conan_options['pybind'] = 'True'
-
-    if 'wchar_t' in profile.lower():
-        conan_options['wchar_t'] = 'True'
+    LOGGER.info(profile)
+    profile_options = _parse_profile_options(args.profile)
+    conan_options['testing'] = _parse_bool_option(profile_options.get('testing', 'False'))
+    conan_options['pybind'] = _parse_bool_option(profile_options.get('pybind', 'False'))
+    conan_options['wchar_t'] = _parse_bool_option(profile_options.get('wchar_t', 'False'))
+    LOGGER.debug("Parsed profile options: %s", profile_options)
 
     build_type = 'Release'
     if args.profile.lower().endswith('_d'):
@@ -248,7 +330,7 @@ def get_cmake_options(args):
                     f"or use --allow-missing-test-files to skip this check."
                 )
             else:
-                print(f"Warning: Test files not found at {test_files}, skipping XMS_TEST_PATH")
+                LOGGER.warning("Test files not found at %s, skipping XMS_TEST_PATH", test_files)
                 has_test_files = False
         elif has_test_files:
             test_files = os.path.abspath(test_files)
@@ -276,17 +358,17 @@ def get_cmake_options(args):
     for tc in exta_toolchains:
         cmake_options.append(f'-DCMAKE_TOOLCHAIN_FILE={tc}')
 
-    print("Cmake Options:")
+    LOGGER.info("Cmake Options:")
     for o in cmake_options:
-        print("\t{}".format(o))
+        LOGGER.info("\t%s", o)
     return cmake_options
 
 
 def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
     """Run cmake."""
-    print("------------------------------------------------------------------")
-    print(" Running cmake")
-    print("------------------------------------------------------------------")
+    LOGGER.info("------------------------------------------------------------------")
+    LOGGER.info(" Running cmake")
+    LOGGER.info("------------------------------------------------------------------")
     cmake_exe = _resolve_tool('cmake')
     cmd = [cmake_exe]
     gen = GENERATORS[_generator]
@@ -294,16 +376,25 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
         cmd += ['-G', '{}'.format(gen)]
     cmd += _cmake_options
     cmd += ['-S', _cmake_dir, '-B', _build_dir]
-    print(' '.join(cmd))
-    subprocess.run(cmd, check=True)
+    LOGGER.info('%s', ' '.join(cmd))
+    return cmd
 
 
 def main():
     """Main function."""
     args = get_args()
-    conan_install(args.profile, args.cmake_dir, args.build_dir)
+    _configure_logging(args)
+    conan_cmd = conan_install(args.profile, args.cmake_dir, args.build_dir)
     my_cmake_options = get_cmake_options(args)
-    run_cmake(args.cmake_dir, args.build_dir, args.generator, my_cmake_options)
+    cmake_cmd = run_cmake(args.cmake_dir, args.build_dir, args.generator, my_cmake_options)
+
+    if args.dry_run:
+        LOGGER.info("[DRY-RUN] Conan command: %s", ' '.join(conan_cmd))
+        LOGGER.info("[DRY-RUN] CMake command: %s", ' '.join(cmake_cmd))
+        return
+
+    subprocess.run(conan_cmd, check=True)
+    subprocess.run(cmake_cmd, check=True)
 
 
 if __name__ == "__main__":
