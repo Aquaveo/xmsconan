@@ -31,12 +31,15 @@ def _configure_logging(args):
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
 
-def _parse_bool_option(value):
-    """Parse common profile option boolean-like values."""
+def _parse_bool_option(value, allow_string_aliases=True):
+    """Parse profile option values to a boolean-like string used by CMake flags."""
     if value is None:
         return 'False'
     normalized = str(value).strip().lower()
-    return 'True' if normalized in ('true', '1', 'yes', 'on', 'builtin') else 'False'
+    true_values = {'true', '1', 'yes', 'on'}
+    if allow_string_aliases:
+        true_values.add('builtin')
+    return 'True' if normalized in true_values else 'False'
 
 
 def _parse_profile_options(profile_path, visited=None):
@@ -288,7 +291,10 @@ def get_cmake_options(args):
     profile_options = _parse_profile_options(args.profile)
     conan_options['testing'] = _parse_bool_option(profile_options.get('testing', 'False'))
     conan_options['pybind'] = _parse_bool_option(profile_options.get('pybind', 'False'))
-    conan_options['wchar_t'] = _parse_bool_option(profile_options.get('wchar_t', 'False'))
+    conan_options['wchar_t'] = _parse_bool_option(
+        profile_options.get('wchar_t', 'False'),
+        allow_string_aliases=False,
+    )
     LOGGER.debug("Parsed profile options: %s", profile_options)
 
     build_type = 'Release'

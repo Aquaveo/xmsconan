@@ -127,6 +127,44 @@ include({profile_a.name})
             self.assertEqual(first_call, ["conan", "install"])
             self.assertEqual(second_call, ["cmake", "-S", ".", "-B", "build"])
 
+    def test_parse_bool_option_wchar_t_compatibility(self):
+        """wchar_t string values should not map to True in compatibility mode."""
+        self.assertEqual(build_library._parse_bool_option("builtin", allow_string_aliases=False), "False")
+        self.assertEqual(build_library._parse_bool_option("typedef", allow_string_aliases=False), "False")
+        self.assertEqual(build_library._parse_bool_option("true", allow_string_aliases=False), "True")
+
+    def test_get_cmake_options_sets_xms_build_false_for_wchar_builtin(self):
+        """XMS_BUILD should remain False when profile sets wchar_t=builtin."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profile = root / "profile"
+            profile.write_text(
+                """
+[options]
+testing=True
+pybind=False
+wchar_t=builtin
+""".strip(),
+                encoding="utf-8",
+            )
+
+            args = Namespace(
+                profile=str(profile),
+                cmake_dir=".",
+                build_dir="builds/test",
+                generator="vs2022",
+                python_version=None,
+                xms_version="7.0.0",
+                test_files="NONE",
+                allow_missing_test_files=True,
+                dry_run=True,
+                verbose=0,
+                quiet=True,
+            )
+
+            options = build_library.get_cmake_options(args)
+            self.assertIn("-DXMS_BUILD=False", options)
+
 
 if __name__ == "__main__":
     unittest.main()
