@@ -3,6 +3,7 @@ Build library from source.
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -13,6 +14,42 @@ GENERATORS = {
     'vs2022': 'Visual Studio 17 2022',
     'xcode': 'Xcode',
 }
+
+
+def _resolve_tool(tool_name):
+    """
+    Resolve a tool executable path.
+    
+    Checks in order:
+    1. System PATH via shutil.which()
+    2. Current Python venv Scripts directory
+    3. Raises helpful error if not found
+    
+    Args:
+        tool_name (str): Name of the tool (e.g., 'conan', 'cmake')
+        
+    Returns:
+        str: Resolved path to the tool
+        
+    Raises:
+        RuntimeError: If tool cannot be found
+    """
+    # Try system PATH first
+    tool_path = shutil.which(tool_name)
+    if tool_path:
+        return tool_path
+    
+    # Try current venv Scripts directory
+    venv_scripts = os.path.join(sys.prefix, 'Scripts', f'{tool_name}.exe' if os.name == 'nt' else tool_name)
+    if os.path.isfile(venv_scripts):
+        return venv_scripts
+    
+    # Not found - provide helpful error
+    raise RuntimeError(
+        f"Tool '{tool_name}' not found. "
+        f"Please ensure it's installed and available on PATH or in your Python environment.\n"
+        f"Install via: pip install {tool_name} (if available) or download from official site."
+    )
 
 
 def is_dir(_dir_name):
@@ -97,6 +134,10 @@ def get_args():
         '--test_files', '-t', type=str, nargs='?',
         help='path to test files'
     )
+    arguments.add_argument(
+        '--allow-missing-test-files', action='store_true',
+        help='Continue build even if test files directory is missing'
+    )
     parsed_args = arguments.parse_args()
 
     # Profiles
@@ -139,8 +180,9 @@ def conan_install(_profile, _cmake_dir, _build_dir):
         print("Creating build directory: {}".format(_build_dir))
         os.makedirs(_build_dir)
 
+    conan_exe = _resolve_tool('conan')
     subprocess.run([
-        'conan', 'install', '-of', _build_dir,
+        conan_exe, 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'
     ], check=True)
 
@@ -199,9 +241,16 @@ def get_cmake_options(args):
             test_files = "./test_files"
         has_test_files = test_files not in ['NONE', '']
         if not os.path.isdir(test_files) and has_test_files:
-            print("Specified path to test files does not exist! Aborting...")
-            exit(1)
-        else:
+            if not args.allow_missing_test_files:
+                raise RuntimeError(
+                    f"Test files path does not exist: {test_files}\n"
+                    f"Either create the directory, specify a valid path with --test_files, "
+                    f"or use --allow-missing-test-files to skip this check."
+                )
+            else:
+                print(f"Warning: Test files not found at {test_files}, skipping XMS_TEST_PATH")
+                has_test_files = False
+        elif has_test_files:
             test_files = os.path.abspath(test_files)
 
         if has_test_files:
@@ -238,7 +287,8 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
     print("------------------------------------------------------------------")
     print(" Running cmake")
     print("------------------------------------------------------------------")
-    cmd = ['cmake']
+    cmake_exe = _resolve_tool('cmake')
+    cmd = [cmake_exe]
     gen = GENERATORS[_generator]
     if gen:
         cmd += ['-G', '{}'.format(gen)]

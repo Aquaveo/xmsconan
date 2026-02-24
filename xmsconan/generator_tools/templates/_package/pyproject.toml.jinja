@@ -16,7 +16,7 @@ authors = [{ name = "Aquaveo" }]
 # Dependencies
 dependencies = [
     "numpy",
-    {%- for dependency in xms_dependencies -%}{%- if not dependency.no_python %}{{'\n    '}}"{{ dependency.name }}>={{ dependency.version }}",{%- endif %}{% endfor %}
+    {%- for dependency in xms_dependencies -%}{%- if not (dependency.no_python | default(false)) %}{{'\n    '}}"{{ dependency.name }}>={{ dependency.version }}",{%- endif %}{% endfor %}
 ]
 
 [tool.setuptools.packages.find]

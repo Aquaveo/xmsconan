@@ -52,8 +52,24 @@ def render_template_with_toml(toml_file_path: str, version: str, template_dir: s
         toml_data = toml.loads(toml_file.read_text(encoding="utf-8"))
     toml_data["version"] = version
 
-    # Set defaults for optional keys
+    # Set defaults for optional keys to prevent StrictUndefined template errors
     toml_data.setdefault("testing_framework", "cxxtest")
+    toml_data.setdefault("python_binding_type", "pybind11")
+    toml_data.setdefault("extra_cmake_text", "")
+    toml_data.setdefault("post_library_cmake_text", "")
+    toml_data.setdefault("extra_dependencies", [])
+    toml_data.setdefault("extra_export_sources", [])
+    toml_data.setdefault("testing_sources", [])
+    toml_data.setdefault("python_library_sources", [])
+    toml_data.setdefault("python_library_headers", [])
+    toml_data.setdefault("xms_dependency_options", {})
+    toml_data.setdefault("xms_dependencies", [])
+    
+    # Normalize xms_dependencies: add no_python=False if missing
+    if "xms_dependencies" in toml_data:
+        for dep in toml_data["xms_dependencies"]:
+            if isinstance(dep, dict):
+                dep.setdefault("no_python", False)
 
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
