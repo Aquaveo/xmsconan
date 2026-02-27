@@ -117,7 +117,7 @@ def _resolve_tool(tool_name):
     scripts_dir = 'Scripts' if os.name == 'nt' else 'bin'
     exe_name = f'{tool_name}.exe' if os.name == 'nt' else tool_name
     venv_scripts = os.path.join(sys.prefix, scripts_dir, exe_name)
-    
+
     if os.path.isfile(venv_scripts):
         return venv_scripts
 
