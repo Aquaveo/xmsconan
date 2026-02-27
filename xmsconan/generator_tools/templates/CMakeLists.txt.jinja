@@ -2,7 +2,7 @@
 # To regenerate file, use generators in the aquaveo/dev_tools repository.
 # Any changes needed to be made to the file should be made in the template file.
 
-cmake_minimum_required(VERSION 3.11.0)
+cmake_minimum_required(VERSION 3.18.0)
 cmake_policy(SET CMP0015 NEW) # Link Directory Pathing
 cmake_policy(SET CMP0091 NEW)
 cmake_policy(SET CMP0148 NEW)
@@ -22,7 +22,7 @@ set(XMS_TEST_PATH ${PROJECT_SOURCE_DIR}/test_files/ CACHE PATH "Path to test fil
 set(XMS_VERSION "99.99.99" CACHE STRING "Library Version")
 
 if (IS_PYTHON_BUILD)
-    find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED COMPONENTS Interpreter Development)
+    find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED COMPONENTS Interpreter Development.Module)
 endif()
 
 # Static library sources
@@ -275,11 +275,11 @@ if (IS_PYTHON_BUILD)
         LINKER_LANGUAGE CXX
     )
 
-    # An attempt to get pybind working on mac. Come back to this.
     if (APPLE)
-        set(CMAKE_INSTALL_RPATH "@loader_path")
-        set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-        target_link_options(_{{ library_name }} PRIVATE "-undefined" "dynamic_lookup")
+        set_target_properties(_{{ library_name }} PROPERTIES
+            INSTALL_RPATH "@loader_path"
+            BUILD_WITH_INSTALL_RPATH TRUE
+        )
     endif()
 
     install(
