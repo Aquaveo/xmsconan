@@ -114,7 +114,10 @@ def _resolve_tool(tool_name):
         return tool_path
 
     # Try current venv Scripts directory
-    venv_scripts = os.path.join(sys.prefix, 'Scripts', f'{tool_name}.exe' if os.name == 'nt' else tool_name)
+    scripts_dir = 'Scripts' if os.name == 'nt' else 'bin'
+    exe_name = f'{tool_name}.exe' if os.name == 'nt' else tool_name
+    venv_scripts = os.path.join(sys.prefix, scripts_dir, exe_name)
+    
     if os.path.isfile(venv_scripts):
         return venv_scripts
 
@@ -256,13 +259,13 @@ def get_args():
     return parsed_args
 
 
-def conan_install(_profile, _cmake_dir, _build_dir):
+def conan_install(_profile, _cmake_dir, _build_dir, dry_run=False):
     """Install conan dependencies."""
     LOGGER.info("------------------------------------------------------------------")
     LOGGER.info(" Generating conan info")
     LOGGER.info("------------------------------------------------------------------")
     LOGGER.info(_profile)
-    if not os.path.isdir(_build_dir):
+    if not dry_run and not os.path.isdir(_build_dir):
         LOGGER.info("Creating build directory: %s", _build_dir)
         os.makedirs(_build_dir)
 
@@ -390,7 +393,7 @@ def main():
     """Main function."""
     args = get_args()
     _configure_logging(args)
-    conan_cmd = conan_install(args.profile, args.cmake_dir, args.build_dir)
+    conan_cmd = conan_install(args.profile, args.cmake_dir, args.build_dir, args.dry_run)
     my_cmake_options = get_cmake_options(args)
     cmake_cmd = run_cmake(args.cmake_dir, args.build_dir, args.generator, my_cmake_options)
 
