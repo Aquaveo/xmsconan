@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75", "wheel", "cibuildwheel>=2.20"]
+requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -54,4 +54,4 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.cibuildwheel.linux]
 archs = "x86_64"
-repair-wheel-command = "bash -lc 'cp {wheel} {dest_dir}'"
+repair-wheel-command = "cp {wheel} {dest_dir}"

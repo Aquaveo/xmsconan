@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 from pathlib import Path
+import shutil
 import sys
 
 # 2. Third party modules
@@ -136,6 +137,17 @@ def render_template_with_toml(
         LOGGER.info("Templates rendered successfully using the TOML file: %s", toml_file_path)
 
 
+def copy_xms_conan2_file(output_dir: str, dry_run: bool = False) -> None:
+    """Copy xms_conan2_file.py to the output directory so conanfile.py can import it locally."""
+    src = Path(__file__).parent.parent / "xms_conan2_file.py"
+    dst = Path(output_dir) / "xms_conan2_file.py"
+    if dry_run:
+        LOGGER.info("[DRY-RUN] Would copy %s -> %s", src, dst)
+    else:
+        shutil.copy2(src, dst)
+        LOGGER.info("Copied %s -> %s", src, dst)
+
+
 def main():
     """Main function to parse arguments and render templates using TOML data."""
     default_template_dir = Path(__file__).parent / "templates"
@@ -159,26 +171,34 @@ def main():
         help="Increase output verbosity (use -v for debug details).",
     )
     parser.add_argument("-q", "--quiet", action="store_true", help="Only show errors.")
-    parser.add_argument("--version", default="99.99.99", help="The build version.")
+    parser.add_argument(
+        "--version", default=None,
+        help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
+    )
     parser.add_argument("toml_file", help="Path to the required TOML file (always the last argument).")
 
     args = parser.parse_args()
     _configure_logging(args)
 
+    from xmsconan.generator_tools.version import resolve_version
+    version = resolve_version(args.version)
+
     try:
         render_template_with_toml(
             toml_file_path=args.toml_file,
-            version=args.version,
+            version=version,
             template_dir=args.template_dir,
             output_dir=args.output_dir,
             dry_run=args.dry_run,
         )
 
+        copy_xms_conan2_file(output_dir=args.output_dir, dry_run=args.dry_run)
+
         package_template_dir = os.path.join(args.template_dir, "_package")
         if os.path.isdir(package_template_dir):
             render_template_with_toml(
                 toml_file_path=args.toml_file,
-                version=args.version,
+                version=version,
                 template_dir=package_template_dir,
                 output_dir=os.path.join(args.output_dir, "_package"),
                 dry_run=args.dry_run,

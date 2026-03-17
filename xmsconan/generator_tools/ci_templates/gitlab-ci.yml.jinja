@@ -1,0 +1,204 @@
+stages:
+  - Test
+  - Package
+<% if ci_deploy %>
+  - Deploy
+<% endif %>
+<% if ci_coverage %>
+  - Coverage
+  - Pages
+<% endif %>
+
+<% if ci_deploy %>
+variables:
+  DEFAULT_VERSION: "0.0.0"
+  PACKAGE_VERSION: "${CI_COMMIT_TAG:-$DEFAULT_VERSION}"
+
+<% endif %>
+Conan Build:
+  stage: Test
+  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
+<% if ci_windows %>
+  services:
+    - name: docker:dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+    CIBW_CONTAINER_ENGINE: "docker"
+<% endif %>
+  artifacts:
+    expire_in: '1d'
+    paths:
+<% if ci_windows %>
+      - .export
+<% endif %>
+      - wheelhouse/
+  script:
+<% if ci_xvfb %>
+    - apt-get update && apt-get install -y xvfb
+<% elif ci_windows %>
+    - apt-get update && apt-get install -y ca-certificates curl
+    - curl -fsSL https://get.docker.com | sh
+    - docker --version
+<% endif %>
+    - gcc --version
+    - cmake --version
+    - python --version
+    - pip install xmsconan>=2.3.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
+<% if ci_xvfb %>
+    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} --build-missing --wheel-dir wheelhouse
+<% else %>
+    - python build.py --version ${PACKAGE_VERSION} --build-missing --wheel-dir wheelhouse
+<% endif %>
+<% if ci_windows %>
+    - conan cache save --file << library_name >>-linux-${PACKAGE_VERSION}.tar.gz << library_name >>/${PACKAGE_VERSION}
+    - mkdir -p .export
+    - mv << library_name >>-linux-${PACKAGE_VERSION}.tar.gz .export/
+<% endif %>
+
+<% if ci_windows %>
+"Conan Build - Windows":
+  stage: Test
+  image: GLR-py313
+  variables:
+    AQUAPI_URL: "https://aquapi.aquaveo.com/aquaveo/dev"
+  artifacts:
+    expire_in: '1d'
+    paths:
+      - .export
+  script:
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - echo ${PACKAGE_VERSION}
+    - python --version
+    - pip install conan toml packaging devpi-client
+    - python -m pip install xmsconan>=2.3.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - conan remote add --index 0 aquaveo https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
+    - conan profile detect
+    - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
+    - python build.py --version ${PACKAGE_VERSION}
+    - conan cache save --file << library_name >>-windows-${PACKAGE_VERSION}.tar.gz << library_name >>/${PACKAGE_VERSION}
+    - mkdir -p .export
+    - mv << library_name >>-windows-${PACKAGE_VERSION}.tar.gz .export/
+  tags:
+    - WinVM
+
+<% endif %>
+Lint:
+  stage: Test
+  image: python:3.13
+  allow_failure: true
+  script:
+    - pip install tox flake8 flake8-docstrings flake8-bugbear flake8-import-order pep8-naming flake8-colors flake8-tidy-imports
+    - pip install -i https://aquapi.aquaveo.com/aquaveo/dev/+simple/ flake8-aquaveo
+    - flake8 --exclude .tox,.git,__pycache__,tests/files/*,docs/source/conf.py,build,dist,tests/fixtures/*,*.pyc,*.egg-info,.cache,.eggs --ignore=D200,D212,B028,W503 --max-line-length=120 --docstring-convention google --isolated --import-order-style=appnexus --application-import-names=xms.<< python_namespaced_dir >> --application-package-names=xms --count --statistics _package --banned-modules "osgeo.*=Use the xmsgdal libary instead."
+    - python -c "import os, configparser as cp; c = cp.ConfigParser(); c.read('tox.ini'); exit(1) if os.path.isfile('tox.ini') and 'testenv:flake8' in c.sections() else exit(0)" || tox -e flake8
+
+Repair Wheel:
+  stage: Package
+  image: quay.io/pypa/manylinux_2_28_x86_64
+  dependencies:
+    - Conan Build
+  script:
+    - yum install -y
+        mesa-libGL mesa-libEGL mesa-libGLES
+        libX11 libXcursor libXrandr libXinerama
+        libXi libXxf86vm libXext libXrender
+        libXfixes libXft libXmu libXt
+        libSM libICE
+    - /opt/python/cp313-cp313/bin/pip install auditwheel patchelf
+    - LD_LIBRARY_PATH=wheelhouse/libs /opt/python/cp313-cp313/bin/auditwheel repair wheelhouse/*.whl -w wheelhouse_repaired
+    - rm -rf wheelhouse
+    - mv wheelhouse_repaired wheelhouse
+  artifacts:
+    expire_in: '1d'
+    paths:
+      - wheelhouse/
+
+<% if ci_deploy %>
+"Conan Deploy - Linux":
+  stage: Deploy
+  image: ubuntu:latest
+  dependencies:
+    - Conan Build
+  script:
+    - apt-get update
+    - apt-get install -y python3-pip python3-venv
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install conan devpi-client
+    - conan remote add --index 0 aquaveo https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
+    - conan cache restore .export/<< library_name >>-linux-${PACKAGE_VERSION}.tar.gz
+    - conan upload << library_name >>/${PACKAGE_VERSION} -r aquaveo --confirm
+  only:
+    - tags
+
+<% if ci_windows %>
+"Conan Deploy - Windows":
+  stage: Deploy
+  image: GLR-py313
+  dependencies:
+    - "Conan Build - Windows"
+  artifacts:
+    expire_in: '1d'
+    paths:
+      - conan_packages/
+  script:
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - pip install conan devpi-client
+    - conan remote add --index 0 aquaveo https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
+    - conan cache restore .export/<< library_name >>-windows-${PACKAGE_VERSION}.tar.gz
+    - mkdir -p conan_packages
+    - cp -r /c/Users/admin/.conan2/p/* conan_packages/ || true
+    - conan upload << library_name >>/${PACKAGE_VERSION} -r aquaveo --confirm
+  only:
+    - tags
+  tags:
+    - WinVM
+<% endif %>
+<% endif %>
+
+<% if ci_coverage %>
+Coverage:
+  stage: Coverage
+  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
+  script:
+    - pip install lxml
+    - pip install xmsconan>=2.3.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_gen --version 0.0.0 build.toml
+    - conan install -pr conan_profiles/linux_testing_debug_coverage.txt . -c tools.cmake.cmake_layout:build_folder_vars="['self.name', 'const.coverage']" --build=missing
+    - cmake --preset coverage
+    - cmake --build --preset coverage-debug
+<% if ci_xvfb %>
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./build/<< library_name >>-coverage/Debug/runner || true
+<% else %>
+    - ./build/<< library_name >>-coverage/Debug/runner || true
+<% endif %>
+    - gcovr --root . --object-directory build/<< library_name >>-coverage/Debug --txt --xml coverage.xml --html coverage.html --exclude '.*test_files.*' --exclude '.*\.t\.h$' --exclude '.*\.conan2.*' --exclude '.*/CMakeFiles/.*' --exclude '.*build/.*' --gcov-ignore-errors=no_working_dir_found --gcov-ignore-errors=source_not_found
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - coverage.html
+      - coverage.xml
+  coverage: '/TOTAL.*\s+(\d+%)/'
+
+pages:
+  stage: Pages
+  dependencies:
+    - Coverage
+  script:
+    - mkdir -p public
+    - cp coverage.html public/index.html
+  artifacts:
+    paths:
+      - public
+  only:
+    - master
+    - main
+<% endif %>

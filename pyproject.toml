@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmsconan"
-version = "2.2.0"
+version = "2.3.0"
 description = "Methods and Modules used to aid in xmsconan projects"
 authors = [
     {name = "Gage Larsen"}
@@ -21,10 +21,12 @@ dependencies = [
     "tabulate",
     "toml",
     "jinja2",
+    "setuptools-scm",
 ]
 
 [project.scripts]
 xmsconan_gen = "xmsconan.generator_tools.build_file_generator:main"
+xmsconan_ci = "xmsconan.generator_tools.ci_file_generator:main"
 xmsconan_build = "xmsconan.build_tools.build_library:main"
 
 [project.urls]
@@ -39,5 +41,5 @@ where = ["."]
 include = ["xmsconan*"]
 
 [tool.setuptools.package-data]
-"xmsconan.generator_tools" = ["templates/**/*"]
+"xmsconan.generator_tools" = ["templates/**/*", "ci_templates/**/*"]
 "xmsconan.build_tools" = ["profiles/**/*"]

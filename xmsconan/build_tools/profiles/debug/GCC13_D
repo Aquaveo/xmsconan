@@ -1,0 +1,3 @@
+include(../base/gcc_13)
+include(../base/debug)
+include(../base/x64)

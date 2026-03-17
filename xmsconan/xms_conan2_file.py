@@ -1,6 +1,7 @@
 """
 Conanfile base for the xmscore projects compatible with Conan 2.x.
 """
+import glob
 import os
 import shutil
 import sys
@@ -9,6 +10,18 @@ from conan import ConanFile
 from conan.errors import ConanException
 from conan.tools.cmake import CMake, cmake_layout, CMakeDeps, CMakeToolchain
 from conan.tools.files import copy
+
+
+def _has_uv():
+    """Check if uv is available on the system."""
+    return shutil.which("uv") is not None
+
+
+def _pip_install_cmd(python_executable, *args):
+    """Return a pip install command, using uv if available."""
+    if _has_uv():
+        return f'uv pip install --python "{python_executable}" {" ".join(args)}'
+    return f'"{python_executable}" -m pip install {" ".join(args)}'
 
 
 class XmsConan2File(ConanFile):
@@ -132,9 +145,10 @@ class XmsConan2File(ConanFile):
         if self.options.testing:
             self.run_cxx_tests(cmake)
 
-        # If this build is python run the python tests.
+        # If this build is python, build the wheel then run tests.
         elif self.options.pybind:
-            self.run_python_tests_and_upload()
+            self._build_wheel()
+            self.run_python_tests()
 
     def package(self):
         """The package method of the conan class."""
@@ -143,6 +157,11 @@ class XmsConan2File(ConanFile):
 
         copy(self, "license", src=os.path.join(self.source_folder), dst=os.path.join(self.package_folder, "licenses"),
              ignore_case=True, keep_path=False)
+
+        # Copy the pre-built wheel into the package folder
+        if self.options.pybind:
+            copy(self, "*.whl", src=os.path.join(self.build_folder, "dist"),
+                 dst=os.path.join(self.package_folder, "dist"))
 
     def package_info(self):
         """The package_info method of the conan class."""
@@ -170,27 +189,43 @@ class XmsConan2File(ConanFile):
                         no_newline = line.strip('\n')
                         self.output.info(no_newline)
 
-    def run_python_tests_and_upload(self):
+    def _build_wheel(self):
+        """Build a wheel from _package/ into build_folder/dist/."""
+        package_src = os.path.join(self.package_folder, "_package")
+        dist_dir = os.path.join(self.build_folder, "dist")
+        os.makedirs(dist_dir, exist_ok=True)
+        if _has_uv():
+            self.run(f'uv build --wheel --no-build-logs --out-dir {dist_dir} {package_src}')
+        else:
+            self.run(f'"{sys.executable}" -m pip wheel . --no-deps --wheel-dir {dist_dir}', cwd=package_src)
+
+    def _find_wheel(self):
+        """Return the path to the built wheel in build_folder/dist/."""
+        dist_dir = os.path.join(self.build_folder, "dist")
+        wheels = glob.glob(os.path.join(dist_dir, "*.whl"))
+        if not wheels:
+            raise ConanException(f"No wheel found in {dist_dir}")
+        return wheels[0]
+
+    def run_python_tests(self):
         """Run Python tests in a virtual environment and optionally upload."""
         build_venv_dir = os.path.join(self.build_folder, "venv")
-        tests_dest_dir = os.path.join(self.build_folder, "tests")  # Destination for tests
+        tests_dest_dir = os.path.join(self.build_folder, "tests")
 
         if sys.platform == "win32":
             python_executable = os.path.join(build_venv_dir, "Scripts", "python")
-            pip_executable = os.path.join(build_venv_dir, "Scripts", "pip")
         else:
             python_executable = os.path.join(build_venv_dir, "bin", "python")
-            pip_executable = os.path.join(build_venv_dir, "bin", "pip")
 
         # Create a virtual environment
-        self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
-
-        # Upgrade pip in the virtual environment
-        self.run(f'"{python_executable}" -m pip install --upgrade pip')
+        if _has_uv():
+            self.run(f'uv venv {build_venv_dir}')
+        else:
+            self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
 
         # Install general dependencies
-        general_dependencies = ["numpy", "wheel", "cibuildwheel"]
-        self.run(f'"{pip_executable}" install {' '.join(general_dependencies)}')
+        general_dependencies = ["numpy", "wheel"]
+        self.run(_pip_install_cmd(python_executable, *general_dependencies))
 
         # Install xms_dependencies one by one
         for dependency_spec in self.xms_dependencies:
@@ -200,50 +235,21 @@ class XmsConan2File(ConanFile):
                 dependency = self.dependencies.host[dependency_name]
                 if dependency.package_folder:
                     package_path = os.path.join(dependency.package_folder, "_package")
-                    self.run(f'"{pip_executable}" install {package_path} --no-deps ')
+                    self.run(_pip_install_cmd(python_executable, package_path, "--no-deps"))
 
-        # Install the current package into the virtual environment
-        package_folder = os.path.join(self.package_folder, "_package")
-        self.run(f'"{pip_executable}" install .', cwd=package_folder)
+        # Install from the pre-built wheel
+        wheel_path = self._find_wheel()
+        self.run(_pip_install_cmd(python_executable, wheel_path))
 
         # Copy the tests folder into the build directory
         tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
         if os.path.exists(tests_dest_dir):
-            shutil.rmtree(tests_dest_dir)  # Remove existing folder to avoid conflicts
+            shutil.rmtree(tests_dest_dir)
         shutil.copytree(tests_src_dir, tests_dest_dir)
 
         # Run tests using the virtual environment's Python
         unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_dest_dir}"
         self.run(unittest_command, cwd=self.build_folder)
-
-        # Upload the package if it's a release
-        # We are uploading to aquapi here instead of pypi because pypi doesn't accept
-        # the type of package 'linux_x86_64 that we want to upload. They only accept
-        # manylinux1 as the plat-tag
-        is_release = self.buildenv.vars(self).get("RELEASE_PYTHON", 'False') == 'True'
-        is_mac_os = self.settings.os == 'Macos'
-        is_gcc_13 = self.settings.os == "Linux" and float(self.settings.compiler.version.value) == 13.0
-        is_windows_md = (self.settings.os == "Windows" and str(self.settings.compiler.runtime) == "dynamic")
-        if is_release and (is_mac_os or is_gcc_13 or is_windows_md):
-            self.upload_python_package()
-
-    def upload_python_package(self):
-        """Upload the python package to AQUAPI_URL."""
-        devpi_url = self.buildenv.vars(self).get("AQUAPI_URL", 'NO_URL')
-        devpi_username = self.buildenv.vars(self).get("AQUAPI_USERNAME", 'NO_USERNAME')
-        devpi_password = self.buildenv.vars(self).get("AQUAPI_PASSWORD", 'NO_PASSWORD')
-        self.run('devpi use {}'.format(devpi_url))
-        self.run('devpi login {} --password {}'.format(devpi_username, devpi_password))
-        # Create platform-specific wheels with compiled extensions
-        dist_dir = os.path.join(self.package_folder, "dist")
-        if not os.path.exists(dist_dir):
-            os.makedirs(dist_dir)
-
-        package_dir = os.path.join(self.package_folder, "_package")
-
-        # Use pip wheel which is better at detecting binary content and creating platform-specific wheels
-        self.run(f'python -m cibuildwheel . --output-dir {dist_dir}', cwd=package_dir)
-        self.run(f'devpi upload --from-dir {dist_dir}', cwd=".")
 
     def export_sources(self):
         """Specify sources to be exported."""
@@ -264,6 +270,7 @@ class XmsConan2File(ConanFile):
         """Specify files to be exported."""
         self.output.info("Exporting files...")
         copy(self, 'LICENSE', src=self.recipe_folder, dst=self.export_folder)
+        copy(self, 'xms_conan2_file.py', src=self.recipe_folder, dst=self.export_folder)
 
         for item in self.extra_exports:
             if os.path.isdir(item):

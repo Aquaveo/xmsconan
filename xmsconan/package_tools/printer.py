@@ -27,7 +27,7 @@ class Printer(object):
           \____\______/
 
        You are in Docker now! %s
-""" % container or ""
+""" % (container or "")
         self.printer(text)
 
     def print_ascci_art(self):
