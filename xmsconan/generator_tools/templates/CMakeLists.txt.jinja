@@ -268,6 +268,14 @@ if (IS_PYTHON_BUILD)
             ${PROJECT_NAME}
             ${EXT_LIBS}
     )
+    # On Linux, statically link the C++ runtime into the pybind module
+    # so the wheel has no dependency on the build compiler's libstdc++/libgcc.
+    if (UNIX AND NOT APPLE)
+        target_link_options(_{{ library_name }} PRIVATE
+            -static-libstdc++
+            -static-libgcc
+        )
+    endif()
     set_target_properties(_{{ library_name }} PROPERTIES
         PREFIX ""
         CXX_VISIBILITY_PRESET "hidden"
@@ -278,6 +286,12 @@ if (IS_PYTHON_BUILD)
     if (APPLE)
         set_target_properties(_{{ library_name }} PROPERTIES
             INSTALL_RPATH "@loader_path"
+            BUILD_WITH_INSTALL_RPATH TRUE
+        )
+    endif()
+    if (UNIX AND NOT APPLE)
+        set_target_properties(_{{ library_name }} PROPERTIES
+            INSTALL_RPATH "$ORIGIN"
             BUILD_WITH_INSTALL_RPATH TRUE
         )
     endif()

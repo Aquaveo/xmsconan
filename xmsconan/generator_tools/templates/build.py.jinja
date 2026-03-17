@@ -3,6 +3,7 @@ The build.py file for the xms project.
 """
 import argparse
 import json
+import os
 
 from xmsconan.package_tools import packager
 
@@ -15,30 +16,42 @@ parser.add_argument("--upload", help="Complete the conan upload.", action="store
 parser.add_argument("--version", help="Version to upload", default='*')
 parser.add_argument("--preview", help="Preview the configurations that will be build", action="store_true")
 parser.add_argument("--filter", help="Filter dictionary in JSON format")
-parser.add_argument("--enable-macos-pybind", help="Enable pybind builds for macOS (apple-clang)", action="store_true")
 parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
+parser.add_argument("--python-only", help="Only build the Python (pybind) configuration", action="store_true")
+parser.add_argument("--wheel-dir", help="Extract pre-built wheel from pybind package to this directory")
+parser.add_argument("--repair", help="Repair Linux wheel for manylinux using Docker", action="store_true")
 
 if __name__ == "__main__":
     args = parser.parse_args()
     builder = packager.XmsConanPackager(
         conanfile.LIBRARY_NAME,
         conanfile.__file__,
-        enable_macos_pybind=args.enable_macos_pybind,
         build_missing=args.build_missing
     )
     builder.generate_configurations()
     if args.filter:
         filter_options = json.loads(args.filter)
         builder.filter_configurations(filter_options)
+    if args.python_only:
+        builder.filter_configurations({'options': {'pybind': True}})
     if args.preview:
         builder.print_configuration_table()
         exit(0)
         # Use config_dict as needed
     if not args.skip_build:
-        err_count = builder.run(build_missing=args.build_missing)
+        err_count = builder.run()
         if err_count > 0:
             print("errors when building... exiting...")
             exit(1)
+
+    if args.wheel_dir:
+        if builder.extract_wheel(args.wheel_dir, version=args.version):
+            libs_dir = os.path.join(args.wheel_dir, 'libs')
+            builder.collect_dependency_libs(libs_dir)
+            if args.repair:
+                builder.repair_linux_wheel(args.wheel_dir)
+        else:
+            print("Warning: no wheel extracted (no pybind package found)")
 
     if args.upload:
         builder.upload(version=args.version)

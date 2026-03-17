@@ -1,8 +1,10 @@
 """The packager module."""
 import copy
 import itertools
+import json
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 
@@ -55,20 +57,17 @@ configurations = {
 class XmsConanPackager(object):
     """The packager class."""
 
-    def __init__(self, libary_name, conanfile_path='.', enable_macos_pybind=False, build_missing=False):
+    def __init__(self, library_name, conanfile_path='.', build_missing=False):
         """Initialize the packager.
 
         Args:
-            libary_name: Name of the library to build.
+            library_name: Name of the library to build.
             conanfile_path: Path to the conanfile.
-            enable_macos_pybind: If True, enable pybind builds for macOS (apple-clang).
-                                 By default, pybind builds are skipped on macOS for CI compatibility.
             build_missing: If True, build missing dependencies from source.
         """
-        self._library_name = libary_name
+        self._library_name = library_name
         self._conanfile_path = conanfile_path
         self._configurations = None
-        self._enable_macos_pybind = enable_macos_pybind
         self._build_missing = build_missing
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
@@ -87,17 +86,6 @@ class XmsConanPackager(object):
     def configurations(self):
         """Get the configurations for the build process."""
         return self._configurations
-
-    def get_builder(self):
-        """Get the builder for the current system_platform."""
-        if self._builder is None:
-            self._builder = self._get_builder()
-        return self._builder
-
-    def _get_builder(self):
-        """Get the builder for the current system_platform."""
-        builder = None
-        return builder
 
     def generate_configurations(self, system_platform=None):
         """Generate the configurations for the build process."""
@@ -162,9 +150,6 @@ class XmsConanPackager(object):
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
                     continue
-                # Skip apple-clang pybind builds unless explicitly enabled
-                if combination['compiler'] == 'apple-clang' and not self._enable_macos_pybind:
-                    continue
                 pybind_options = copy.deepcopy(combination)
                 pybind_options['options'].update({
                     'pybind': True,
@@ -202,7 +187,7 @@ class XmsConanPackager(object):
                 filtered_configurations.append(configuration)
         self._configurations = filtered_configurations
 
-    def run(self, build_missing=False):
+    def run(self):
         """Run the build process."""
         self.printer.print_ascci_art()
         self.print_configuration_table()
@@ -216,16 +201,12 @@ class XmsConanPackager(object):
             if self._build_missing:
                 cmd.append('--build=missing')
             try:
-                exit_code = subprocess.call(cmd)
-                if exit_code == 0:
-                    self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
-                else:
-                    self.printer.print_message(f'ERROR building configuration {i + 1} of {len(self.configurations)}')
-                    failing_configurations.append(i)
+                subprocess.run(cmd, check=True)
+                self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
             except subprocess.CalledProcessError:
                 self.printer.print_message(
-                    f'ERROR running build of configuration {i + 1} of {len(self.configurations)}')
-                failing_configurations.append(f'{i + 1}')
+                    f'ERROR building configuration {i + 1} of {len(self.configurations)}')
+                failing_configurations.append(i)
             self.printer.print_message('*-' * 40 + '\n')
         if len(failing_configurations) > 0:
             self.printer.print_message('The following configurations failed to build:')
@@ -240,13 +221,130 @@ class XmsConanPackager(object):
         self.printer.print_message('Uploading packages to the server.')
         cmd = ['conan', 'upload', f'{self._library_name}/{version}*', '-r', 'aquaveo', '--confirm']
         try:
-            subprocess.call(cmd)
+            subprocess.run(cmd, check=True)
             self.printer.print_message('Finished uploading')
         except subprocess.CalledProcessError:
             self.printer.print_message('ERROR uploading')
             return
         self.printer.print_message('*-' * 40 + '\n')
         self.printer.print_message('All packages uploaded successfully.')
+
+    def extract_wheel(self, output_dir, version='*'):
+        """Extract the pre-built wheel from the pybind Conan package.
+
+        Args:
+            output_dir: Directory to copy the .whl file into.
+            version: Package version (default '*' matches any).
+
+        Returns:
+            True if a wheel was extracted, False otherwise.
+        """
+        ref = f'{self._library_name}/{version}'
+        result = subprocess.run(
+            ['conan', 'list', f'{ref}:*', '--format=json'],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            self.printer.print_message(f'No packages found for {ref}')
+            return False
+
+        data = json.loads(result.stdout)
+        # Collect all pybind candidates with their revision timestamps
+        # so we can pick the most recently built one.
+        candidates = []
+        for exact_ref, cache in data.get('Local Cache', {}).items():
+            for rev in cache.get('revisions', {}).values():
+                ts = rev.get('timestamp', 0)
+                for pid, pinfo in rev.get('packages', {}).items():
+                    if pinfo.get('info', {}).get('options', {}).get('pybind') == 'True':
+                        candidates.append((ts, exact_ref, pid))
+        candidates.sort(reverse=True)  # newest first
+
+        for _ts, exact_ref, pid in candidates:
+            path_result = subprocess.run(
+                ['conan', 'cache', 'path', f'{exact_ref}:{pid}'],
+                capture_output=True, text=True
+            )
+            pkg_dir = path_result.stdout.strip()
+            dist_dir = os.path.join(pkg_dir, 'dist')
+            if not os.path.isdir(dist_dir):
+                continue
+            os.makedirs(output_dir, exist_ok=True)
+            for fname in os.listdir(dist_dir):
+                if fname.endswith('.whl'):
+                    shutil.copy2(os.path.join(dist_dir, fname), output_dir)
+                    self.printer.print_message(f'Extracted {fname} to {output_dir}')
+            return True
+
+        self.printer.print_message('No pybind package found to extract.')
+        return False
+
+    def collect_dependency_libs(self, output_dir):
+        """Collect shared libraries from the Conan cache for wheel repair.
+
+        Scans all packages in the Conan cache and copies shared libraries
+        (.so, .dylib, .dll) into output_dir so repair tools can find them.
+
+        Args:
+            output_dir: Directory to copy shared libraries into.
+        """
+        result = subprocess.run(
+            ['conan', 'config', 'home'], capture_output=True, text=True
+        )
+        conan_home = result.stdout.strip()
+        cache_pkg_dir = os.path.join(conan_home, 'p')
+
+        if not os.path.isdir(cache_pkg_dir):
+            self.printer.print_message('Conan cache not found.')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+        count = 0
+        for root, _dirs, files in os.walk(cache_pkg_dir):
+            for fname in files:
+                is_shared_lib = fname.endswith(('.so', '.dylib', '.dll')) or '.so.' in fname
+                if is_shared_lib:
+                    dst = os.path.join(output_dir, fname)
+                    if not os.path.exists(dst):
+                        shutil.copy2(os.path.join(root, fname), dst)
+                        count += 1
+        self.printer.print_message(f'Collected {count} shared libraries to {output_dir}')
+
+    def repair_linux_wheel(self, wheel_dir):
+        """Repair a Linux wheel for manylinux_2_28 using a Docker container.
+
+        Runs auditwheel inside quay.io/pypa/manylinux_2_28 to produce a
+        portable manylinux wheel. Requires Docker.
+
+        Args:
+            wheel_dir: Directory containing the .whl file and libs/ subdirectory.
+        """
+        machine = platform.machine().lower()
+        arch_map = {
+            'x86_64': 'x86_64',
+            'amd64': 'x86_64',
+            'aarch64': 'aarch64',
+            'arm64': 'aarch64',
+        }
+        arch = arch_map.get(machine, machine)
+        image = f'quay.io/pypa/manylinux_2_28_{arch}'
+        abs_wheel_dir = os.path.abspath(wheel_dir)
+
+        self.printer.print_message(f'Repairing wheel with auditwheel in {image}')
+        cmd = [
+            'docker', 'run', '--rm',
+            '-v', f'{abs_wheel_dir}:/wheels',
+            image,
+            'bash', '-c',
+            'export PATH="/opt/python/cp313-cp313/bin:$PATH" && '
+            'pip install auditwheel patchelf && '
+            'LD_LIBRARY_PATH=/wheels/libs auditwheel repair /wheels/*.whl '
+            '-w /wheels_repaired && '
+            'rm -f /wheels/*.whl && rm -rf /wheels/libs && '
+            'mv /wheels_repaired/* /wheels/ && rm -rf /wheels_repaired'
+        ]
+        subprocess.run(cmd, check=True)
+        self.printer.print_message('Wheel repair completed successfully.')
 
     def create_build_profile(self, configuration):
         """Create a temporary build profile."""
@@ -264,6 +362,9 @@ class XmsConanPackager(object):
             f.write('\n[options]\n')
             for k, v in configuration['options'].items():
                 f.write(f'&:{k}={v}\n')
+            # For Linux pybind builds, ensure all dependencies are static
+            if configuration.get('os') == 'Linux' and configuration['options'].get('pybind'):
+                f.write('*:shared=False\n')
 
             f.write('\n[buildenv]\n')
             for k, v in configuration['buildenv'].items():
@@ -286,7 +387,8 @@ class XmsConanPackager(object):
             configurations_to_print = range(len(self.configurations))
 
         headers = ["#", "cppstd", "runtime", "build_type", "compiler", "compiler.version", "arch",
-                   "xmscore:wchar_t", "xmscore:pybind", "xmscore:testing"]
+                   f"{self._library_name}:wchar_t", f"{self._library_name}:pybind",
+                   f"{self._library_name}:testing"]
         table = []
 
         # Create the header row
