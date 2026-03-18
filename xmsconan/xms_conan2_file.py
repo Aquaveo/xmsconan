@@ -76,6 +76,10 @@ class XmsConan2File(ConanFile):
         """The configure method."""
         # self.version = envvars.get('XMS_VERSION', '99.99.99')
 
+        # Disable boost stacktrace to avoid __cxa_allocate_exception symbol
+        # conflict with -static-libstdc++ in pybind shared modules.
+        self.options["boost"].without_stacktrace = True
+
         # Raise ConanExceptions for Unsupported Versions
         s_os = self.settings.os
         s_compiler = self.settings.compiler
@@ -194,10 +198,23 @@ class XmsConan2File(ConanFile):
         package_src = os.path.join(self.package_folder, "_package")
         dist_dir = os.path.join(self.build_folder, "dist")
         os.makedirs(dist_dir, exist_ok=True)
-        if _has_uv():
-            self.run(f'uv build --wheel --no-build-logs --out-dir {dist_dir} {package_src}')
-        else:
-            self.run(f'"{sys.executable}" -m pip wheel . --no-deps --wheel-dir {dist_dir}', cwd=package_src)
+
+        # Force correct platform tag for macOS ARM builds.
+        # Apple's universal Python framework causes wheels to be tagged
+        # universal2, but we only build ARM binaries.
+        old_host_platform = os.environ.get("_PYTHON_HOST_PLATFORM")
+        if str(self.settings.os) == "Macos" and str(self.settings.arch) == "armv8":
+            os.environ["_PYTHON_HOST_PLATFORM"] = "macosx-15.0-arm64"
+        try:
+            if _has_uv():
+                self.run(f'uv build --wheel --no-build-logs --out-dir {dist_dir} {package_src}')
+            else:
+                self.run(f'"{sys.executable}" -m pip wheel . --no-deps --wheel-dir {dist_dir}', cwd=package_src)
+        finally:
+            if old_host_platform is None:
+                os.environ.pop("_PYTHON_HOST_PLATFORM", None)
+            else:
+                os.environ["_PYTHON_HOST_PLATFORM"] = old_host_platform
 
     def _find_wheel(self):
         """Return the path to the built wheel in build_folder/dist/."""

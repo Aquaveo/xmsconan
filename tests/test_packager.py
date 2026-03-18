@@ -91,6 +91,17 @@ def test_generate_configurations_darwin():
 
 
 @patch.dict("os.environ", {}, clear=True)
+def test_generate_configurations_darwin_arm_sets_host_platform():
+    """Verify macOS ARM config sets _PYTHON_HOST_PLATFORM to avoid universal2 tag."""
+    p = XmsConanPackager("xmscore")
+    configs = p.generate_configurations(system_platform="darwin")
+    arm_configs = [c for c in configs if c["arch"] == "armv8"]
+    assert len(arm_configs) > 0
+    for cfg in arm_configs:
+        assert cfg["buildenv"].get("_PYTHON_HOST_PLATFORM") == "macosx-15.0-arm64"
+
+
+@patch.dict("os.environ", {}, clear=True)
 def test_generate_configurations_includes_variants():
     """Windows produces base + wchar_t + pybind + testing variants."""
     p = XmsConanPackager("xmscore")
