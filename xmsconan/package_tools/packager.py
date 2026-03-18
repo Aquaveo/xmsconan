@@ -90,15 +90,16 @@ class XmsConanPackager(object):
     def generate_configurations(self, system_platform=None):
         """Generate the configurations for the build process."""
         # Get system_platform name
-
+        auto_detected = system_platform is None
         if system_platform is None:
             system_platform = platform.system().lower()
 
         # Get the current system_platform configuration
         system_platform_configuration = configurations.get(system_platform).copy()
 
-        # Override arch with detected architecture
-        system_platform_configuration['arch'] = [get_current_arch()]
+        # Override arch with detected architecture only when platform was auto-detected
+        if auto_detected:
+            system_platform_configuration['arch'] = [get_current_arch()]
 
         # Get the cartesian product of all the configurations
         keys = system_platform_configuration.keys()
@@ -134,6 +135,10 @@ class XmsConanPackager(object):
             # Set macOS deployment target for consistent wheel builds
             if combination.get('os') == 'Macos':
                 combination['buildenv']['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
+                # Force correct platform tag for ARM-only wheels to prevent
+                # universal2 tags from Apple's universal Python framework
+                if combination.get('arch') == 'armv8':
+                    combination['buildenv']['_PYTHON_HOST_PLATFORM'] = 'macosx-15.0-arm64'
 
         wchar_t_updated_builds = []
         for combination in combinations:
