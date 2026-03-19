@@ -46,7 +46,7 @@ Conan Build:
     - gcc --version
     - cmake --version
     - python --version
-    - pip install xmsconan>=2.3.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install xmsconan>=2.3.3 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
 <% if ci_xvfb %>
@@ -75,7 +75,7 @@ Conan Build:
     - echo ${PACKAGE_VERSION}
     - python --version
     - pip install conan toml packaging devpi-client
-    - python -m pip install xmsconan>=2.3.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - python -m pip install xmsconan>=2.3.3 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - conan remote add --index 0 aquaveo https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
     - conan profile detect
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
@@ -119,6 +119,19 @@ Repair Wheel:
       - wheelhouse/
 
 <% if ci_deploy %>
+"Wheel Deploy":
+  stage: Deploy
+  image: python:3.13
+  dependencies:
+    - Repair Wheel
+  script:
+    - pip install devpi-client
+    - devpi use https://public.aquapi.aquaveo.com/aquaveo/dev/
+    - devpi login ${AQUAPI_USERNAME} --password ${AQUAPI_PASSWORD}
+    - devpi upload --from-dir wheelhouse
+  only:
+    - tags
+
 "Conan Deploy - Linux":
   stage: Deploy
   image: ubuntu:latest
@@ -167,7 +180,7 @@ Coverage:
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
   script:
     - pip install lxml
-    - pip install xmsconan>=2.3.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install xmsconan>=2.3.3 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_gen --version 0.0.0 build.toml
     - conan install -pr conan_profiles/linux_testing_debug_coverage.txt . -c tools.cmake.cmake_layout:build_folder_vars="['self.name', 'const.coverage']" --build=missing
     - cmake --preset coverage
