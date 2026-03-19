@@ -93,7 +93,7 @@ def test_generate_ci_dry_run_does_not_write(ci_toml, tmp_path):
 def test_context_variables_rendered(ci_toml, tmp_path):
     """library_name, version, and display_name are rendered in output."""
     output_dir = tmp_path / "output"
-    generate_ci(str(ci_toml), "2.3.4", str(output_dir))
+    generate_ci(str(ci_toml), "2.3.5", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
     # The real template should contain these rendered values

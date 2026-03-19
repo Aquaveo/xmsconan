@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmsconan"
-version = "2.3.4"
+version = "2.3.5"
 description = "Methods and Modules used to aid in xmsconan projects"
 authors = [
     {name = "Gage Larsen"}
