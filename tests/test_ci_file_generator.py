@@ -130,7 +130,7 @@ def test_github_linux_uses_container_image(ci_toml, tmp_path):
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13" in content
+    assert "ghcr.io/aquaveo/conan-gcc13-py3.13:latest" in content
 
 
 def test_github_linux_no_setup_python(ci_toml, tmp_path):

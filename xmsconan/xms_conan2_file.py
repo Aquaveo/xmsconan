@@ -228,15 +228,16 @@ class XmsConan2File(ConanFile):
         """Run Python tests in a virtual environment and optionally upload."""
         build_venv_dir = os.path.join(self.build_folder, "venv")
         tests_dest_dir = os.path.join(self.build_folder, "tests")
+        python_target_version = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
 
         if sys.platform == "win32":
-            python_executable = os.path.join(build_venv_dir, "Scripts", "python")
+            python_executable = os.path.join(build_venv_dir, "Scripts", "python.exe")
         else:
             python_executable = os.path.join(build_venv_dir, "bin", "python")
 
         # Create a virtual environment
         if _has_uv():
-            self.run(f'uv venv {build_venv_dir}')
+            self.run(f'uv venv --python {python_target_version} {build_venv_dir}')
         else:
             self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
 
