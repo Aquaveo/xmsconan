@@ -1,0 +1,63 @@
+"""Tests for ci_tools.credentials."""
+from unittest.mock import patch
+
+from xmsconan.ci_tools.credentials import load_credentials
+
+
+def test_load_credentials_from_file(tmp_path):
+    """Reads url, username, password from config file."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text(
+        '[aquapi]\n'
+        'url = "https://example.com/"\n'
+        'username = "user"\n'
+        'password = "pass"\n',
+        encoding="utf-8",
+    )
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_credentials()
+
+    assert creds["url"] == "https://example.com/"
+    assert creds["username"] == "user"
+    assert creds["password"] == "pass"
+
+
+def test_load_credentials_missing_file(tmp_path):
+    """Returns empty dict when config file doesn't exist."""
+    cfg = tmp_path / ".xmsconan.toml"
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_credentials()
+
+    assert creds == {}
+
+
+def test_load_credentials_no_aquapi_section(tmp_path):
+    """Returns empty dict when [aquapi] section is missing."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text('[other]\nkey = "value"\n', encoding="utf-8")
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_credentials()
+
+    assert creds == {}
+
+
+def test_load_credentials_partial(tmp_path):
+    """Returns only the keys present in the config."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text('[aquapi]\nurl = "https://x/"\n', encoding="utf-8")
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_credentials()
+
+    assert creds["url"] == "https://x/"
+    assert "username" not in creds
+    assert "password" not in creds
+
+
+def test_load_credentials_invalid_toml(tmp_path):
+    """Returns empty dict on malformed TOML."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text("this is not valid toml [[[", encoding="utf-8")
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_credentials()
+
+    assert creds == {}

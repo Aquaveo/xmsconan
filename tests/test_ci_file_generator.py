@@ -161,6 +161,55 @@ def test_github_ci_uses_default_version(ci_toml, tmp_path):
             assert "7.0.1" not in line
 
 
+def test_github_ci_uses_cli_commands(ci_toml, tmp_path):
+    """Rendered GitHub CI uses xmsconan CLI commands instead of inline scripts."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "xmsconan_conan_setup" in content
+    assert "xmsconan_wheel_repair" in content
+    assert "xmsconan_wheel_deploy" in content
+    # Inline conan profile detect / devpi commands should NOT appear
+    assert "conan profile detect" not in content
+    assert "devpi use $" not in content
+    assert "devpi login $" not in content
+
+
+def test_gitlab_ci_uses_cli_commands(tmp_path):
+    """Rendered GitLab CI uses xmsconan CLI commands instead of inline scripts."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'deploy = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "xmsconan_conan_setup" in content
+    assert "xmsconan_wheel_repair" in content
+    assert "xmsconan_wheel_deploy" in content
+    assert "xmsconan_conan_deploy" in content
+    # Inline conan profile detect should NOT appear
+    assert "conan profile detect" not in content
+
+
+def test_github_ci_version_bump(ci_toml, tmp_path):
+    """Rendered GitHub CI references xmsconan>=2.4.0."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "xmsconan>=2.4.0" in content
+    assert "xmsconan>=2.3.5" not in content
+
+
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     """python_namespaced_dir defaults to library_name[3:]."""
     toml_file = tmp_path / "build.toml"
