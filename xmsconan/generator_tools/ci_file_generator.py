@@ -90,6 +90,7 @@ def generate_ci(
         "ci_deploy": ci_config.get("deploy", False),
         "ci_coverage": ci_config.get("coverage", False),
         "ci_xvfb": ci_config.get("xvfb", False),
+        "ci_linux_arm": ci_config.get("linux_arm", False),
     }
 
     # Select template and output path

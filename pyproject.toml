@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmsconan"
-version = "2.3.5"
+version = "2.4.0"
 description = "Methods and Modules used to aid in xmsconan projects"
 authors = [
     {name = "Gage Larsen"}
@@ -28,6 +28,14 @@ dependencies = [
 xmsconan_gen = "xmsconan.generator_tools.build_file_generator:main"
 xmsconan_ci = "xmsconan.generator_tools.ci_file_generator:main"
 xmsconan_build = "xmsconan.build_tools.build_library:main"
+xmsconan_conan_setup = "xmsconan.ci_tools.conan_setup:main"
+xmsconan_wheel_repair = "xmsconan.ci_tools.wheel_repair:main"
+xmsconan_wheel_deploy = "xmsconan.ci_tools.wheel_deploy:main"
+xmsconan_conan_deploy = "xmsconan.ci_tools.conan_deploy:main"
+xmsconan_publish = "xmsconan.ci_tools.publish:main"
+
+[project.optional-dependencies]
+test = ["pytest", "pyyaml"]
 
 [project.urls]
 Homepage = "https://github.com/Aquaveo/xmsconan"

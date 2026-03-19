@@ -15,7 +15,12 @@ This package provides tools for building and generating files for XMS projects u
 ### Command Line Tools
 
 - `xmsconan_gen`: Generate build files from templates
+- `xmsconan_ci`: Generate CI pipeline files (GitLab/GitHub) from templates
 - `xmsconan_build`: Build XMS libraries
+- `xmsconan_conan_setup`: Set up Conan profile and remotes for CI builds
+- `xmsconan_wheel_repair`: Repair Python wheels for the current platform (Linux/macOS/Windows)
+- `xmsconan_wheel_deploy`: Upload repaired wheels to a devpi index
+- `xmsconan_conan_deploy`: Save, restore, or upload Conan packages in CI
 
 ## build.toml Schema Reference
 
@@ -130,6 +135,151 @@ xmsconan_build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TEST
 - `--allow-missing-test-files`: Continue when test data path is missing
 - `--dry-run`: Print Conan/CMake commands and options without executing
 - `-v` / `-q`: Increase debug output or suppress informational logs
+
+### CI Tools
+
+These commands replace inline shell scripts in CI templates, reducing duplication and making pipelines easier to maintain.
+
+#### Conan Setup
+
+```bash
+# Default: detect profile, add Aquaveo remote
+xmsconan_conan_setup
+
+# GitHub Actions: also login and remove conancenter
+xmsconan_conan_setup --remote-url https://conan2.aquaveo.com/... --login --remove-conancenter
+```
+
+#### Wheel Repair
+
+```bash
+# Auto-detect platform and repair wheels in wheelhouse/
+xmsconan_wheel_repair --wheel-dir wheelhouse
+
+# Explicit platform
+xmsconan_wheel_repair --wheel-dir wheelhouse --platform macos
+```
+
+#### Wheel Deploy
+
+```bash
+# Uses $AQUAPI_URL, $AQUAPI_USERNAME, $AQUAPI_PASSWORD env vars
+xmsconan_wheel_deploy --wheel-dir wheelhouse
+
+# Or pass credentials explicitly
+xmsconan_wheel_deploy --wheel-dir wheelhouse --url https://... --username user --password pass
+```
+
+#### Conan Deploy
+
+```bash
+# Save a package to a tarball
+xmsconan_conan_deploy xmscore 7.0.0 --save xmscore-7.0.0.tar.gz
+
+# Restore and upload
+xmsconan_conan_deploy xmscore 7.0.0 --restore xmscore-7.0.0.tar.gz --upload
+```
+
+## Building with Docker
+
+XMS C++ libraries can be built inside Docker containers for Linux. This is the recommended approach for producing Linux wheels and Conan packages from macOS or Windows.
+
+### Prerequisites
+
+The workspace `docker-compose.dev.yml` provides two dev containers:
+
+| Container | Platform | Runner | Best for |
+|-----------|----------|--------|----------|
+| `nextms-dev-arm` | linux/arm64 | Native on Apple Silicon | ARM Linux builds on macOS |
+| `nextms-dev-x86` | linux/amd64 | QEMU on Apple Silicon, native on x86 | x86_64 Linux builds, CI parity |
+
+Start the container you need:
+
+```bash
+# From the workspace root (aqua_dev/)
+docker compose -f docker-compose.dev.yml up dev-arm -d   # ARM (fast on Apple Silicon)
+docker compose -f docker-compose.dev.yml up dev-x86 -d   # x86_64 (matches CI)
+```
+
+### Credential Setup
+
+Create `~/.xmsconan.toml` on your host machine to avoid passing credentials on every build:
+
+```toml
+[aquapi]
+url = "https://public.aquapi.aquaveo.com/aquaveo/dev/"
+username = "your_username"
+password = "your_password"
+```
+
+Mount it into the container by adding a volume to `docker-compose.dev.yml`:
+
+```yaml
+volumes:
+  - ~/.xmsconan.toml:/root/.xmsconan.toml:ro
+```
+
+Alternatively, pass credentials as environment variables:
+
+```bash
+docker exec -e AQUAPI_URL=https://public.aquapi.aquaveo.com/aquaveo/dev/ \
+            -e AQUAPI_USERNAME=user \
+            -e AQUAPI_PASSWORD=pass \
+            nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0"
+```
+
+### Building a Single Library
+
+```bash
+# Full build + upload (reads credentials from ~/.xmsconan.toml or env vars)
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0"
+
+# Build and repair wheel only, skip uploads
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0 --no-deploy"
+
+# Upload wheel only, skip Conan package
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0 --no-conan"
+
+# Filter to Release builds only
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0 --filter '{\"build_type\": \"Release\"}'"
+```
+
+### Building Libraries in Dependency Order
+
+Libraries must be built in dependency order so Conan packages are available for downstream builds:
+
+```
+xmscore → xmsgrid → xmsinterp → xmsmesher
+                               → xmsextractor → xmsconstraint
+xmscore → xmsvtk
+```
+
+Example for a full ARM build:
+
+```bash
+CONTAINER=nextms-dev-arm
+VERSION=7.0.0
+
+docker exec $CONTAINER bash -c "cd /workspace/xmscore && xmsconan_publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsgrid && xmsconan_publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsinterp && xmsconan_publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsmesher && xmsconan_publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsextractor && xmsconan_publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsconstraint && xmsconan_publish --version $VERSION --no-deploy"
+```
+
+Replace `--no-deploy` with no flag to also upload each package as it's built.
+
+### macOS vs. Windows
+
+| | macOS (Apple Silicon) | Windows |
+|---|---|---|
+| **ARM builds** | `nextms-dev-arm` — native, fast | Not available |
+| **x86_64 builds** | `nextms-dev-x86` — QEMU, slower | `nextms-dev-x86` — native |
+| **Docker command** | `docker exec nextms-dev-arm ...` | `docker exec nextms-dev-x86 ...` |
+| **Workspace mount** | `/workspace` | `/workspace` |
+
+On Windows, use `nextms-dev-x86` for x86_64 Linux builds. The commands are identical — just change the container name.
 
 ## License
 
