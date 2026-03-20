@@ -197,6 +197,29 @@ def test_gitlab_ci_uses_cli_commands(tmp_path):
     assert "conan profile detect" not in content
 
 
+def test_gitlab_ci_deploy_jobs_set_package_version(tmp_path):
+    """All GitLab deploy jobs explicitly export PACKAGE_VERSION."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    # Every section that calls xmsconan_conan_deploy must first set PACKAGE_VERSION
+    import re
+    deploy_blocks = re.split(r'\n(?=\S)', content)
+    for block in deploy_blocks:
+        if "xmsconan_conan_deploy" in block:
+            assert "export PACKAGE_VERSION=" in block, (
+                f"Deploy block missing 'export PACKAGE_VERSION=':\n{block}"
+            )
+
+
 def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
     """Setting deploy = false omits deploy stages from GitLab CI."""
     toml_file = tmp_path / "build.toml"
