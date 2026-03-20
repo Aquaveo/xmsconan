@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from xmsconan.cli import COMMANDS, _print_usage, main
+from xmsconan.cli import _print_usage, COMMANDS, main
 
 
 class TestCliDispatch:

@@ -36,6 +36,7 @@ def _print_usage(file=sys.stdout):
 
 
 def main():
+    """Dispatch ``xmsconan <subcommand>`` to the appropriate module."""
     if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
         _print_usage()
         sys.exit(0)

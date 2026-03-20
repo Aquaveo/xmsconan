@@ -42,7 +42,7 @@ Conan Build:
     - gcc --version
     - cmake --version
     - python --version
-    - pip install conan xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install conan xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
@@ -70,7 +70,7 @@ Conan Build:
     - echo ${PACKAGE_VERSION}
     - python --version
     - pip install conan toml packaging devpi-client
-    - python -m pip install xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - python -m pip install xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
     - python build.py --version ${PACKAGE_VERSION}
@@ -99,7 +99,7 @@ Repair Wheel:
   dependencies:
     - Conan Build
   script:
-    - /opt/python/cp313-cp313/bin/pip install xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - /opt/python/cp313-cp313/bin/pip install xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - /opt/python/cp313-cp313/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
   artifacts:
     expire_in: '1d'
@@ -113,7 +113,7 @@ Repair Wheel:
   dependencies:
     - Repair Wheel
   script:
-    - pip install xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_wheel_deploy --wheel-dir wheelhouse
   only:
     - tags
@@ -128,7 +128,7 @@ Repair Wheel:
     - apt-get install -y python3-pip python3-venv
     - python3 -m venv .venv
     - source .venv/bin/activate
-    - pip install conan xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install conan xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-linux-${PACKAGE_VERSION}.tar.gz --upload
@@ -147,7 +147,7 @@ Repair Wheel:
       - conan_packages/
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
-    - pip install conan xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install conan xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-${PACKAGE_VERSION}.tar.gz --upload
     - mkdir -p conan_packages
@@ -168,7 +168,7 @@ Coverage:
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
 <% endif %>
   script:
-    - pip install lxml conan xmsconan>=2.4.2 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install lxml conan xmsconan>=2.5.0 -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version 0.0.0 build.toml
     - conan install -pr conan_profiles/linux_testing_debug_coverage.txt . -c tools.cmake.cmake_layout:build_folder_vars="['self.name', 'const.coverage']" --build=missing
