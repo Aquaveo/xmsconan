@@ -219,12 +219,12 @@ def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
 
 
 def test_github_ci_version_bump(ci_toml, tmp_path):
-    """Rendered GitHub CI references xmsconan>=2.4.1."""
+    """Rendered GitHub CI references xmsconan>=2.4.2."""
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "xmsconan>=2.4.1" in content
+    assert "xmsconan>=2.4.2" in content
     assert "xmsconan>=2.3.5" not in content
 
 
