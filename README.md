@@ -12,15 +12,28 @@ pip install xmsconan
 
 This package provides tools for building and generating files for XMS projects using Conan.
 
-### Command Line Tools
+### Unified CLI
 
-- `xmsconan_gen`: Generate build files from templates
-- `xmsconan_ci`: Generate CI pipeline files (GitLab/GitHub) from templates
-- `xmsconan_build`: Build XMS libraries
-- `xmsconan_conan_setup`: Set up Conan profile and remotes for CI builds
-- `xmsconan_wheel_repair`: Repair Python wheels for the current platform (Linux/macOS/Windows)
-- `xmsconan_wheel_deploy`: Upload repaired wheels to a devpi index
-- `xmsconan_conan_deploy`: Save, restore, or upload Conan packages in CI
+All tools are available under the `xmsconan` command:
+
+```bash
+xmsconan <command> [args...]
+xmsconan --help              # list all commands
+xmsconan gen --help          # help for a specific command
+```
+
+| Command | Description |
+|---------|-------------|
+| `xmsconan gen` | Generate build files from templates |
+| `xmsconan ci` | Generate CI pipeline files (GitLab/GitHub) from templates |
+| `xmsconan build` | Build XMS libraries |
+| `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |
+| `xmsconan wheel-repair` | Repair Python wheels for the current platform (Linux/macOS/Windows) |
+| `xmsconan wheel-deploy` | Upload repaired wheels to a devpi index |
+| `xmsconan conan-deploy` | Save, restore, or upload Conan packages in CI |
+| `xmsconan publish` | Build, repair, and deploy a library |
+
+Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, etc.) remain available for backwards compatibility.
 
 ## build.toml Schema Reference
 
@@ -109,25 +122,25 @@ pybind_sources = [
 #### Example generation
 
 ```bash
-xmsconan_gen --version 9.0.0 build.toml
+xmsconan gen --version 9.0.0 build.toml
 ```
 
 #### Example generation dry-run
 
 ```bash
-xmsconan_gen --dry-run -v --version 9.0.0 build.toml
+xmsconan gen --dry-run -v --version 9.0.0 build.toml
 ```
 
 #### Example build into a shared builds folder
 
 ```bash
-xmsconan_build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TESTING --generator vs2022
+xmsconan build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TESTING --generator vs2022
 ```
 
 #### Example build dry-run
 
 ```bash
-xmsconan_build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TESTING --generator vs2022 --dry-run -v
+xmsconan build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TESTING --generator vs2022 --dry-run -v
 ```
 
 #### Useful build flags
@@ -144,40 +157,40 @@ These commands replace inline shell scripts in CI templates, reducing duplicatio
 
 ```bash
 # Default: detect profile, add Aquaveo remote
-xmsconan_conan_setup
+xmsconan conan-setup
 
 # GitHub Actions: also login and remove conancenter
-xmsconan_conan_setup --remote-url https://conan2.aquaveo.com/... --login --remove-conancenter
+xmsconan conan-setup --remote-url https://conan2.aquaveo.com/... --login --remove-conancenter
 ```
 
 #### Wheel Repair
 
 ```bash
 # Auto-detect platform and repair wheels in wheelhouse/
-xmsconan_wheel_repair --wheel-dir wheelhouse
+xmsconan wheel-repair --wheel-dir wheelhouse
 
 # Explicit platform
-xmsconan_wheel_repair --wheel-dir wheelhouse --platform macos
+xmsconan wheel-repair --wheel-dir wheelhouse --platform macos
 ```
 
 #### Wheel Deploy
 
 ```bash
 # Uses $AQUAPI_URL, $AQUAPI_USERNAME, $AQUAPI_PASSWORD env vars
-xmsconan_wheel_deploy --wheel-dir wheelhouse
+xmsconan wheel-deploy --wheel-dir wheelhouse
 
 # Or pass credentials explicitly
-xmsconan_wheel_deploy --wheel-dir wheelhouse --url https://... --username user --password pass
+xmsconan wheel-deploy --wheel-dir wheelhouse --url https://... --username user --password pass
 ```
 
 #### Conan Deploy
 
 ```bash
 # Save a package to a tarball
-xmsconan_conan_deploy xmscore 7.0.0 --save xmscore-7.0.0.tar.gz
+xmsconan conan-deploy xmscore 7.0.0 --save xmscore-7.0.0.tar.gz
 
 # Restore and upload
-xmsconan_conan_deploy xmscore 7.0.0 --restore xmscore-7.0.0.tar.gz --upload
+xmsconan conan-deploy xmscore 7.0.0 --restore xmscore-7.0.0.tar.gz --upload
 ```
 
 ## Building with Docker
@@ -225,23 +238,23 @@ Alternatively, pass credentials as environment variables:
 docker exec -e AQUAPI_URL=https://public.aquapi.aquaveo.com/aquaveo/dev/ \
             -e AQUAPI_USERNAME=user \
             -e AQUAPI_PASSWORD=pass \
-            nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0"
+            nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan publish --version 7.0.0"
 ```
 
 ### Building a Single Library
 
 ```bash
 # Full build + upload (reads credentials from ~/.xmsconan.toml or env vars)
-docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0"
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan publish --version 7.0.0"
 
 # Build and repair wheel only, skip uploads
-docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0 --no-deploy"
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan publish --version 7.0.0 --no-deploy"
 
 # Upload wheel only, skip Conan package
-docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0 --no-conan"
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan publish --version 7.0.0 --no-conan"
 
 # Filter to Release builds only
-docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan_publish --version 7.0.0 --filter '{\"build_type\": \"Release\"}'"
+docker exec nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan publish --version 7.0.0 --filter '{\"build_type\": \"Release\"}'"
 ```
 
 ### Building Libraries in Dependency Order
@@ -260,12 +273,12 @@ Example for a full ARM build:
 CONTAINER=nextms-dev-arm
 VERSION=7.0.0
 
-docker exec $CONTAINER bash -c "cd /workspace/xmscore && xmsconan_publish --version $VERSION --no-deploy"
-docker exec $CONTAINER bash -c "cd /workspace/xmsgrid && xmsconan_publish --version $VERSION --no-deploy"
-docker exec $CONTAINER bash -c "cd /workspace/xmsinterp && xmsconan_publish --version $VERSION --no-deploy"
-docker exec $CONTAINER bash -c "cd /workspace/xmsmesher && xmsconan_publish --version $VERSION --no-deploy"
-docker exec $CONTAINER bash -c "cd /workspace/xmsextractor && xmsconan_publish --version $VERSION --no-deploy"
-docker exec $CONTAINER bash -c "cd /workspace/xmsconstraint && xmsconan_publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmscore && xmsconan publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsgrid && xmsconan publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsinterp && xmsconan publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsmesher && xmsconan publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsextractor && xmsconan publish --version $VERSION --no-deploy"
+docker exec $CONTAINER bash -c "cd /workspace/xmsconstraint && xmsconan publish --version $VERSION --no-deploy"
 ```
 
 Replace `--no-deploy` with no flag to also upload each package as it's built.

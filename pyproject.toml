@@ -25,6 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
+xmsconan = "xmsconan.cli:main"
 xmsconan_gen = "xmsconan.generator_tools.build_file_generator:main"
 xmsconan_ci = "xmsconan.generator_tools.ci_file_generator:main"
 xmsconan_build = "xmsconan.build_tools.build_library:main"
