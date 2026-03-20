@@ -182,10 +182,7 @@ def test_gitlab_ci_uses_cli_commands(tmp_path):
     toml_file.write_text(
         'library_name = "xmscore"\n'
         'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'deploy = true\n',
+        'ci_type = "gitlab"\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -200,13 +197,34 @@ def test_gitlab_ci_uses_cli_commands(tmp_path):
     assert "conan profile detect" not in content
 
 
+def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
+    """Setting deploy = false omits deploy stages from GitLab CI."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'deploy = false\n'
+        'windows = false\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "xmsconan_wheel_deploy" not in content
+    assert "xmsconan_conan_deploy" not in content
+
+
 def test_github_ci_version_bump(ci_toml, tmp_path):
-    """Rendered GitHub CI references xmsconan>=2.4.0."""
+    """Rendered GitHub CI references xmsconan>=2.4.1."""
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "xmsconan>=2.4.0" in content
+    assert "xmsconan>=2.4.1" in content
     assert "xmsconan>=2.3.5" not in content
 
 
