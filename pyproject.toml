@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmsconan"
-version = "2.4.2"
+version = "2.5.0"
 description = "Methods and Modules used to aid in xmsconan projects"
 authors = [
     {name = "Gage Larsen"}
@@ -25,6 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
+xmsconan = "xmsconan.cli:main"
 xmsconan_gen = "xmsconan.generator_tools.build_file_generator:main"
 xmsconan_ci = "xmsconan.generator_tools.ci_file_generator:main"
 xmsconan_build = "xmsconan.build_tools.build_library:main"
