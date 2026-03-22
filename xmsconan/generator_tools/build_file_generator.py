@@ -175,7 +175,8 @@ def main():
         "--version", default=None,
         help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
     )
-    parser.add_argument("toml_file", help="Path to the required TOML file (always the last argument).")
+    parser.add_argument("toml_file", nargs="?", default="build.toml",
+                        help="Path to the TOML file. Defaults to build.toml in the current directory.")
 
     args = parser.parse_args()
     _configure_logging(args)

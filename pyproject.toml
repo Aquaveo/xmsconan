@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmsconan"
-version = "2.5.0"
+version = "2.6.0"
 description = "Methods and Modules used to aid in xmsconan projects"
 authors = [
     {name = "Gage Larsen"}
@@ -18,10 +18,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "tabulate",
-    "toml",
+    "conan>=2",
+    "devpi-client",
     "jinja2",
     "setuptools-scm",
+    "tabulate",
+    "toml",
 ]
 
 [project.scripts]

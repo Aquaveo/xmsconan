@@ -38,3 +38,21 @@ def load_credentials():
     except toml.TomlDecodeError:
         return {}
     return data.get("aquapi", {})
+
+
+def load_conan_credentials():
+    """Load the ``[conan]`` section from ``~/.xmsconan.toml``.
+
+    Returns:
+        A dict with ``username`` and ``password`` keys.
+        Missing keys are omitted.  Returns an empty dict if the file
+        does not exist or has no ``[conan]`` section.
+    """
+    path = _config_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = toml.load(path)
+    except toml.TomlDecodeError:
+        return {}
+    return data.get("conan", {})

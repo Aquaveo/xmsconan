@@ -1,7 +1,7 @@
 """Tests for ci_tools.credentials."""
 from unittest.mock import patch
 
-from xmsconan.ci_tools.credentials import load_credentials
+from xmsconan.ci_tools.credentials import load_conan_credentials, load_credentials
 
 
 def test_load_credentials_from_file(tmp_path):
@@ -61,3 +61,52 @@ def test_load_credentials_invalid_toml(tmp_path):
         creds = load_credentials()
 
     assert creds == {}
+
+
+# --- load_conan_credentials ---
+
+
+def test_load_conan_credentials_from_file(tmp_path):
+    """Reads username and password from [conan] section."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text(
+        '[conan]\n'
+        'username = "conan_user"\n'
+        'password = "conan_pass"\n',
+        encoding="utf-8",
+    )
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_conan_credentials()
+
+    assert creds["username"] == "conan_user"
+    assert creds["password"] == "conan_pass"
+
+
+def test_load_conan_credentials_missing_file(tmp_path):
+    """Returns empty dict when config file doesn't exist."""
+    cfg = tmp_path / ".xmsconan.toml"
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_conan_credentials()
+
+    assert creds == {}
+
+
+def test_load_conan_credentials_no_conan_section(tmp_path):
+    """Returns empty dict when [conan] section is missing."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text('[aquapi]\nurl = "https://x/"\n', encoding="utf-8")
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_conan_credentials()
+
+    assert creds == {}
+
+
+def test_load_conan_credentials_partial(tmp_path):
+    """Returns only the keys present in the [conan] section."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text('[conan]\nusername = "user"\n', encoding="utf-8")
+    with patch("xmsconan.ci_tools.credentials._config_path", return_value=cfg):
+        creds = load_conan_credentials()
+
+    assert creds["username"] == "user"
+    assert "password" not in creds
