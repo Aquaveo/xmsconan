@@ -91,6 +91,7 @@ def generate_ci(
         "ci_coverage": ci_config.get("coverage", False),
         "ci_xvfb": ci_config.get("xvfb", False),
         "ci_linux_arm": ci_config.get("linux_arm", False),
+        "docker_image": ci_config.get("docker_image", ""),
     }
 
     # Select template and output path
@@ -157,7 +158,8 @@ def main():
         "--version", default=None,
         help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
     )
-    parser.add_argument("toml_file", help="Path to the build.toml file.")
+    parser.add_argument("toml_file", nargs="?", default="build.toml",
+                        help="Path to the build.toml file. Defaults to build.toml in the current directory.")
 
     args = parser.parse_args()
     _configure_logging(args)

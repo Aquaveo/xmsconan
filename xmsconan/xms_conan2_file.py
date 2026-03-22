@@ -105,6 +105,20 @@ class XmsConan2File(ConanFile):
         """The layout method."""
         cmake_layout(self)
 
+    def _get_python_cmake_hints(self):
+        """Return CMake hint variables for FindPython3.
+
+        Non-framework Python installations (e.g., uv, pyenv, python.org standalone)
+        on macOS aren't discoverable by CMake's default framework search. This
+        provides explicit paths so FindPython3 can locate Development.Module.
+        """
+        import sysconfig
+        return {
+            "Python3_EXECUTABLE": sys.executable,
+            "Python3_INCLUDE_DIR": sysconfig.get_path('include'),
+            "Python3_FIND_FRAMEWORK": "NEVER",
+        }
+
     def generate(self):
         """The generate method for the conan class."""
         tc = CMakeToolchain(self)
@@ -117,6 +131,10 @@ class XmsConan2File(ConanFile):
         # Version Info
         tc.variables["XMS_VERSION"] = '{}'.format(self.version)
         tc.variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
+
+        if self.options.pybind:
+            for key, value in self._get_python_cmake_hints().items():
+                tc.variables[key] = value
 
         # Generate toolchain
         tc.generate()
@@ -140,6 +158,9 @@ class XmsConan2File(ConanFile):
         # Version Info
         variables["XMS_VERSION"] = '{}'.format(self.version)
         variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
+
+        if self.options.pybind:
+            variables.update(self._get_python_cmake_hints())
 
         cmake.configure(variables=variables)
         cmake.build()
