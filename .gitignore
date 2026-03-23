@@ -1,4 +1,5 @@
 # Misc
+uv.lock
 .*.swp
 *.DS_STORE
 *~

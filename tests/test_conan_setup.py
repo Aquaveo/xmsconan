@@ -34,8 +34,9 @@ def test_custom_remote_url(mock_run):
     assert "https://custom.example.com/conan" in add_call[0][0]
 
 
+@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials", return_value={})
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
-def test_login_flag(mock_run):
+def test_login_flag(mock_run, mock_creds):
     """--login triggers conan remote login."""
     conan_setup(login=True)
 
@@ -56,8 +57,9 @@ def test_remove_conancenter_flag(mock_run):
     )
 
 
+@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials", return_value={})
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
-def test_all_flags_together(mock_run):
+def test_all_flags_together(mock_run, mock_creds):
     """All flags combined run in expected order."""
     conan_setup(login=True, remove_conancenter=True)
 
@@ -87,3 +89,57 @@ def test_propagates_called_process_error(mock_run):
     """Verify CalledProcessError propagates to caller."""
     with pytest.raises(subprocess.CalledProcessError):
         conan_setup()
+
+
+# --- credential-based login ---
+
+
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_login_with_explicit_credentials(mock_run):
+    """Explicit username/password are passed to conan remote login."""
+    conan_setup(login=True, username="myuser", password="mypass")
+
+    mock_run.assert_any_call(
+        ["conan", "remote", "login", "aquaveo", "myuser", "-p", "mypass"],
+        check=True,
+    )
+
+
+@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
+       return_value={"username": "cfguser", "password": "cfgpass"})
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_login_with_config_file(mock_run, mock_creds):
+    """Falls back to ~/.xmsconan.toml when no explicit credentials."""
+    conan_setup(login=True)
+
+    mock_creds.assert_called_once()
+    mock_run.assert_any_call(
+        ["conan", "remote", "login", "aquaveo", "cfguser", "-p", "cfgpass"],
+        check=True,
+    )
+
+
+@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
+       return_value={"username": "cfguser", "password": "cfgpass"})
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_login_explicit_overrides_config(mock_run, mock_creds):
+    """Explicit args take precedence over config file."""
+    conan_setup(login=True, username="explicit", password="secret")
+
+    mock_run.assert_any_call(
+        ["conan", "remote", "login", "aquaveo", "explicit", "-p", "secret"],
+        check=True,
+    )
+
+
+@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
+       return_value={})
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_login_falls_back_to_interactive(mock_run, mock_creds):
+    """Falls back to bare conan remote login when no credentials available."""
+    conan_setup(login=True)
+
+    mock_run.assert_any_call(
+        ["conan", "remote", "login", "aquaveo"],
+        check=True,
+    )

@@ -17,6 +17,8 @@ jobs:
       # Checkout Sources
       - name: Checkout Source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Setup Python
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -46,6 +48,8 @@ jobs:
       # Checkout Sources
       - name: Checkout Source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Setup Python
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -77,6 +81,8 @@ jobs:
       # Checkout Sources
       - name: Checkout Source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Setup Python
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
