@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmsconan"
-version = "2.5.0"
+dynamic = ["version"]
 description = "Methods and Modules used to aid in xmsconan projects"
 authors = [
     {name = "Gage Larsen"}
@@ -18,10 +18,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "tabulate",
-    "toml",
+    "conan>=2",
+    "devpi-client",
     "jinja2",
     "setuptools-scm",
+    "tabulate",
+    "toml",
 ]
 
 [project.scripts]
@@ -52,3 +54,6 @@ include = ["xmsconan*"]
 [tool.setuptools.package-data]
 "xmsconan.generator_tools" = ["templates/**/*", "ci_templates/**/*"]
 "xmsconan.build_tools" = ["profiles/**/*"]
+
+[tool.setuptools_scm]
+local_scheme = "no-local-version"

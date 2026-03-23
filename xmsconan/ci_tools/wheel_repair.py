@@ -12,6 +12,13 @@ import subprocess
 import sys
 
 
+def _pip_install_cmd(*packages):
+    """Return a pip install command list, using uv if available."""
+    if shutil.which("uv"):
+        return ["uv", "pip", "install", "--python", sys.executable, *packages]
+    return [sys.executable, "-m", "pip", "install", *packages]
+
+
 def _detect_platform():
     """Return ``'linux'``, ``'macos'``, or ``'windows'`` from *sys.platform*."""
     if sys.platform.startswith("linux"):
@@ -41,10 +48,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
         raise FileNotFoundError(f"No .whl files found in {wheel_dir}")
 
     if platform == "linux":
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "auditwheel", "patchelf"],
-            check=True,
-        )
+        subprocess.run(_pip_install_cmd("auditwheel", "patchelf"), check=True)
         env = os.environ.copy()
         env["LD_LIBRARY_PATH"] = os.path.join(wheel_dir, "libs")
         for whl in wheels:
@@ -54,10 +58,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
                 env=env,
             )
     elif platform == "macos":
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "delocate"],
-            check=True,
-        )
+        subprocess.run(_pip_install_cmd("delocate"), check=True)
         env = os.environ.copy()
         env["DYLD_LIBRARY_PATH"] = os.path.join(wheel_dir, "libs")
         for whl in wheels:
@@ -67,16 +68,14 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
                 env=env,
             )
     elif platform == "windows":
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "delvewheel"],
-            check=True,
-        )
+        subprocess.run(_pip_install_cmd("delvewheel"), check=True)
         libs_path = os.path.join(wheel_dir, "libs")
         for whl in wheels:
             subprocess.run(
                 [
                     "delvewheel", "repair", whl,
                     "--add-path", libs_path,
+                    "--namespace-pkg", "xms",
                     "-w", repaired_dir,
                 ],
                 check=True,

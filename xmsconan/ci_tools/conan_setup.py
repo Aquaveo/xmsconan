@@ -3,23 +3,31 @@
 Usage::
 
     xmsconan_conan_setup [--remote-url URL] [--login] [--remove-conancenter]
+    xmsconan_conan_setup --login --username USER --password PASS
 """
 import argparse
 import subprocess
 import sys
+
+from xmsconan.ci_tools.credentials import load_conan_credentials
 
 DEFAULT_REMOTE_URL = (
     "https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable"
 )
 
 
-def conan_setup(remote_url=None, login=False, remove_conancenter=False):
+def conan_setup(
+    remote_url=None, login=False, remove_conancenter=False,
+    username=None, password=None,
+):
     """Detect a Conan profile and configure the Aquaveo remote.
 
     Args:
         remote_url: Conan remote URL. Defaults to the Aquaveo stable remote.
-        login: If ``True``, run ``conan remote login aquaveo`` after adding.
+        login: If ``True``, log in to the aquaveo remote after adding it.
         remove_conancenter: If ``True``, remove the conancenter remote.
+        username: Conan remote username. Falls back to ``~/.xmsconan.toml``.
+        password: Conan remote password. Falls back to ``~/.xmsconan.toml``.
     """
     if remote_url is None:
         remote_url = DEFAULT_REMOTE_URL
@@ -40,7 +48,22 @@ def conan_setup(remote_url=None, login=False, remove_conancenter=False):
         )
 
     if login:
-        subprocess.run(["conan", "remote", "login", "aquaveo"], check=True)
+        if not username or not password:
+            conan_creds = load_conan_credentials()
+            username = username or conan_creds.get("username")
+            password = password or conan_creds.get("password")
+
+        if username and password:
+            subprocess.run(
+                ["conan", "remote", "login", "aquaveo", username,
+                 "-p", password],
+                check=True,
+            )
+        else:
+            subprocess.run(
+                ["conan", "remote", "login", "aquaveo"],
+                check=True,
+            )
 
 
 def main():
@@ -63,12 +86,16 @@ def main():
         action="store_true",
         help="Remove the conancenter remote.",
     )
+    parser.add_argument("--username", default=None, help="Conan remote username.")
+    parser.add_argument("--password", default=None, help="Conan remote password.")
     args = parser.parse_args()
     try:
         conan_setup(
             remote_url=args.remote_url,
             login=args.login,
             remove_conancenter=args.remove_conancenter,
+            username=args.username,
+            password=args.password,
         )
     except subprocess.CalledProcessError as exc:
         sys.exit(exc.returncode)

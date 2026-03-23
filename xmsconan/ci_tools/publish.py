@@ -3,6 +3,7 @@
 Usage::
 
     xmsconan_publish --version 7.0.0
+    xmsconan_publish                          # version from git tag
     xmsconan_publish --version 7.0.0 --no-deploy
     xmsconan_publish --version 7.0.0 --no-wheel --no-conan
     xmsconan_publish --version 7.0.0 --filter '{"build_type": "Release"}'
@@ -20,15 +21,19 @@ environment variables, or ``~/.xmsconan.toml`` (see
 :mod:`xmsconan.ci_tools.credentials`).
 """
 import argparse
+from dataclasses import dataclass, field
+import os
+import shutil
 import subprocess
 import sys
 
 import toml
 
-from xmsconan.ci_tools.conan_deploy import conan_deploy
-from xmsconan.ci_tools.conan_setup import conan_setup
-from xmsconan.ci_tools.wheel_deploy import wheel_deploy
-from xmsconan.ci_tools.wheel_repair import wheel_repair
+from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
+from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
+from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
+from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
+from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
 
 
 def _read_library_name(toml_path="build.toml"):
@@ -40,8 +45,71 @@ def _read_library_name(toml_path="build.toml"):
     return name
 
 
+def _read_ci_xvfb(toml_path="build.toml"):
+    """Read ``ci.xvfb`` from *toml_path*.  Returns ``False`` if not set."""
+    data = toml.load(toml_path)
+    return data.get("ci", {}).get("xvfb", False)
+
+
+def _check_xvfb(toml_path="build.toml"):
+    """Check if xvfb-run should wrap commands.
+
+    Returns ``True`` on Linux when ``ci.xvfb`` is set, no ``$DISPLAY`` is
+    available, and ``xvfb-run`` is on PATH.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    if os.environ.get("DISPLAY"):
+        return False
+    if not _read_ci_xvfb(toml_path):
+        return False
+    if not shutil.which("xvfb-run"):
+        print(
+            "WARNING: ci.xvfb=true but xvfb-run not found on PATH. "
+            "VTK tests may segfault.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _xvfb_prefix():
+    """Return the xvfb-run prefix for wrapping commands."""
+    return ["xvfb-run", "-a", "-s", "-screen 0 1280x1024x24"]
+
+
+@dataclass
+class PublishSteps:
+    """Callable steps used by :func:`publish`.
+
+    Each field defaults to the production implementation.  Tests can
+    supply fakes to avoid patching module-level names.
+    """
+
+    conan_setup: object = field(default=None)
+    subprocess_run: object = field(default=None)
+    wheel_repair: object = field(default=None)
+    wheel_deploy: object = field(default=None)
+    conan_deploy: object = field(default=None)
+    check_xvfb: object = field(default=None)
+
+    def __post_init__(self):  # noqa: D105
+        if self.conan_setup is None:
+            self.conan_setup = _conan_setup
+        if self.subprocess_run is None:
+            self.subprocess_run = subprocess.run
+        if self.wheel_repair is None:
+            self.wheel_repair = _wheel_repair
+        if self.wheel_deploy is None:
+            self.wheel_deploy = _wheel_deploy
+        if self.conan_deploy is None:
+            self.conan_deploy = _conan_deploy
+        if self.check_xvfb is None:
+            self.check_xvfb = _check_xvfb
+
+
 def publish(
-    version,
+    version=None,
     wheel_dir="wheelhouse",
     toml_path="build.toml",
     build_filter=None,
@@ -50,11 +118,12 @@ def publish(
     url=None,
     username=None,
     password=None,
+    steps=None,
 ):
     """Build, repair, and publish an XMS library.
 
     Args:
-        version: Package version string.
+        version: Package version string, or ``None`` to resolve from git tag.
         wheel_dir: Directory for wheel output.
         toml_path: Path to ``build.toml``.
         build_filter: JSON filter string for ``build.py --filter``.
@@ -63,39 +132,51 @@ def publish(
         url: devpi index URL (falls back to env / config file).
         username: devpi username (falls back to env / config file).
         password: devpi password (falls back to env / config file).
+        steps: :class:`PublishSteps` instance (production defaults if omitted).
     """
+    steps = steps or PublishSteps()
+
+    version = resolve_version(version)
+    if version == FALLBACK_VERSION:
+        raise SystemExit(
+            "Error: could not determine version from git tag. "
+            "Pass --version explicitly."
+        )
+
     library_name = _read_library_name(toml_path)
+    use_xvfb = steps.check_xvfb(toml_path)
+    xvfb = _xvfb_prefix() if use_xvfb else []
 
     # 1. Setup Conan
     print("==> Setting up Conan...")
-    conan_setup()
+    steps.conan_setup(login=True)
 
     # 2. Generate build files
     print("==> Generating build files...")
-    subprocess.run(
+    steps.subprocess_run(
         ["xmsconan_gen", "--version", version, toml_path],
         check=True,
     )
 
-    # 3. Build
+    # 3. Build (wrapped with xvfb-run if needed)
     print("==> Building...")
-    build_cmd = [
+    build_cmd = xvfb + [
         sys.executable, "build.py",
         "--version", version,
         "--wheel-dir", wheel_dir,
     ]
     if build_filter:
         build_cmd.extend(["--filter", build_filter])
-    subprocess.run(build_cmd, check=True)
+    steps.subprocess_run(build_cmd, check=True)
 
     # 4. Repair wheel
     print("==> Repairing wheel...")
-    wheel_repair(wheel_dir=wheel_dir)
+    steps.wheel_repair(wheel_dir=wheel_dir)
 
     # 5. Deploy wheel
     if deploy_wheel:
         print("==> Uploading wheel...")
-        wheel_deploy(
+        steps.wheel_deploy(
             wheel_dir=wheel_dir,
             url=url,
             username=username,
@@ -107,7 +188,7 @@ def publish(
     # 6. Deploy Conan package
     if deploy_conan:
         print("==> Uploading Conan package...")
-        conan_deploy(library_name, version, upload=True)
+        steps.conan_deploy(library_name, version, upload=True)
     else:
         print("==> Skipping Conan upload (--no-conan)")
 
@@ -120,8 +201,8 @@ def main():
         description="Build and publish an XMS library.",
     )
     parser.add_argument(
-        "--version", required=True,
-        help="Package version string.",
+        "--version", default=None,
+        help="Package version string (default: from git tag via setuptools-scm).",
     )
     parser.add_argument(
         "--wheel-dir", default="wheelhouse",
@@ -150,7 +231,29 @@ def main():
     parser.add_argument("--url", default=None, help="devpi index URL.")
     parser.add_argument("--username", default=None, help="devpi username.")
     parser.add_argument("--password", default=None, help="devpi password.")
+
+    # Docker arguments
+    parser.add_argument(
+        "--docker", action="store_true",
+        help="Run the publish workflow inside a Docker container.",
+    )
+    parser.add_argument(
+        "--docker-image", default=None,
+        help="Docker image to use (default: auto-detect from build.toml).",
+    )
+    parser.add_argument(
+        "--xmsconan-dir", default=None,
+        help="Path to local xmsconan source to install inside the container.",
+    )
     args = parser.parse_args()
+
+    if args.docker:
+        from xmsconan.ci_tools.docker_run import docker_publish
+        try:
+            docker_publish(args)
+        except SystemExit as exc:
+            sys.exit(exc.code if isinstance(exc.code, int) else 1)
+        return
 
     deploy_wheel = not args.no_deploy and not args.no_wheel
     deploy_conan = not args.no_deploy and not args.no_conan

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from xmsconan.ci_tools.wheel_repair import _detect_platform, wheel_repair
+from xmsconan.ci_tools.wheel_repair import _detect_platform, _pip_install_cmd, wheel_repair
 
 
 # --- _detect_platform ---
@@ -34,6 +34,26 @@ def test_detect_unsupported_raises():
     """Unsupported platforms raise RuntimeError."""
     with pytest.raises(RuntimeError, match="Unsupported platform"):
         _detect_platform()
+
+
+# --- _pip_install_cmd ---
+
+
+@patch("xmsconan.ci_tools.wheel_repair.shutil.which", return_value="/usr/bin/uv")
+def test_pip_install_cmd_uses_uv(mock_which):
+    """Uses uv pip install when uv is available."""
+    cmd = _pip_install_cmd("delocate")
+    assert cmd[0] == "uv"
+    assert "delocate" in cmd
+
+
+@patch("xmsconan.ci_tools.wheel_repair.shutil.which", return_value=None)
+def test_pip_install_cmd_falls_back_to_pip(mock_which):
+    """Falls back to python -m pip when uv is not available."""
+    cmd = _pip_install_cmd("delocate")
+    assert cmd[1] == "-m"
+    assert cmd[2] == "pip"
+    assert "delocate" in cmd
 
 
 # --- wheel_repair ---
@@ -97,6 +117,8 @@ def test_windows_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     assert cmd[0] == "delvewheel"
     assert "--add-path" in cmd
     assert os.path.join("/tmp/wh", "libs") in cmd
+    assert "--namespace-pkg" in cmd
+    assert "xms" in cmd
 
 
 @patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=[])

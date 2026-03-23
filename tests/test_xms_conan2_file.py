@@ -1,6 +1,7 @@
-"""Tests for xms_conan2_file._build_wheel platform override."""
+"""Tests for xms_conan2_file."""
 import os
 import sys
+import sysconfig
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,3 +120,25 @@ class TestBuildWheelPlatformOverride:
             obj._build_wheel()
 
         assert "_PYTHON_HOST_PLATFORM" not in os.environ
+
+
+class TestGetPythonCmakeHints:
+    """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
+
+    def test_returns_executable(self):
+        """Python3_EXECUTABLE points to sys.executable."""
+        obj = object.__new__(XmsConan2File)
+        hints = obj._get_python_cmake_hints()
+        assert hints["Python3_EXECUTABLE"] == sys.executable
+
+    def test_returns_include_dir(self):
+        """Python3_INCLUDE_DIR matches sysconfig include path."""
+        obj = object.__new__(XmsConan2File)
+        hints = obj._get_python_cmake_hints()
+        assert hints["Python3_INCLUDE_DIR"] == sysconfig.get_path('include')
+
+    def test_disables_framework_search(self):
+        """Python3_FIND_FRAMEWORK is NEVER to skip macOS framework search."""
+        obj = object.__new__(XmsConan2File)
+        hints = obj._get_python_cmake_hints()
+        assert hints["Python3_FIND_FRAMEWORK"] == "NEVER"
