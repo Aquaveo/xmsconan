@@ -268,14 +268,11 @@ if (IS_PYTHON_BUILD)
             ${PROJECT_NAME}
             ${EXT_LIBS}
     )
-    # On Linux, statically link the C++ runtime into the pybind module
-    # so the wheel has no dependency on the build compiler's libstdc++/libgcc.
-    if (UNIX AND NOT APPLE)
-        target_link_options(_{{ library_name }} PRIVATE
-            -static-libstdc++
-            -static-libgcc
-        )
-    endif()
+    # Do NOT statically link libstdc++/libgcc. Static linking causes locale/iostream
+    # corruption when multiple pybind modules (each with their own static libstdc++) are
+    # loaded in the same Python process. Portability is handled by auditwheel repair,
+    # which bundles the shared libstdc++.so.6 into the wheel if it is not in the
+    # manylinux policy baseline.
     set_target_properties(_{{ library_name }} PROPERTIES
         PREFIX ""
         CXX_VISIBILITY_PRESET "default"
