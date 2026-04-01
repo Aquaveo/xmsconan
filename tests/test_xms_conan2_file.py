@@ -208,36 +208,37 @@ class TestSaveTestArtifacts:
 
         assert not (dest / "Release-pybind" / "test_files").exists()
 
-    def test_copies_python_tests_for_pybind(self, tmp_path):
-        """build_folder/tests/ is copied for pybind builds."""
+    def test_copies_package_for_pybind(self, tmp_path):
+        """source_folder/_package/ is copied for pybind builds."""
         dest = tmp_path / "artifacts"
         obj = self._make_obj(tmp_path, pybind=True, artifacts_dir=dest, label="Release-pybind")
 
-        # Create tests dir in build folder
-        tests_dir = os.path.join(obj.build_folder, "tests")
-        os.makedirs(tests_dir)
-        with open(os.path.join(tests_dir, "test_pyt.py"), "w") as f:
-            f.write("import unittest")
+        # Create _package dir in source folder
+        pkg_dir = os.path.join(obj.source_folder, "_package", "tests", "files")
+        os.makedirs(pkg_dir)
+        with open(os.path.join(pkg_dir, "output.2dm"), "w") as f:
+            f.write("mesh data")
 
         obj._save_test_artifacts()
 
-        copied = dest / "Release-pybind" / "python_tests" / "test_pyt.py"
+        copied = dest / "Release-pybind" / "_package" / "tests" / "files" / "output.2dm"
         assert copied.exists()
+        assert copied.read_text() == "mesh data"
 
-    def test_skips_python_tests_for_testing(self, tmp_path):
-        """build_folder/tests/ is NOT copied for testing (C++) builds."""
+    def test_skips_package_for_testing(self, tmp_path):
+        """source_folder/_package/ is NOT copied for testing (C++) builds."""
         dest = tmp_path / "artifacts"
         obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Release-testing")
 
-        # Create tests dir in build folder (should be ignored for C++ testing)
-        tests_dir = os.path.join(obj.build_folder, "tests")
-        os.makedirs(tests_dir)
-        with open(os.path.join(tests_dir, "test_pyt.py"), "w") as f:
-            f.write("import unittest")
+        # Create _package dir in source folder (should be ignored for C++ testing)
+        pkg_dir = os.path.join(obj.source_folder, "_package")
+        os.makedirs(pkg_dir)
+        with open(os.path.join(pkg_dir, "setup.py"), "w") as f:
+            f.write("from setuptools import setup")
 
         obj._save_test_artifacts()
 
-        assert not (dest / "Release-testing" / "python_tests").exists()
+        assert not (dest / "Release-testing" / "_package").exists()
 
 
 class TestGetPythonCmakeHints:

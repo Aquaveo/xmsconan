@@ -1,4 +1,6 @@
 """Tests for generator_tools.build_file_generator."""
+from pathlib import Path
+
 import pytest
 
 from xmsconan.generator_tools.build_file_generator import (
@@ -176,3 +178,57 @@ def test_copy_xms_conan2_file_copies(tmp_path):
     """Normal mode copies xms_conan2_file.py to output dir."""
     copy_xms_conan2_file(str(tmp_path), dry_run=False)
     assert (tmp_path / "xms_conan2_file.py").exists()
+
+
+# --- Template generation tests ---
+
+REAL_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "xmsconan" / "generator_tools" / "templates"
+
+
+def _copy_template(name, dest_dir):
+    """Copy a single template from the real template dir into dest_dir."""
+    src = REAL_TEMPLATE_DIR / name
+    dst = dest_dir / name
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def test_generates_pytest_ini(build_toml, tmp_path):
+    """pytest.ini is generated with *_pyt.py discovery pattern."""
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("pytest.ini.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(build_toml),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    pytest_ini = output_dir / "pytest.ini"
+    assert pytest_ini.exists()
+    content = pytest_ini.read_text(encoding="utf-8")
+    assert "*_pyt.py" in content
+    assert "testpaths = _package/tests" in content
+
+
+def test_generates_flake8(build_toml, tmp_path):
+    """.flake8 is generated with library_name substituted."""
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template(".flake8.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(build_toml),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    flake8 = output_dir / ".flake8"
+    assert flake8.exists()
+    content = flake8.read_text(encoding="utf-8")
+    assert "application-import-names = xmscore" in content
+    assert "application-package-names = xms" in content

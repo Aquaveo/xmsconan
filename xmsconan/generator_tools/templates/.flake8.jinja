@@ -1,0 +1,22 @@
+[flake8]
+exclude =
+    .venv,
+    .tox,
+    .git,
+    __pycache__,
+    _package/tests/files/*,
+    build,
+    dist,
+    *.pyc,
+    *.egg-info,
+    .cache,
+    .eggs
+ignore = D200, D212
+max-line-length = 125
+docstring-convention = google
+isolated = true
+import-order-style = appnexus
+application-import-names = {{ library_name }}
+application-package-names = xms
+count = true
+statistics = true

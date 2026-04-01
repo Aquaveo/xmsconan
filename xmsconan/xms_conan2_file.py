@@ -225,8 +225,8 @@ class XmsConan2File(ConanFile):
 
         Reads XMS_TEST_ARTIFACTS_DIR and XMS_TEST_ARTIFACTS_LABEL from the
         build environment.  For testing builds, copies LastTest.log and the
-        test_files/ directory.  For pybind builds, copies the Python test
-        output directory.
+        test_files/ directory.  For pybind builds, copies the _package/
+        directory (module, tests, and baseline files).
         """
         env_vars = self.buildenv.vars(self)
         artifacts_dir = env_vars.get("XMS_TEST_ARTIFACTS_DIR")
@@ -256,15 +256,15 @@ class XmsConan2File(ConanFile):
                 shutil.copytree(test_files_src, dest_tf)
                 self.output.info("  Copied test_files/")
 
-        # Python test output — pybind builds only
+        # _package/ — pybind builds only (contains module, tests, and baselines)
         if self.options.pybind:
-            tests_src = os.path.join(self.build_folder, "tests")
-            if os.path.isdir(tests_src):
-                dest_tests = os.path.join(dest, "python_tests")
-                if os.path.exists(dest_tests):
-                    shutil.rmtree(dest_tests)
-                shutil.copytree(tests_src, dest_tests)
-                self.output.info("  Copied python test output")
+            package_src = os.path.join(self.source_folder, "_package")
+            if os.path.isdir(package_src):
+                dest_pkg = os.path.join(dest, "_package")
+                if os.path.exists(dest_pkg):
+                    shutil.rmtree(dest_pkg)
+                shutil.copytree(package_src, dest_pkg)
+                self.output.info("  Copied _package/")
 
     def _build_wheel(self):
         """Build a wheel from _package/ into build_folder/dist/."""
@@ -315,7 +315,7 @@ class XmsConan2File(ConanFile):
             self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
 
         # Install general dependencies
-        general_dependencies = ["numpy", "wheel"]
+        general_dependencies = ["numpy", "wheel", "pytest"]
         self.run(_pip_install_cmd(python_executable, *general_dependencies))
 
         # Install xms_dependencies one by one
@@ -339,8 +339,9 @@ class XmsConan2File(ConanFile):
         shutil.copytree(tests_src_dir, tests_dest_dir)
 
         # Run tests using the virtual environment's Python
-        unittest_command = f"{python_executable} -m unittest discover -v -p \"*_pyt.py\" -s {tests_dest_dir}"
-        self.run(unittest_command, cwd=self.build_folder)
+        pytest_ini = os.path.join(self.source_folder, "pytest.ini")
+        pytest_command = f'"{python_executable}" -m pytest -c "{pytest_ini}" {tests_dest_dir} -v'
+        self.run(pytest_command, cwd=self.build_folder)
 
     def export_sources(self):
         """Specify sources to be exported."""
