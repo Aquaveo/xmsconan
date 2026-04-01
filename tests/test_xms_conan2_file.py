@@ -122,6 +122,124 @@ class TestBuildWheelPlatformOverride:
         assert "_PYTHON_HOST_PLATFORM" not in os.environ
 
 
+class TestSaveTestArtifacts:
+    """Verify _save_test_artifacts copies the right files."""
+
+    def _make_obj(self, tmp_path, testing=False, pybind=False, artifacts_dir=None, label="test-label"):
+        """Create an XmsConan2File with real temp directories."""
+        obj = object.__new__(XmsConan2File)
+        obj.settings = MagicMock()
+        obj.build_folder = str(tmp_path / "build")
+        obj.source_folder = str(tmp_path / "source")
+        obj.output = MagicMock()
+
+        os.makedirs(obj.build_folder, exist_ok=True)
+        os.makedirs(obj.source_folder, exist_ok=True)
+
+        # Mock options
+        obj.options = MagicMock()
+        obj.options.testing = testing
+        obj.options.pybind = pybind
+
+        # Mock buildenv
+        env = {}
+        if artifacts_dir:
+            env["XMS_TEST_ARTIFACTS_DIR"] = str(artifacts_dir)
+            env["XMS_TEST_ARTIFACTS_LABEL"] = label
+        obj.buildenv = MagicMock()
+        obj.buildenv.vars.return_value = env
+
+        return obj
+
+    def test_noop_when_not_configured(self, tmp_path):
+        """Returns early when XMS_TEST_ARTIFACTS_DIR is not set."""
+        obj = self._make_obj(tmp_path, testing=True)
+        obj._save_test_artifacts()
+        # No makedirs call → nothing created
+        assert not (tmp_path / "artifacts").exists()
+
+    def test_copies_lasttest_log(self, tmp_path):
+        """LastTest.log is copied for testing builds."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Release-testing")
+
+        # Create LastTest.log in build folder
+        log_dir = os.path.join(obj.build_folder, "Testing", "Temporary")
+        os.makedirs(log_dir)
+        log_path = os.path.join(log_dir, "LastTest.log")
+        with open(log_path, "w") as f:
+            f.write("test output")
+
+        obj._save_test_artifacts()
+
+        copied = dest / "Release-testing" / "LastTest.log"
+        assert copied.exists()
+        assert copied.read_text() == "test output"
+
+    def test_copies_test_files_for_testing(self, tmp_path):
+        """test_files/ from source_folder is copied for testing builds."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Debug-testing")
+
+        # Create test_files in source folder
+        tf_dir = os.path.join(obj.source_folder, "test_files")
+        os.makedirs(tf_dir)
+        with open(os.path.join(tf_dir, "output.png"), "w") as f:
+            f.write("image data")
+
+        obj._save_test_artifacts()
+
+        copied = dest / "Debug-testing" / "test_files" / "output.png"
+        assert copied.exists()
+        assert copied.read_text() == "image data"
+
+    def test_skips_test_files_for_pybind(self, tmp_path):
+        """test_files/ is NOT copied for pybind builds."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, pybind=True, artifacts_dir=dest, label="Release-pybind")
+
+        # Create test_files in source folder (should be ignored)
+        tf_dir = os.path.join(obj.source_folder, "test_files")
+        os.makedirs(tf_dir)
+        with open(os.path.join(tf_dir, "output.png"), "w") as f:
+            f.write("image data")
+
+        obj._save_test_artifacts()
+
+        assert not (dest / "Release-pybind" / "test_files").exists()
+
+    def test_copies_python_tests_for_pybind(self, tmp_path):
+        """build_folder/tests/ is copied for pybind builds."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, pybind=True, artifacts_dir=dest, label="Release-pybind")
+
+        # Create tests dir in build folder
+        tests_dir = os.path.join(obj.build_folder, "tests")
+        os.makedirs(tests_dir)
+        with open(os.path.join(tests_dir, "test_pyt.py"), "w") as f:
+            f.write("import unittest")
+
+        obj._save_test_artifacts()
+
+        copied = dest / "Release-pybind" / "python_tests" / "test_pyt.py"
+        assert copied.exists()
+
+    def test_skips_python_tests_for_testing(self, tmp_path):
+        """build_folder/tests/ is NOT copied for testing (C++) builds."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Release-testing")
+
+        # Create tests dir in build folder (should be ignored for C++ testing)
+        tests_dir = os.path.join(obj.build_folder, "tests")
+        os.makedirs(tests_dir)
+        with open(os.path.join(tests_dir, "test_pyt.py"), "w") as f:
+            f.write("import unittest")
+
+        obj._save_test_artifacts()
+
+        assert not (dest / "Release-testing" / "python_tests").exists()
+
+
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
 

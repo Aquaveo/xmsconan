@@ -138,8 +138,15 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
         shell: bash
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ env.MATRIX_NAME }}
+          path: test_artifacts/
+          if-no-files-found: ignore
+        if: always()
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform macos
@@ -269,8 +276,15 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
         shell: bash
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ env.MATRIX_NAME }}
+          path: test_artifacts/
+          if-no-files-found: ignore
+        if: always()
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform linux
@@ -401,8 +415,15 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
         shell: bash
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ env.MATRIX_NAME }}
+          path: test_artifacts/
+          if-no-files-found: ignore
+        if: always()
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform linux
@@ -542,8 +563,15 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
         shell: cmd
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ env.MATRIX_NAME }}
+          path: test_artifacts/
+          if-no-files-found: ignore
+        if: always()
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows

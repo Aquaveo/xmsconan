@@ -35,11 +35,13 @@ Conan Build:
 <% endif %>
   artifacts:
     expire_in: '1d'
+    when: always
     paths:
 <% if ci_deploy %>
       - .export
 <% endif %>
       - wheelhouse/
+      - test_artifacts/
   script:
     - gcc --version
     - cmake --version
@@ -49,9 +51,9 @@ Conan Build:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
 <% if ci_xvfb %>
-    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse
+    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse --artifacts-dir test_artifacts
 <% else %>
-    - python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse
+    - python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse --artifacts-dir test_artifacts
 <% endif %>
 <% if ci_deploy %>
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-linux-${PACKAGE_VERSION}.tar.gz
@@ -65,8 +67,10 @@ Conan Build:
     AQUAPI_URL: "https://aquapi.aquaveo.com/aquaveo/dev"
   artifacts:
     expire_in: '1d'
+    when: always
     paths:
       - .export
+      - test_artifacts/
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - echo ${PACKAGE_VERSION}
@@ -75,7 +79,7 @@ Conan Build:
     - python -m pip install xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
-    - python build.py --version ${PACKAGE_VERSION}
+    - python build.py --version ${PACKAGE_VERSION} --artifacts-dir test_artifacts
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-${PACKAGE_VERSION}.tar.gz
   tags:
     - WinVM

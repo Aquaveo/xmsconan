@@ -20,13 +20,15 @@ parser.add_argument("--build-missing", help="Build missing dependencies from sou
 parser.add_argument("--python-only", help="Only build the Python (pybind) configuration", action="store_true")
 parser.add_argument("--wheel-dir", help="Extract pre-built wheel from pybind package to this directory")
 parser.add_argument("--repair", help="Repair Linux wheel for manylinux using Docker", action="store_true")
+parser.add_argument("--artifacts-dir", help="Save test artifacts to this directory")
 
 if __name__ == "__main__":
     args = parser.parse_args()
     builder = packager.XmsConanPackager(
         conanfile.LIBRARY_NAME,
         conanfile.__file__,
-        build_missing=args.build_missing
+        build_missing=args.build_missing,
+        artifacts_dir=args.artifacts_dir,
     )
     builder.generate_configurations()
     if args.filter:

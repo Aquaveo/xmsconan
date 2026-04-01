@@ -251,6 +251,82 @@ def test_github_ci_version_bump(ci_toml, tmp_path):
     assert f"xmsconan>={__version__}" in content
 
 
+def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
+    """Rendered GitHub CI build commands include --artifacts-dir test_artifacts."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "--artifacts-dir test_artifacts" in content
+
+
+def test_github_ci_includes_test_artifact_upload(ci_toml, tmp_path):
+    """Rendered GitHub CI has upload-artifact steps for test artifacts."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "test-artifacts-" in content
+    assert "test_artifacts/" in content
+
+
+def test_github_ci_test_artifact_upload_uses_always(ci_toml, tmp_path):
+    """Verify test artifact upload step uses if: always()."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    # Find lines with "Upload test artifacts" and check the surrounding context
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if "Upload test artifacts" in line:
+            # Look for 'if: always()' within the next few lines
+            block = "\n".join(lines[i:i + 8])
+            assert "always()" in block
+
+
+def test_gitlab_ci_includes_artifacts_dir_flag(tmp_path):
+    """Rendered GitLab CI build commands include --artifacts-dir test_artifacts."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "--artifacts-dir test_artifacts" in content
+
+
+def test_gitlab_ci_includes_test_artifacts_path(tmp_path):
+    """Rendered GitLab CI artifacts paths include test_artifacts/."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "test_artifacts/" in content
+
+
+def test_gitlab_ci_uses_when_always(tmp_path):
+    """Rendered GitLab CI Conan Build job uses when: always for artifacts."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "when: always" in content
+
+
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     """python_namespaced_dir defaults to library_name[3:]."""
     toml_file = tmp_path / "build.toml"

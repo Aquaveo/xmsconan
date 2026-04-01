@@ -57,18 +57,20 @@ configurations = {
 class XmsConanPackager(object):
     """The packager class."""
 
-    def __init__(self, library_name, conanfile_path='.', build_missing=False):
+    def __init__(self, library_name, conanfile_path='.', build_missing=False, artifacts_dir=None):
         """Initialize the packager.
 
         Args:
             library_name: Name of the library to build.
             conanfile_path: Path to the conanfile.
             build_missing: If True, build missing dependencies from source.
+            artifacts_dir: If set, test artifacts are saved here during builds.
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
         self._configurations = None
         self._build_missing = build_missing
+        self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
@@ -132,6 +134,9 @@ class XmsConanPackager(object):
                 'AQUAPI_PASSWORD': aquapi_password,
                 'AQUAPI_URL': aquapi_url,
             }
+            if self._artifacts_dir:
+                combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
+
             # Set macOS deployment target for consistent wheel builds
             if combination.get('os') == 'Macos':
                 combination['buildenv']['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
@@ -192,6 +197,18 @@ class XmsConanPackager(object):
                 filtered_configurations.append(configuration)
         self._configurations = filtered_configurations
 
+    def _config_label(self, combination):
+        """Return a human-readable label for a build configuration."""
+        parts = [combination.get('build_type', 'unknown')]
+        opts = combination.get('options', {})
+        if opts.get('testing'):
+            parts.append('testing')
+        elif opts.get('pybind'):
+            parts.append('pybind')
+        if opts.get('wchar_t') == 'typedef':
+            parts.append('wchar_typedef')
+        return '-'.join(parts)
+
     def run(self):
         """Run the build process."""
         self.printer.print_ascci_art()
@@ -200,7 +217,11 @@ class XmsConanPackager(object):
         for i, combination in enumerate(self.configurations):
             self.printer.print_message('*-' * 40 + '\n')
             self.printer.print_message(f'Building configuration {i + 1} of {len(self.configurations)}')
-            profile_path = self.create_build_profile(combination)
+            build_combination = combination
+            if self._artifacts_dir:
+                build_combination = copy.deepcopy(combination)
+                build_combination['buildenv']['XMS_TEST_ARTIFACTS_LABEL'] = self._config_label(combination)
+            profile_path = self.create_build_profile(build_combination)
             self.printer.print_profile(profile_path)
             cmd = ['conan', 'create', self._conanfile_path, '--profile', profile_path]
             if self._build_missing:

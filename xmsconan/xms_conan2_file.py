@@ -168,12 +168,18 @@ class XmsConan2File(ConanFile):
 
         # Run the tests if it is testing configuration.
         if self.options.testing:
-            self.run_cxx_tests(cmake)
+            try:
+                self.run_cxx_tests(cmake)
+            finally:
+                self._save_test_artifacts()
 
         # If this build is python, build the wheel then run tests.
         elif self.options.pybind:
             self._build_wheel()
-            self.run_python_tests()
+            try:
+                self.run_python_tests()
+            finally:
+                self._save_test_artifacts()
 
     def package(self):
         """The package method of the conan class."""
@@ -213,6 +219,52 @@ class XmsConan2File(ConanFile):
                     for line in f.readlines():
                         no_newline = line.strip('\n')
                         self.output.info(no_newline)
+
+    def _save_test_artifacts(self):
+        """Copy test artifacts to an external directory if configured.
+
+        Reads XMS_TEST_ARTIFACTS_DIR and XMS_TEST_ARTIFACTS_LABEL from the
+        build environment.  For testing builds, copies LastTest.log and the
+        test_files/ directory.  For pybind builds, copies the Python test
+        output directory.
+        """
+        env_vars = self.buildenv.vars(self)
+        artifacts_dir = env_vars.get("XMS_TEST_ARTIFACTS_DIR")
+        if not artifacts_dir:
+            return
+
+        label = env_vars.get("XMS_TEST_ARTIFACTS_LABEL", "unknown")
+        dest = os.path.join(artifacts_dir, label)
+        os.makedirs(dest, exist_ok=True)
+        self.output.info(f"Saving test artifacts to {dest}")
+
+        # CTest log
+        last_test_log = os.path.join(
+            self.build_folder, "Testing", "Temporary", "LastTest.log"
+        )
+        if os.path.isfile(last_test_log):
+            shutil.copy2(last_test_log, os.path.join(dest, "LastTest.log"))
+            self.output.info("  Copied LastTest.log")
+
+        # test_files/ — testing builds only (lives in source_folder per CMakeLists.txt)
+        if self.options.testing:
+            test_files_src = os.path.join(self.source_folder, "test_files")
+            if os.path.isdir(test_files_src):
+                dest_tf = os.path.join(dest, "test_files")
+                if os.path.exists(dest_tf):
+                    shutil.rmtree(dest_tf)
+                shutil.copytree(test_files_src, dest_tf)
+                self.output.info("  Copied test_files/")
+
+        # Python test output — pybind builds only
+        if self.options.pybind:
+            tests_src = os.path.join(self.build_folder, "tests")
+            if os.path.isdir(tests_src):
+                dest_tests = os.path.join(dest, "python_tests")
+                if os.path.exists(dest_tests):
+                    shutil.rmtree(dest_tests)
+                shutil.copytree(tests_src, dest_tests)
+                self.output.info("  Copied python test output")
 
     def _build_wheel(self):
         """Build a wheel from _package/ into build_folder/dist/."""

@@ -302,3 +302,94 @@ def test_upload_handles_called_process_error(mock_run):
     p = XmsConanPackager("xmscore")
     # Should not raise — CalledProcessError is caught internally
     p.upload("7.0.0")
+
+
+# --- artifacts_dir ---
+
+
+def test_init_accepts_artifacts_dir(tmp_path):
+    """artifacts_dir is stored as an absolute path."""
+    p = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path / "arts"))
+    assert p._artifacts_dir == str(tmp_path / "arts")
+
+
+def test_init_artifacts_dir_defaults_to_none():
+    """artifacts_dir is None when not provided."""
+    p = XmsConanPackager("xmscore")
+    assert p._artifacts_dir is None
+
+
+@patch.dict("os.environ", {}, clear=True)
+def test_generate_configurations_injects_artifacts_dir(tmp_path):
+    """Every configuration gets XMS_TEST_ARTIFACTS_DIR when artifacts_dir set."""
+    p = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path))
+    p.generate_configurations(system_platform="linux")
+
+    for cfg in p.configurations:
+        assert cfg["buildenv"]["XMS_TEST_ARTIFACTS_DIR"] == str(tmp_path)
+
+
+@patch.dict("os.environ", {}, clear=True)
+def test_generate_configurations_no_artifacts_dir():
+    """XMS_TEST_ARTIFACTS_DIR absent when artifacts_dir not set."""
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+
+    for cfg in p.configurations:
+        assert "XMS_TEST_ARTIFACTS_DIR" not in cfg["buildenv"]
+
+
+# --- _config_label ---
+
+
+@patch.dict("os.environ", {}, clear=True)
+def test_config_label_testing():
+    """Testing config produces 'Release-testing' label."""
+    p = XmsConanPackager("xmscore")
+    combo = {"build_type": "Release", "options": {"testing": True, "pybind": False, "wchar_t": "builtin"}}
+    assert p._config_label(combo) == "Release-testing"
+
+
+@patch.dict("os.environ", {}, clear=True)
+def test_config_label_pybind():
+    """Pybind config produces 'Release-pybind' label."""
+    p = XmsConanPackager("xmscore")
+    combo = {"build_type": "Release", "options": {"testing": False, "pybind": True, "wchar_t": "builtin"}}
+    assert p._config_label(combo) == "Release-pybind"
+
+
+@patch.dict("os.environ", {}, clear=True)
+def test_config_label_wchar_typedef():
+    """wchar_t=typedef suffix appears in label."""
+    p = XmsConanPackager("xmscore")
+    combo = {"build_type": "Release", "options": {"testing": True, "pybind": False, "wchar_t": "typedef"}}
+    assert p._config_label(combo) == "Release-testing-wchar_typedef"
+
+
+@patch.dict("os.environ", {}, clear=True)
+def test_config_label_plain():
+    """Plain config (no testing, no pybind) is just build_type."""
+    p = XmsConanPackager("xmscore")
+    combo = {"build_type": "Debug", "options": {"testing": False, "pybind": False, "wchar_t": "builtin"}}
+    assert p._config_label(combo) == "Debug"
+
+
+# --- run with artifacts ---
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_injects_label_into_profile(mock_run, tmp_path):
+    """Profile written during run() contains XMS_TEST_ARTIFACTS_LABEL."""
+    p = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path))
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    p.run()
+
+    # Read the profile that was written
+    profile_path = p._temp_dir_path + "/temp_profile"
+    with open(profile_path, "r") as f:
+        content = f.read()
+    assert "XMS_TEST_ARTIFACTS_LABEL=Release-testing" in content
+    assert f"XMS_TEST_ARTIFACTS_DIR={tmp_path}" in content
