@@ -5,18 +5,22 @@ exclude =
     .git,
     __pycache__,
     _package/tests/files/*,
+    docs/source/conf.py,
     build,
     dist,
+    tests/files/*,
+    tests/fixtures/*,
     *.pyc,
     *.egg-info,
     .cache,
     .eggs
-ignore = D200, D212
-max-line-length = 125
+ignore = D200, D212, B028, W503
+max-line-length = 120
 docstring-convention = google
 isolated = true
 import-order-style = appnexus
-application-import-names = {{ library_name }}
+application-import-names = xms.{{ python_namespaced_dir }}
 application-package-names = xms
 count = true
 statistics = true
+banned-modules = osgeo.*=Use the xmsgdal library instead.

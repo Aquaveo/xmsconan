@@ -38,9 +38,6 @@ ext-modules = [
   { name = "xms.{{ python_namespaced_dir }}._{{ library_name }}", sources = [], optional = true }
 ]
 {% endif %}
-[tool.pytest.ini_options]
-python_files = ["test_*.py", "*_test.py", "*_pyt.py"]
-
 [tool.cibuildwheel]
 build = "cp313-*"
 skip = ["*-musllinux_*"]
