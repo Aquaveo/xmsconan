@@ -230,5 +230,5 @@ def test_generates_flake8(build_toml, tmp_path):
     flake8 = output_dir / ".flake8"
     assert flake8.exists()
     content = flake8.read_text(encoding="utf-8")
-    assert "application-import-names = xmscore" in content
+    assert "application-import-names = xms.core" in content
     assert "application-package-names = xms" in content

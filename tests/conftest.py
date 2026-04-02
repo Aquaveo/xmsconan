@@ -7,7 +7,7 @@ def build_toml(tmp_path):
     """Write a minimal build.toml with library_name and description, return path."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core library"\n',
+        'library_name = "xmscore"\ndescription = "Core library"\npython_namespaced_dir = "core"\n',
         encoding="utf-8",
     )
     return toml_file
