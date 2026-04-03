@@ -240,6 +240,40 @@ class TestSaveTestArtifacts:
 
         assert not (dest / "Release-testing" / "_package").exists()
 
+    def test_copies_runner_binary(self, tmp_path):
+        """Runner binary is copied for testing builds."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Debug-testing")
+
+        # Create a fake runner binary in the build folder
+        if sys.platform == "win32":
+            runner_path = os.path.join(obj.build_folder, "Debug", "runner.exe")
+        else:
+            runner_path = os.path.join(obj.build_folder, "Debug", "runner")
+        os.makedirs(os.path.dirname(runner_path), exist_ok=True)
+        with open(runner_path, "wb") as f:
+            f.write(b"\x7fELF")  # fake binary
+
+        obj._save_test_artifacts()
+
+        copied = dest / "Debug-testing" / os.path.basename(runner_path)
+        assert copied.exists()
+        assert copied.read_bytes() == b"\x7fELF"
+
+    def test_saves_test_path_metadata(self, tmp_path):
+        """Metadata file records the compiled-in XMS_TEST_PATH."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Debug-testing")
+
+        obj._save_test_artifacts()
+
+        meta = dest / "Debug-testing" / "test_metadata.json"
+        assert meta.exists()
+        import json
+        data = json.loads(meta.read_text())
+        assert "test_path" in data
+        assert data["test_path"] == os.path.join(obj.source_folder, "test_files") + "/"
+
 
 class TestSkipCxxTests:
     """Verify XMS_SKIP_CXX_TESTS env var skips test execution."""
