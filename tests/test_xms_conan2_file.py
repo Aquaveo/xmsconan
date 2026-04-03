@@ -241,6 +241,40 @@ class TestSaveTestArtifacts:
         assert not (dest / "Release-testing" / "_package").exists()
 
 
+class TestSkipCxxTests:
+    """Verify XMS_SKIP_CXX_TESTS env var skips test execution."""
+
+    def test_skip_cxx_tests_when_env_set(self):
+        """Tests are skipped when XMS_SKIP_CXX_TESTS=1."""
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.testing = True
+        obj.options.pybind = False
+        obj.output = MagicMock()
+        obj.buildenv = MagicMock()
+        obj.buildenv.vars.return_value = {"XMS_SKIP_CXX_TESTS": "1"}
+
+        cmake = MagicMock()
+        obj.run_cxx_tests(cmake)
+
+        cmake.test.assert_not_called()
+
+    def test_runs_cxx_tests_when_env_not_set(self):
+        """Tests run normally when XMS_SKIP_CXX_TESTS is not set."""
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.testing = True
+        obj.options.pybind = False
+        obj.output = MagicMock()
+        obj.buildenv = MagicMock()
+        obj.buildenv.vars.return_value = {}
+
+        cmake = MagicMock()
+        obj.run_cxx_tests(cmake)
+
+        cmake.test.assert_called_once()
+
+
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
 
