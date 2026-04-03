@@ -210,8 +210,7 @@ class XmsConan2File(ConanFile):
 
     def run_cxx_tests(self, cmake):
         """A function to run the cxx_tests."""
-        env_vars = self.buildenv.vars(self)
-        if env_vars.get("XMS_SKIP_CXX_TESTS"):
+        if os.environ.get("XMS_SKIP_CXX_TESTS"):
             self.output.info("XMS_SKIP_CXX_TESTS is set — skipping C++ test execution.")
             return
         try:

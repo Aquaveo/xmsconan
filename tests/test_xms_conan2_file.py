@@ -285,11 +285,13 @@ class TestSkipCxxTests:
         obj.options.testing = True
         obj.options.pybind = False
         obj.output = MagicMock()
-        obj.buildenv = MagicMock()
-        obj.buildenv.vars.return_value = {"XMS_SKIP_CXX_TESTS": "1"}
 
         cmake = MagicMock()
-        obj.run_cxx_tests(cmake)
+        os.environ["XMS_SKIP_CXX_TESTS"] = "1"
+        try:
+            obj.run_cxx_tests(cmake)
+        finally:
+            del os.environ["XMS_SKIP_CXX_TESTS"]
 
         cmake.test.assert_not_called()
 
@@ -300,10 +302,9 @@ class TestSkipCxxTests:
         obj.options.testing = True
         obj.options.pybind = False
         obj.output = MagicMock()
-        obj.buildenv = MagicMock()
-        obj.buildenv.vars.return_value = {}
 
         cmake = MagicMock()
+        os.environ.pop("XMS_SKIP_CXX_TESTS", None)
         obj.run_cxx_tests(cmake)
 
         cmake.test.assert_called_once()
