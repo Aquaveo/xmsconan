@@ -350,6 +350,66 @@ def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
     assert "CTEST_PARALLEL_LEVEL: '8'" in content
 
 
+def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
+    """When split_tests = true, generates separate Build and Test jobs."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'split_tests = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert '"Run C++ Tests":' in content
+    assert "XMS_SKIP_CXX_TESTS" in content
+
+
+def test_gitlab_ci_no_split_tests_by_default(tmp_path):
+    """Without split_tests, no separate test job is generated."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert '"Run C++ Tests":' not in content
+    assert "XMS_SKIP_CXX_TESTS" not in content
+
+
+def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
+    """Split test job wraps runner with xvfb-run when xvfb = true."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'split_tests = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    # Find the "Run C++ Tests:" section
+    import re
+    test_section = re.search(r'"Run C\+\+ Tests":.*?(?=\n\S|\Z)', content, re.DOTALL)
+    assert test_section is not None
+    assert "xvfb-run" in test_section.group()
+
+
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     """python_namespaced_dir defaults to library_name[3:]."""
     toml_file = tmp_path / "build.toml"
