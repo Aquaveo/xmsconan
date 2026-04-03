@@ -327,6 +327,29 @@ def test_gitlab_ci_uses_when_always(tmp_path):
     assert "when: always" in content
 
 
+def test_gitlab_ci_sets_ctest_parallel_level(tmp_path):
+    """Rendered GitLab CI sets CTEST_PARALLEL_LEVEL in Conan Build job."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}" in content
+
+
+def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
+    """Rendered GitHub CI sets CTEST_PARALLEL_LEVEL."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "CTEST_PARALLEL_LEVEL: '8'" in content
+
+
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     """python_namespaced_dir defaults to library_name[3:]."""
     toml_file = tmp_path / "build.toml"

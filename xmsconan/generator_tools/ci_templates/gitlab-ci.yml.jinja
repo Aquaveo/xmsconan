@@ -49,6 +49,7 @@ Conan Build:
     - pip install conan xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
 <% if ci_xvfb %>
     - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse --artifacts-dir test_artifacts
@@ -73,6 +74,7 @@ Conan Build:
       - test_artifacts/
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - echo ${PACKAGE_VERSION}
     - python --version
     - pip install conan toml packaging devpi-client
@@ -180,6 +182,7 @@ Coverage:
   script:
     - pip install lxml conan xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - xmsconan_gen --version 0.0.0 build.toml
     - conan install -pr conan_profiles/linux_testing_debug_coverage.txt . -c tools.cmake.cmake_layout:build_folder_vars="['self.name', 'const.coverage']" --build=missing
     - cmake --preset coverage
