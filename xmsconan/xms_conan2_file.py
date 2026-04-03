@@ -377,6 +377,7 @@ class XmsConan2File(ConanFile):
         copy(self, '*', src=os.path.join(self.recipe_folder, '_package'),
              dst=os.path.join(self.export_sources_folder, '_package'))
         copy(self, 'CMakeLists.txt', src=self.recipe_folder, dst=self.export_sources_folder)
+        copy(self, 'pytest.ini', src=self.recipe_folder, dst=self.export_sources_folder)
 
         for item in self.extra_export_sources:
             if os.path.isdir(item):
