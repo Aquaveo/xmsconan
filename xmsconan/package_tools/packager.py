@@ -1,4 +1,5 @@
 """The packager module."""
+import concurrent.futures
 import copy
 import itertools
 import json
@@ -6,6 +7,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from xmsconan.package_tools.printer import Printer
@@ -57,7 +59,9 @@ configurations = {
 class XmsConanPackager(object):
     """The packager class."""
 
-    def __init__(self, library_name, conanfile_path='.', build_missing=False, artifacts_dir=None):
+    SHARD_TIMEOUT = 600  # seconds per shard (10 minutes)
+
+    def __init__(self, library_name, conanfile_path='.', build_missing=False, artifacts_dir=None, test_shards=0):
         """Initialize the packager.
 
         Args:
@@ -65,12 +69,15 @@ class XmsConanPackager(object):
             conanfile_path: Path to the conanfile.
             build_missing: If True, build missing dependencies from source.
             artifacts_dir: If set, test artifacts are saved here during builds.
+            test_shards: If > 1, skip tests during build and run them afterward
+                in parallel shards using GTest's GTEST_TOTAL_SHARDS.
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
         self._configurations = None
         self._build_missing = build_missing
         self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
+        self._test_shards = test_shards
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
@@ -214,6 +221,7 @@ class XmsConanPackager(object):
         self.printer.print_ascci_art()
         self.print_configuration_table()
         failing_configurations = []
+        sharded_test_runs = []
         for i, combination in enumerate(self.configurations):
             self.printer.print_message('*-' * 40 + '\n')
             self.printer.print_message(f'Building configuration {i + 1} of {len(self.configurations)}')
@@ -221,26 +229,97 @@ class XmsConanPackager(object):
             if self._artifacts_dir:
                 build_combination = copy.deepcopy(combination)
                 build_combination['buildenv']['XMS_TEST_ARTIFACTS_LABEL'] = self._config_label(combination)
+            is_testing = combination.get('options', {}).get('testing', False)
+            shard_this = is_testing and self._test_shards > 1
+            env = None
+            if shard_this:
+                env = os.environ.copy()
+                env['XMS_SKIP_CXX_TESTS'] = '1'
             profile_path = self.create_build_profile(build_combination)
             self.printer.print_profile(profile_path)
             cmd = ['conan', 'create', self._conanfile_path, '--profile', profile_path]
             if self._build_missing:
                 cmd.append('--build=missing')
             try:
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, env=env)
                 self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
+                if shard_this and self._artifacts_dir:
+                    label = self._config_label(combination)
+                    sharded_test_runs.append(label)
             except subprocess.CalledProcessError:
                 self.printer.print_message(
                     f'ERROR building configuration {i + 1} of {len(self.configurations)}')
                 failing_configurations.append(i)
             self.printer.print_message('*-' * 40 + '\n')
-        if len(failing_configurations) > 0:
-            self.printer.print_message('The following configurations failed to build:')
-            self.print_configuration_table(failing_configurations)
-            return len(failing_configurations)
+
+        # Run sharded tests after all builds complete
+        shard_failure_count = 0
+        for label in sharded_test_runs:
+            shard_failures = self._run_sharded_tests(label)
+            shard_failure_count += len(shard_failures)
+
+        total_failures = len(failing_configurations) + shard_failure_count
+        if total_failures > 0:
+            if failing_configurations:
+                self.printer.print_message('The following configurations failed to build:')
+                self.print_configuration_table(failing_configurations)
+            if shard_failure_count:
+                self.printer.print_message(f'{shard_failure_count} test shard(s) failed.')
+            return total_failures
         else:
             self.printer.print_message('All configurations built successfully.')
             return 0
+
+    def _run_sharded_tests(self, label):
+        """Run test runner in parallel shards using GTest sharding.
+
+        Args:
+            label: The artifact label (e.g. "Debug-testing") to find the runner.
+
+        Returns:
+            List of failed shard indices, or empty list if all passed.
+        """
+        artifact_dir = os.path.join(self._artifacts_dir, label)
+        runner_name = "runner.exe" if sys.platform == "win32" else "runner"
+        runner_path = os.path.join(artifact_dir, runner_name)
+        if not os.path.isfile(runner_path):
+            self.printer.print_message(f'WARNING: Runner not found at {runner_path}, skipping sharded tests')
+            return []
+
+        os.chmod(runner_path, 0o755)
+
+        self.printer.print_message(f'Running {self._test_shards} test shards for {label}')
+
+        failures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self._test_shards) as executor:
+            futures = {}
+            for shard_index in range(self._test_shards):
+                env = os.environ.copy()
+                env['GTEST_TOTAL_SHARDS'] = str(self._test_shards)
+                env['GTEST_SHARD_INDEX'] = str(shard_index)
+                output_file = os.path.join(artifact_dir, f'TEST-shard-{shard_index}.xml')
+                cmd = [runner_path, f'--gtest_output=xml:{output_file}']
+                future = executor.submit(subprocess.run, cmd, env=env, timeout=self.SHARD_TIMEOUT)
+                futures[future] = shard_index
+
+            for future in concurrent.futures.as_completed(futures):
+                shard_index = futures[future]
+                try:
+                    result = future.result()
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    self.printer.print_message(
+                        f'  Shard {shard_index + 1}/{self._test_shards} ERROR: {exc}')
+                    failures.append(f'{label}-shard-{shard_index}')
+                    continue
+                if result.returncode != 0:
+                    self.printer.print_message(f'  Shard {shard_index + 1}/{self._test_shards} FAILED')
+                    failures.append(f'{label}-shard-{shard_index}')
+                else:
+                    self.printer.print_message(f'  Shard {shard_index + 1}/{self._test_shards} passed')
+
+        if not failures:
+            self.printer.print_message(f'All {self._test_shards} shards passed for {label}')
+        return failures
 
     def upload(self, version):
         """Upload the packages to the server."""

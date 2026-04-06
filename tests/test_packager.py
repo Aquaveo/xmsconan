@@ -1,6 +1,9 @@
 """Tests for package_tools.packager."""
 import subprocess
+import sys
 from unittest.mock import patch
+
+import pytest
 
 from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
 
@@ -8,34 +11,17 @@ from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
 # --- get_current_arch ---
 
 
-@patch("xmsconan.package_tools.packager.platform.machine", return_value="x86_64")
-def test_get_current_arch_x86_64(mock_machine):
-    """x86_64 maps to x86_64."""
-    assert get_current_arch() == "x86_64"
-
-
-@patch("xmsconan.package_tools.packager.platform.machine", return_value="AMD64")
-def test_get_current_arch_amd64(mock_machine):
-    """amd64 (case-insensitive) maps to x86_64."""
-    assert get_current_arch() == "x86_64"
-
-
-@patch("xmsconan.package_tools.packager.platform.machine", return_value="arm64")
-def test_get_current_arch_arm64(mock_machine):
-    """arm64 maps to armv8."""
-    assert get_current_arch() == "armv8"
-
-
-@patch("xmsconan.package_tools.packager.platform.machine", return_value="aarch64")
-def test_get_current_arch_aarch64(mock_machine):
-    """aarch64 maps to armv8."""
-    assert get_current_arch() == "armv8"
-
-
-@patch("xmsconan.package_tools.packager.platform.machine", return_value="riscv64")
-def test_get_current_arch_unknown_passthrough(mock_machine):
-    """Unknown architecture passed through as-is (lowered)."""
-    assert get_current_arch() == "riscv64"
+@pytest.mark.parametrize("machine,expected", [
+    ("x86_64", "x86_64"),
+    ("AMD64", "x86_64"),
+    ("arm64", "armv8"),
+    ("aarch64", "armv8"),
+    ("riscv64", "riscv64"),
+])
+def test_get_current_arch(machine, expected):
+    """Platform machine string maps to Conan architecture."""
+    with patch("xmsconan.package_tools.packager.platform.machine", return_value=machine):
+        assert get_current_arch() == expected
 
 
 # --- XmsConanPackager init / properties ---
@@ -393,3 +379,145 @@ def test_run_injects_label_into_profile(mock_run, tmp_path):
         content = f.read()
     assert "XMS_TEST_ARTIFACTS_LABEL=Release-testing" in content
     assert f"XMS_TEST_ARTIFACTS_DIR={tmp_path}" in content
+
+
+# --- test sharding ---
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_skips_tests_when_sharding(mock_run, tmp_path):
+    """Testing configs get XMS_SKIP_CXX_TESTS=1 when test_shards > 1."""
+    p = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path), test_shards=4)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    p.run()
+
+    # conan create should have been called with env containing XMS_SKIP_CXX_TESTS
+    call_kwargs = mock_run.call_args_list[0]
+    env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+    assert env is not None
+    assert env.get('XMS_SKIP_CXX_TESTS') == '1'
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_no_skip_without_sharding(mock_run):
+    """Testing configs run tests normally when test_shards is 0."""
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    p.run()
+
+    call_kwargs = mock_run.call_args_list[0]
+    env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+    assert env is None
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run",
+       return_value=subprocess.CompletedProcess([], 0))
+def test_run_sharded_tests_invokes_runner(mock_run, tmp_path):
+    """After build, runner is invoked N times with GTEST shard env vars."""
+    artifacts_dir = tmp_path / "artifacts"
+    label_dir = artifacts_dir / "Debug-testing"
+    label_dir.mkdir(parents=True)
+
+    # Create a fake runner binary
+    runner_name = "runner.exe" if sys.platform == "win32" else "runner"
+    runner_path = label_dir / runner_name
+    runner_path.write_bytes(b"\x7fELF")
+    runner_path.chmod(0o755)
+
+    p = XmsConanPackager("xmscore", artifacts_dir=str(artifacts_dir), test_shards=2)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    result = p.run()
+    assert result == 0
+
+    # First call is conan create, remaining calls are shard runs
+    runner_calls = [c for c in mock_run.call_args_list if str(runner_path) in str(c)]
+    assert len(runner_calls) == 2
+
+    # Verify shard env vars
+    shard_envs = []
+    for call in runner_calls:
+        env = call.kwargs.get('env') or call[1].get('env', {})
+        shard_envs.append((env.get('GTEST_TOTAL_SHARDS'), env.get('GTEST_SHARD_INDEX')))
+    shard_envs.sort(key=lambda x: x[1])
+    assert shard_envs == [('2', '0'), ('2', '1')]
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_no_shard_when_shards_is_one(mock_run):
+    """test_shards=1 does NOT trigger sharding — tests run normally."""
+    p = XmsConanPackager("xmscore", test_shards=1)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    p.run()
+
+    call_kwargs = mock_run.call_args_list[0]
+    env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+    assert env is None
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run",
+       return_value=subprocess.CompletedProcess([], 0))
+def test_run_sharded_tests_handles_subprocess_exception(mock_run, tmp_path):
+    """Exception in a shard thread is caught and reported as a failure."""
+    artifacts_dir = tmp_path / "artifacts"
+    label_dir = artifacts_dir / "Debug-testing"
+    label_dir.mkdir(parents=True)
+
+    runner_name = "runner.exe" if sys.platform == "win32" else "runner"
+    runner_path = label_dir / runner_name
+    runner_path.write_bytes(b"\x7fELF")
+    runner_path.chmod(0o755)
+
+    # First call (conan create) succeeds; subsequent calls (shards) raise OSError
+    mock_run.side_effect = [
+        subprocess.CompletedProcess([], 0),
+        OSError("runner crashed"),
+        OSError("runner crashed"),
+    ]
+
+    p = XmsConanPackager("xmscore", artifacts_dir=str(artifacts_dir), test_shards=2)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    result = p.run()
+    assert result > 0  # failures reported, not an unhandled crash
+
+
+@patch.dict("os.environ", {}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run",
+       return_value=subprocess.CompletedProcess([], 0))
+def test_run_sharded_tests_handles_timeout(mock_run, tmp_path):
+    """Verify TimeoutExpired in a shard is caught and reported as a failure."""
+    artifacts_dir = tmp_path / "artifacts"
+    label_dir = artifacts_dir / "Debug-testing"
+    label_dir.mkdir(parents=True)
+
+    runner_name = "runner.exe" if sys.platform == "win32" else "runner"
+    runner_path = label_dir / runner_name
+    runner_path.write_bytes(b"\x7fELF")
+    runner_path.chmod(0o755)
+
+    mock_run.side_effect = [
+        subprocess.CompletedProcess([], 0),  # conan create
+        subprocess.TimeoutExpired("runner", 600),  # shard 0 times out
+        subprocess.CompletedProcess([], 0),  # shard 1 passes
+    ]
+
+    p = XmsConanPackager("xmscore", artifacts_dir=str(artifacts_dir), test_shards=2)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    result = p.run()
+    assert result > 0  # one shard failed

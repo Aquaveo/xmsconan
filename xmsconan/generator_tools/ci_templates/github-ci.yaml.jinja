@@ -82,6 +82,7 @@ jobs:
       # Python Variables
       PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
+      CTEST_PARALLEL_LEVEL: '8'
 
     steps:
       # Get Correct Version of Xcode
@@ -233,6 +234,7 @@ jobs:
       # Python Variables
       PYTHON_TARGET_VERSION: '3.13'
       RELEASE_PYTHON: 'False'
+      CTEST_PARALLEL_LEVEL: '8'
 
     steps:
       # Checkout Sources
@@ -372,6 +374,7 @@ jobs:
       # Python Variables
       PYTHON_TARGET_VERSION: '3.13'
       RELEASE_PYTHON: 'False'
+      CTEST_PARALLEL_LEVEL: '8'
 
     steps:
       # Checkout Sources
@@ -506,6 +509,7 @@ jobs:
       # Python Variables
       PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
+      CTEST_PARALLEL_LEVEL: '8'
 
     steps:
       # Checkout Sources

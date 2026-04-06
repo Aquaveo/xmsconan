@@ -2,6 +2,7 @@
 Conanfile base for the xmscore projects compatible with Conan 2.x.
 """
 import glob
+import json
 import os
 import shutil
 import sys
@@ -209,6 +210,9 @@ class XmsConan2File(ConanFile):
 
     def run_cxx_tests(self, cmake):
         """A function to run the cxx_tests."""
+        if os.environ.get("XMS_SKIP_CXX_TESTS"):
+            self.output.info("XMS_SKIP_CXX_TESTS is set — skipping C++ test execution.")
+            return
         try:
             cmake.test()
         except ConanException:
@@ -255,6 +259,35 @@ class XmsConan2File(ConanFile):
                     shutil.rmtree(dest_tf)
                 shutil.copytree(test_files_src, dest_tf)
                 self.output.info("  Copied test_files/")
+
+            # runner binary — check build root first (single-config generators
+            # like Ninja), then Debug/ and Release/ (multi-config generators)
+            runner_name = "runner.exe" if sys.platform == "win32" else "runner"
+            runner_src = None
+            search_dirs = [
+                self.build_folder,
+                os.path.join(self.build_folder, "Debug"),
+                os.path.join(self.build_folder, "Release"),
+            ]
+            for d in search_dirs:
+                candidate = os.path.join(d, runner_name)
+                if os.path.isfile(candidate):
+                    runner_src = candidate
+                    break
+            if runner_src:
+                shutil.copy2(runner_src, os.path.join(dest, runner_name))
+                self.output.info(f"  Copied {runner_name}")
+
+            # test_metadata.json — records paths needed by the parallel test runner
+            test_path = os.path.join(self.source_folder, "test_files") + "/"
+            metadata = {
+                "test_path": test_path,
+                "build_folder": self.build_folder,
+            }
+            metadata_path = os.path.join(dest, "test_metadata.json")
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+            self.output.info("  Wrote test_metadata.json")
 
         # _package/ — pybind builds only (contains module, tests, and baselines)
         if self.options.pybind:

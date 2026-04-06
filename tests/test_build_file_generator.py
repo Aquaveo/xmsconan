@@ -232,3 +232,25 @@ def test_generates_flake8(build_toml, tmp_path):
     content = flake8.read_text(encoding="utf-8")
     assert "application-import-names = xms.core" in content
     assert "application-package-names = xms" in content
+
+
+def test_generates_build_py_with_test_shards(build_toml, tmp_path):
+    """build.py is generated with --test-shards argument and auto mode logic."""
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(build_toml),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    build_py = output_dir / "build.py"
+    assert build_py.exists()
+    content = build_py.read_text(encoding="utf-8")
+    assert "--test-shards" in content
+    assert "auto" in content
+    assert "os.cpu_count()" in content
