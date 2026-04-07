@@ -95,6 +95,8 @@ def generate_ci(
         "ci_xvfb": ci_config.get("xvfb", False),
         "ci_linux_arm": ci_config.get("linux_arm", False),
         "docker_image": ci_config.get("docker_image", ""),
+        "ci_split_tests": ci_config.get("split_tests", False),
+        "ci_test_shards": ci_config.get("test_shards", 0),
     }
 
     # Select template and output path

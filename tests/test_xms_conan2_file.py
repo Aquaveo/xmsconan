@@ -240,6 +240,94 @@ class TestSaveTestArtifacts:
 
         assert not (dest / "Release-testing" / "_package").exists()
 
+    def test_copies_runner_binary_multiconfig(self, tmp_path):
+        """Runner binary is copied from Debug/ subfolder (multi-config generators)."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Debug-testing")
+
+        # Create a fake runner binary in Debug/ subfolder (Visual Studio, Ninja Multi-Config)
+        if sys.platform == "win32":
+            runner_path = os.path.join(obj.build_folder, "Debug", "runner.exe")
+        else:
+            runner_path = os.path.join(obj.build_folder, "Debug", "runner")
+        os.makedirs(os.path.dirname(runner_path), exist_ok=True)
+        with open(runner_path, "wb") as f:
+            f.write(b"\x7fELF")  # fake binary
+
+        obj._save_test_artifacts()
+
+        copied = dest / "Debug-testing" / os.path.basename(runner_path)
+        assert copied.exists()
+        assert copied.read_bytes() == b"\x7fELF"
+
+    def test_copies_runner_binary_singleconfig(self, tmp_path):
+        """Runner binary is copied from build root (single-config generators like Ninja)."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Debug-testing")
+
+        # Create a fake runner binary at build root (Ninja single-config)
+        runner_name = "runner.exe" if sys.platform == "win32" else "runner"
+        runner_path = os.path.join(obj.build_folder, runner_name)
+        with open(runner_path, "wb") as f:
+            f.write(b"\x7fELF")  # fake binary
+
+        obj._save_test_artifacts()
+
+        copied = dest / "Debug-testing" / runner_name
+        assert copied.exists()
+        assert copied.read_bytes() == b"\x7fELF"
+
+    def test_saves_test_path_metadata(self, tmp_path):
+        """Metadata file records the compiled-in XMS_TEST_PATH."""
+        dest = tmp_path / "artifacts"
+        obj = self._make_obj(tmp_path, testing=True, artifacts_dir=dest, label="Debug-testing")
+
+        obj._save_test_artifacts()
+
+        meta = dest / "Debug-testing" / "test_metadata.json"
+        assert meta.exists()
+        import json
+        data = json.loads(meta.read_text())
+        assert "test_path" in data
+        assert data["test_path"] == os.path.join(obj.source_folder, "test_files") + "/"
+        assert "build_folder" in data
+        assert data["build_folder"] == obj.build_folder
+
+
+class TestSkipCxxTests:
+    """Verify XMS_SKIP_CXX_TESTS env var skips test execution."""
+
+    def test_skip_cxx_tests_when_env_set(self):
+        """Tests are skipped when XMS_SKIP_CXX_TESTS=1."""
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.testing = True
+        obj.options.pybind = False
+        obj.output = MagicMock()
+
+        cmake = MagicMock()
+        os.environ["XMS_SKIP_CXX_TESTS"] = "1"
+        try:
+            obj.run_cxx_tests(cmake)
+        finally:
+            del os.environ["XMS_SKIP_CXX_TESTS"]
+
+        cmake.test.assert_not_called()
+
+    def test_runs_cxx_tests_when_env_not_set(self):
+        """Tests run normally when XMS_SKIP_CXX_TESTS is not set."""
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.testing = True
+        obj.options.pybind = False
+        obj.output = MagicMock()
+
+        cmake = MagicMock()
+        os.environ.pop("XMS_SKIP_CXX_TESTS", None)
+        obj.run_cxx_tests(cmake)
+
+        cmake.test.assert_called_once()
+
 
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""

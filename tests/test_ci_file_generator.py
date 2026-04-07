@@ -7,12 +7,15 @@ from xmsconan.generator_tools.ci_file_generator import (
 )
 
 
-def test_display_name_converts_library_name():
-    """'xmscore' becomes 'XmsCore'."""
-    assert _display_name("xmscore") == "XmsCore"
-    assert _display_name("xmsgrid") == "XmsGrid"
-    assert _display_name("xmsinterp") == "XmsInterp"
-    assert _display_name("xmsextractor") == "XmsExtractor"
+@pytest.mark.parametrize("input_name,expected", [
+    ("xmscore", "XmsCore"),
+    ("xmsgrid", "XmsGrid"),
+    ("xmsinterp", "XmsInterp"),
+    ("xmsextractor", "XmsExtractor"),
+])
+def test_display_name_converts_library_name(input_name, expected):
+    """Library name is converted to display format."""
+    assert _display_name(input_name) == expected
 
 
 def test_missing_toml_raises_file_not_found(tmp_path):
@@ -96,9 +99,8 @@ def test_context_variables_rendered(ci_toml, tmp_path):
     generate_ci(str(ci_toml), "2.3.5", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    # The real template should contain these rendered values
-    # (this depends on actual template content, so just verify the file was written)
-    assert len(content) > 0
+    assert "XmsCore" in content
+    assert "xmscore" in content
 
 
 def test_ci_config_options_passed_to_template(tmp_path):
@@ -325,6 +327,193 @@ def test_gitlab_ci_uses_when_always(tmp_path):
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     assert "when: always" in content
+
+
+def test_gitlab_ci_sets_ctest_parallel_level(tmp_path):
+    """Rendered GitLab CI sets CTEST_PARALLEL_LEVEL in Conan Build job."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}" in content
+
+
+def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
+    """Rendered GitHub CI sets CTEST_PARALLEL_LEVEL."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert "CTEST_PARALLEL_LEVEL: '8'" in content
+
+
+def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
+    """When split_tests = true, generates separate Build and Test jobs."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'split_tests = true\n'
+        'coverage = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert '"Run C++ Tests":' in content
+    assert "XMS_SKIP_CXX_TESTS" in content
+    import yaml
+    ci = yaml.safe_load(content)
+    # Build and Test should be separate stages
+    assert ci["Conan Build"]["stage"] == "Build"
+    assert ci["Run C++ Tests"]["stage"] == "Test"
+    # Coverage should be informational-only when tests run in a separate job
+    assert ci["Coverage"].get("allow_failure") is True
+
+
+def test_gitlab_ci_no_split_tests_by_default(tmp_path):
+    """Without split_tests, no separate test job is generated."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert '"Run C++ Tests":' not in content
+    assert "XMS_SKIP_CXX_TESTS" not in content
+    # No Build stage — everything stays in Test
+    import yaml
+    ci = yaml.safe_load(content)
+    assert ci["Conan Build"]["stage"] == "Test"
+    assert "Build" not in ci.get("stages", [])
+
+
+def test_gitlab_ci_coverage_allow_failure_without_split_tests(tmp_path):
+    """Coverage is required (no allow_failure) when split_tests is not set."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'coverage = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    import yaml
+    ci = yaml.safe_load(content)
+    assert "allow_failure" not in ci.get("Coverage", {})
+
+
+def test_gitlab_ci_test_shards_generates_parallel_jobs(tmp_path):
+    """When test_shards > 1, Run C++ Tests uses parallel and GTEST_SHARD env vars."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'split_tests = true\n'
+        'test_shards = 4\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    import yaml
+    ci = yaml.safe_load(content)
+    assert ci["Run C++ Tests"]["parallel"] == 4
+    assert "GTEST_TOTAL_SHARDS=4" in content
+    assert "GTEST_SHARD_INDEX" in content
+
+
+def test_gitlab_ci_no_shards_without_config(tmp_path):
+    """Without test_shards, no parallel or GTEST env vars are generated."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'split_tests = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    import yaml
+    ci = yaml.safe_load(content)
+    assert "parallel" not in ci["Run C++ Tests"]
+    assert "GTEST_TOTAL_SHARDS" not in content
+
+
+def test_gitlab_ci_test_shards_without_split_tests_no_parallel(tmp_path):
+    """test_shards alone (without split_tests) does not produce a parallel test job."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'test_shards = 4\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    assert '"Run C++ Tests":' not in content
+    assert "GTEST_TOTAL_SHARDS" not in content
+    assert "parallel:" not in content
+
+
+def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
+    """Split test job wraps runner with xvfb-run when xvfb = true."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'split_tests = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".gitlab-ci.yml"
+    content = ci_file.read_text(encoding="utf-8")
+    # Find the "Run C++ Tests:" section
+    import re
+    test_section = re.search(r'"Run C\+\+ Tests":.*?(?=\n\S|\Z)', content, re.DOTALL)
+    assert test_section is not None
+    assert "xvfb-run" in test_section.group()
 
 
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
