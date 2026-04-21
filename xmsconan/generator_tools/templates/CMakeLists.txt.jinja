@@ -2,7 +2,7 @@
 # To regenerate file, use generators in the aquaveo/dev_tools repository.
 # Any changes needed to be made to the file should be made in the template file.
 
-cmake_minimum_required(VERSION 3.18.0)
+cmake_minimum_required(VERSION 3.21.0)
 cmake_policy(SET CMP0015 NEW) # Link Directory Pathing
 cmake_policy(SET CMP0091 NEW)
 cmake_policy(SET CMP0148 NEW)
@@ -166,6 +166,29 @@ if (BUILD_TESTING)
     )
     target_compile_definitions(runner PRIVATE GTEST_ENABLED CXX_TEST)
     target_include_directories(runner PRIVATE ${EXT_INCLUDE_DIRS})
+    
+    # Copy all the .dll files the runner depends on into its directory.
+    # Other platforms have a different system that doesn't need this.
+    if (WIN32)
+      set(test_runner_has_dependencies $<BOOL:$<TARGET_RUNTIME_DLLS:runner>>)
+      set(copy_test_runner_dependencies
+          ${CMAKE_COMMAND} -E copy
+          $<TARGET_RUNTIME_DLLS:runner>
+          $<TARGET_FILE_DIR:runner>
+      )
+      # Generator expression works out to something like (pseudo-Python):
+      # `if (test_runner_has_dependencies): copy_test_runner_dependencies()`
+      # It would be written like that except `if` statements evaluate at
+      # configure time and the needed files aren't known until configure
+      # time, by which point it's too late.
+      add_custom_command(TARGET runner POST_BUILD
+        COMMAND "$<${test_runner_has_dependencies}:${copy_test_runner_dependencies}>"
+        COMMAND_EXPAND_LISTS)
+    endif ()
+
+    # This adds a custom command that runs the tests, and CMake runs custom
+    # commands in the order they're added, so this has to come *after* the
+    # dependencies are copied or it will try to run the tests without them.
     gtest_discover_tests(runner)
 
     if (WIN32)
