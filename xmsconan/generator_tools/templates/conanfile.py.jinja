@@ -17,6 +17,9 @@ class {{ library_name|title }}ConanFile(XmsConan2File):
     {%- if xms_dependency_options is defined and xms_dependency_options %}
     xms_dependency_options = {{ xms_dependency_options }}
     {%- endif %}
+    {%- if extra_dependency_options is defined and extra_dependency_options %}
+    extra_dependency_options = {{ extra_dependency_options }}
+    {%- endif %}
     xms_dependencies = [
         {%- for dependency in xms_dependencies -%}{{'\n        '}}"{{ dependency.name }}/{{ dependency.version }}",{% endfor %}
     ]

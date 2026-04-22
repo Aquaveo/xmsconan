@@ -43,6 +43,7 @@ class XmsConan2File(ConanFile):
     testing_framework = "cxxtest"  # Options: "cxxtest" or "gtest"
     python_binding_type = "pybind11"  # Options: "pybind11" or "vtk_wrap"
     xms_dependency_options = {}  # Per-dependency option overrides: {"dep_name": {"pybind": False, "testing": False}}
+    extra_dependency_options = {}  # Per-dependency option overrides for extra_dependencies: {"dep_name": {"opt": value}}
 
     default_options = {
         'wchar_t': 'builtin',
@@ -101,6 +102,10 @@ class XmsConan2File(ConanFile):
             dep_opts = self.xms_dependency_options.get(dep_name, {})
             self.options[dep_name].pybind = dep_opts.get('pybind', self.options.pybind)
             self.options[dep_name].testing = dep_opts.get('testing', self.options.testing)
+
+        for dep_name, opts in self.extra_dependency_options.items():
+            for opt_name, opt_value in opts.items():
+                setattr(self.options[dep_name], opt_name, opt_value)
 
     def layout(self):
         """The layout method."""
