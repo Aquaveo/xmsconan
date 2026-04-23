@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
+from tests.utils import patch_env
 
 
 # --- get_current_arch ---
@@ -42,7 +43,7 @@ def test_configurations_none_before_generate():
 # --- generate_configurations ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_linux():
     """Linux config has expected shape."""
     p = XmsConanPackager("xmscore")
@@ -55,7 +56,7 @@ def test_generate_configurations_linux():
     assert "buildenv" in base
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_windows():
     """Windows config uses msvc compiler."""
     p = XmsConanPackager("xmscore")
@@ -65,7 +66,7 @@ def test_generate_configurations_windows():
     assert base["compiler"] == "msvc"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_darwin():
     """Verify macOS config sets MACOSX_DEPLOYMENT_TARGET."""
     p = XmsConanPackager("xmscore")
@@ -76,7 +77,7 @@ def test_generate_configurations_darwin():
     assert base["buildenv"].get("MACOSX_DEPLOYMENT_TARGET") == "15.0"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_darwin_arm_sets_host_platform():
     """Verify macOS ARM config sets _PYTHON_HOST_PLATFORM to avoid universal2 tag."""
     p = XmsConanPackager("xmscore")
@@ -87,7 +88,7 @@ def test_generate_configurations_darwin_arm_sets_host_platform():
         assert cfg["buildenv"].get("_PYTHON_HOST_PLATFORM") == "macosx-15.0-arm64"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_includes_variants():
     """Windows produces base + wchar_t + pybind + testing variants."""
     p = XmsConanPackager("xmscore")
@@ -108,7 +109,7 @@ def test_generate_configurations_includes_variants():
     assert has_testing
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_wchar_t_variants_only_for_msvc():
     """Only msvc compiler gets wchar_t=typedef variants."""
     p = XmsConanPackager("xmscore")
@@ -118,7 +119,7 @@ def test_wchar_t_variants_only_for_msvc():
     assert len(typedef_configs) == 0
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_pybind_variants_exclude_debug():
     """No pybind variant for Debug build_type."""
     p = XmsConanPackager("xmscore")
@@ -129,7 +130,7 @@ def test_pybind_variants_exclude_debug():
         assert cfg["build_type"] != "Debug"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_testing_variants_added_for_all():
     """Every base config gets a testing variant."""
     p = XmsConanPackager("xmscore")
@@ -142,7 +143,7 @@ def test_testing_variants_added_for_all():
 # --- filter_configurations ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_filter_configurations_by_build_type():
     """Filters by top-level key."""
     p = XmsConanPackager("xmscore")
@@ -154,7 +155,7 @@ def test_filter_configurations_by_build_type():
     assert len(p.configurations) < total
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_filter_configurations_by_option():
     """Filters by nested option value."""
     p = XmsConanPackager("xmscore")
@@ -174,7 +175,7 @@ def test_filter_configurations_noop_when_none():
 # --- create_build_profile ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_create_build_profile_writes_settings_and_options(tmp_path):
     """Profile file contains [settings] and [options] sections."""
     p = XmsConanPackager("xmscore")
@@ -193,7 +194,7 @@ def test_create_build_profile_writes_settings_and_options(tmp_path):
 # --- print_configuration_table ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_print_configuration_table_all(capsys):
     """Default (None) prints all configurations."""
     p = XmsConanPackager("xmscore")
@@ -205,7 +206,7 @@ def test_print_configuration_table_all(capsys):
     assert "gcc" in captured.out
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_print_configuration_table_subset(capsys):
     """Specific index list prints only those rows."""
     p = XmsConanPackager("xmscore")
@@ -216,7 +217,7 @@ def test_print_configuration_table_subset(capsys):
     assert "1" in captured.out  # row number 1 (0-indexed config, 1-indexed display)
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_print_configuration_table_uses_library_name(capsys):
     """Table headers use the actual library name, not a hardcoded value."""
     p = XmsConanPackager("xmsgrid")
@@ -232,7 +233,7 @@ def test_print_configuration_table_uses_library_name(capsys):
 # --- run ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
 def test_run_returns_zero_on_success(mock_run):
     """All configurations pass → returns 0."""
@@ -246,7 +247,7 @@ def test_run_returns_zero_on_success(mock_run):
     assert mock_run.call_count >= 1
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch(
     "xmsconan.package_tools.packager.subprocess.run",
     side_effect=subprocess.CalledProcessError(1, "conan"),
@@ -264,7 +265,7 @@ def test_run_returns_failure_count(mock_run):
 # --- upload ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
 def test_upload_calls_conan_upload(mock_run):
     """upload() calls conan upload with correct command structure."""
@@ -278,7 +279,7 @@ def test_upload_calls_conan_upload(mock_run):
     assert "xmscore/7.0.0*" in cmd
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch(
     "xmsconan.package_tools.packager.subprocess.run",
     side_effect=subprocess.CalledProcessError(1, "conan"),
@@ -305,7 +306,7 @@ def test_init_artifacts_dir_defaults_to_none():
     assert p._artifacts_dir is None
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_injects_artifacts_dir(tmp_path):
     """Every configuration gets XMS_TEST_ARTIFACTS_DIR when artifacts_dir set."""
     p = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path))
@@ -315,7 +316,7 @@ def test_generate_configurations_injects_artifacts_dir(tmp_path):
         assert cfg["buildenv"]["XMS_TEST_ARTIFACTS_DIR"] == str(tmp_path)
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_generate_configurations_no_artifacts_dir():
     """XMS_TEST_ARTIFACTS_DIR absent when artifacts_dir not set."""
     p = XmsConanPackager("xmscore")
@@ -328,7 +329,7 @@ def test_generate_configurations_no_artifacts_dir():
 # --- _config_label ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_config_label_testing():
     """Testing config produces 'Release-testing' label."""
     p = XmsConanPackager("xmscore")
@@ -336,7 +337,7 @@ def test_config_label_testing():
     assert p._config_label(combo) == "Release-testing"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_config_label_pybind():
     """Pybind config produces 'Release-pybind' label."""
     p = XmsConanPackager("xmscore")
@@ -344,7 +345,7 @@ def test_config_label_pybind():
     assert p._config_label(combo) == "Release-pybind"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_config_label_wchar_typedef():
     """wchar_t=typedef suffix appears in label."""
     p = XmsConanPackager("xmscore")
@@ -352,7 +353,7 @@ def test_config_label_wchar_typedef():
     assert p._config_label(combo) == "Release-testing-wchar_typedef"
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_config_label_plain():
     """Plain config (no testing, no pybind) is just build_type."""
     p = XmsConanPackager("xmscore")
@@ -363,7 +364,7 @@ def test_config_label_plain():
 # --- run with artifacts ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
 def test_run_injects_label_into_profile(mock_run, tmp_path):
     """Profile written during run() contains XMS_TEST_ARTIFACTS_LABEL."""
@@ -384,7 +385,7 @@ def test_run_injects_label_into_profile(mock_run, tmp_path):
 # --- test sharding ---
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
 def test_run_skips_tests_when_sharding(mock_run, tmp_path):
     """Testing configs get XMS_SKIP_CXX_TESTS=1 when test_shards > 1."""
@@ -401,7 +402,7 @@ def test_run_skips_tests_when_sharding(mock_run, tmp_path):
     assert env.get('XMS_SKIP_CXX_TESTS') == '1'
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
 def test_run_no_skip_without_sharding(mock_run):
     """Testing configs run tests normally when test_shards is 0."""
@@ -416,7 +417,7 @@ def test_run_no_skip_without_sharding(mock_run):
     assert env is None
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
 def test_run_sharded_tests_invokes_runner(mock_run, tmp_path):
     """After build, runner is invoked N times with GTEST shard env vars."""
@@ -450,7 +451,7 @@ def test_run_sharded_tests_invokes_runner(mock_run, tmp_path):
     assert shard_envs == [('2', '0'), ('2', '1')]
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
 def test_run_no_shard_when_shards_is_one(mock_run):
     """test_shards=1 does NOT trigger sharding — tests run normally."""
@@ -465,7 +466,7 @@ def test_run_no_shard_when_shards_is_one(mock_run):
     assert env is None
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run",
        return_value=subprocess.CompletedProcess([], 0))
 def test_run_sharded_tests_handles_subprocess_exception(mock_run, tmp_path):
@@ -494,7 +495,7 @@ def test_run_sharded_tests_handles_subprocess_exception(mock_run, tmp_path):
     assert result > 0  # failures reported, not an unhandled crash
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run",
        return_value=subprocess.CompletedProcess([], 0))
 def test_run_sharded_tests_handles_timeout(mock_run, tmp_path):

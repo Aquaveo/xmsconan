@@ -12,6 +12,7 @@ from xmsconan.ci_tools.publish import (
     PublishSteps,
 )
 from xmsconan.generator_tools.version import FALLBACK_VERSION
+from tests.utils import patch_env
 
 
 # --- fixtures ---
@@ -216,7 +217,7 @@ def test_publish_rejects_fallback_version(tmp_path):
 
 @patch("xmsconan.ci_tools.publish.shutil.which", return_value="/usr/bin/xvfb-run")
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_check_xvfb_true_on_linux(mock_which, tmp_path):
     """Returns True on Linux when ci.xvfb=true and no DISPLAY."""
     toml_file = tmp_path / "build.toml"
@@ -239,7 +240,7 @@ def test_check_xvfb_false_on_macos(tmp_path):
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
-@patch.dict("os.environ", {"DISPLAY": ":0"})
+@patch_env({"DISPLAY": ":0"})
 def test_check_xvfb_false_when_display_set(tmp_path):
     """Returns False when DISPLAY is already set."""
     toml_file = tmp_path / "build.toml"
@@ -251,7 +252,7 @@ def test_check_xvfb_false_when_display_set(tmp_path):
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 def test_check_xvfb_false_when_xvfb_not_configured(tmp_path):
     """Returns False when ci.xvfb is not set."""
     toml_file = tmp_path / "build.toml"
