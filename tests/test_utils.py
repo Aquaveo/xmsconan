@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from tests.utils import patch_env
+from .utils import patch_env
 
 WINDOWS = os.name == 'nt'
 

@@ -12,7 +12,7 @@ from xmsconan.ci_tools.publish import (
     PublishSteps,
 )
 from xmsconan.generator_tools.version import FALLBACK_VERSION
-from tests.utils import patch_env
+from .utils import patch_env
 
 
 # --- fixtures ---

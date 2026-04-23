@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
-from tests.utils import patch_env
+from .utils import patch_env
 
 
 # --- get_current_arch ---

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy
-from tests.utils import patch_env
+from .utils import patch_env
 
 
 @patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")

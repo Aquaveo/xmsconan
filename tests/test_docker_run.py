@@ -13,7 +13,7 @@ from xmsconan.ci_tools.docker_run import (
     DOCKER_REGISTRY,
     resolve_docker_image,
 )
-from tests.utils import patch_env
+from .utils import patch_env
 
 
 # --- resolve_docker_image ---
