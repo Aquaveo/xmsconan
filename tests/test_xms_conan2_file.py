@@ -1,5 +1,6 @@
 """Tests for xms_conan2_file."""
 import os
+from pathlib import Path
 import sys
 import sysconfig
 from unittest.mock import MagicMock, patch
@@ -336,13 +337,13 @@ class TestGetPythonCmakeHints:
         """Python3_EXECUTABLE points to sys.executable."""
         obj = object.__new__(XmsConan2File)
         hints = obj._get_python_cmake_hints()
-        assert hints["Python3_EXECUTABLE"] == sys.executable
+        assert Path(hints["Python3_EXECUTABLE"]) == Path(sys.executable)
 
     def test_returns_include_dir(self):
         """Python3_INCLUDE_DIR matches sysconfig include path."""
         obj = object.__new__(XmsConan2File)
         hints = obj._get_python_cmake_hints()
-        assert hints["Python3_INCLUDE_DIR"] == sysconfig.get_path('include')
+        assert Path(hints["Python3_INCLUDE_DIR"]) == Path(sysconfig.get_path('include'))
 
     def test_disables_framework_search(self):
         """Python3_FIND_FRAMEWORK is NEVER to skip macOS framework search."""
