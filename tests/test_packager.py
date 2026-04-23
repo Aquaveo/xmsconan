@@ -1,6 +1,7 @@
 """Tests for package_tools.packager."""
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -439,7 +440,7 @@ def test_run_sharded_tests_invokes_runner(mock_run, tmp_path):
     assert result == 0
 
     # First call is conan create, remaining calls are shard runs
-    runner_calls = [c for c in mock_run.call_args_list if str(runner_path) in str(c)]
+    runner_calls = [call for call in mock_run.call_args_list if Path(call.args[0][0]) == runner_path]
     assert len(runner_calls) == 2
 
     # Verify shard env vars
