@@ -417,8 +417,7 @@ def test_run_no_skip_without_sharding(mock_run):
 
 
 @patch.dict("os.environ", {}, clear=True)
-@patch("xmsconan.package_tools.packager.subprocess.run",
-       return_value=subprocess.CompletedProcess([], 0))
+@patch("xmsconan.package_tools.packager.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
 def test_run_sharded_tests_invokes_runner(mock_run, tmp_path):
     """After build, runner is invoked N times with GTEST shard env vars."""
     artifacts_dir = tmp_path / "artifacts"

@@ -110,10 +110,7 @@ def test_missing_password_raises(mock_creds):
 
 
 @patch.dict("os.environ", {}, clear=True)
-@patch(
-    "xmsconan.ci_tools.wheel_deploy.subprocess.run",
-    side_effect=subprocess.CalledProcessError(1, "devpi"),
-)
+@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run", side_effect=subprocess.CalledProcessError(1, "devpi"))
 def test_propagates_called_process_error(mock_run):
     """Verify CalledProcessError propagates to caller."""
     with pytest.raises(subprocess.CalledProcessError):
