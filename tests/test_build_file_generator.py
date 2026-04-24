@@ -238,7 +238,8 @@ def test_extra_dependency_options_defaults_to_empty(tmp_path):
     """extra_dependency_options defaults to {} when missing from TOML."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n',
         encoding="utf-8",
     )
 
@@ -274,7 +275,7 @@ def test_extra_dependency_options_passes_through(tmp_path):
     tpl_dir = tmp_path / "templates"
     tpl_dir.mkdir()
     (tpl_dir / "out.txt.jinja").write_text(
-        "{{ extra_dependency_options['boost']['without_stacktrace'] }}\n",
+        "opts={{ extra_dependency_options }}\n",
         encoding="utf-8",
     )
 
@@ -286,7 +287,7 @@ def test_extra_dependency_options_passes_through(tmp_path):
         output_dir=str(output_dir),
     )
 
-    assert (output_dir / "out.txt").read_text(encoding="utf-8") == "False\n"
+    assert (output_dir / "out.txt").read_text(encoding="utf-8") == "opts={'boost': {'without_stacktrace': False}}\n"
 
 
 def test_conanfile_emits_extra_dependency_options(tmp_path):
@@ -313,10 +314,8 @@ def test_conanfile_emits_extra_dependency_options(tmp_path):
     )
 
     content = (output_dir / "conanfile.py").read_text(encoding="utf-8")
-    assert "extra_dependency_options = {" in content
-    assert "'boost'" in content
-    assert "'without_stacktrace'" in content
-    assert "False" in content
+    expected = "extra_dependency_options = {'boost': {'without_stacktrace': False}}"
+    assert expected in content
 
 
 def test_conanfile_omits_extra_dependency_options_when_empty(tmp_path):
