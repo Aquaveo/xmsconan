@@ -1,5 +1,6 @@
 """Tests for ci_tools.wheel_repair."""
 import os
+from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
@@ -75,7 +76,7 @@ def test_linux_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     # auditwheel repair
     repair_call = mock_run.call_args_list[1]
     assert repair_call[0][0][0] == "auditwheel"
-    assert repair_call[1]["env"]["LD_LIBRARY_PATH"] == "/tmp/wh/libs"
+    assert Path(repair_call[1]["env"]["LD_LIBRARY_PATH"]) == Path("/tmp/wh/libs")
 
     mock_rmtree.assert_called_once_with("/tmp/wh")
     mock_move.assert_called_once_with("/tmp/wh_repaired", "/tmp/wh")
@@ -96,7 +97,7 @@ def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     # delocate-wheel
     repair_call = mock_run.call_args_list[1]
     assert repair_call[0][0][0] == "delocate-wheel"
-    assert repair_call[1]["env"]["DYLD_LIBRARY_PATH"] == "/tmp/wh/libs"
+    assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path("/tmp/wh/libs")
 
 
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")

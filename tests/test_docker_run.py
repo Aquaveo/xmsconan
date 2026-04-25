@@ -1,6 +1,5 @@
 """Tests for ci_tools.docker_run."""
 import argparse
-import os
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +13,7 @@ from xmsconan.ci_tools.docker_run import (
     DOCKER_REGISTRY,
     resolve_docker_image,
 )
+from .utils import patch_env
 
 
 # --- resolve_docker_image ---
@@ -51,7 +51,7 @@ def test_resolve_image_xvfb_false(tmp_path):
 # --- _build_env_flags ---
 
 
-@patch.dict(os.environ, {
+@patch_env({
     "AQUAPI_URL": "https://x/",
     "AQUAPI_USERNAME": "user",
     "AQUAPI_PASSWORD": "pass",
@@ -68,7 +68,7 @@ def test_build_env_flags_forwards_set_vars():
     assert len(flags) == 6  # 3 vars * 2
 
 
-@patch.dict(os.environ, {}, clear=True)
+@patch_env(clear=True)
 def test_build_env_flags_skips_unset_vars():
     """Produces no flags when env vars are not set."""
     assert _build_env_flags() == []
@@ -149,7 +149,7 @@ def test_docker_publish_builds_correct_command(
         xmsconan_dir=None,
     )
 
-    with patch.dict(os.environ, {}, clear=True):
+    with patch_env(clear=True):
         docker_publish(args)
 
     cmd = mock_run.call_args[0][0]
@@ -185,7 +185,7 @@ def test_docker_publish_mounts_xmsconan_dir(
         xmsconan_dir="/home/user/xmsconan",
     )
 
-    with patch.dict(os.environ, {}, clear=True):
+    with patch_env(clear=True):
         docker_publish(args)
 
     cmd = mock_run.call_args[0][0]
@@ -218,7 +218,7 @@ def test_docker_publish_propagates_exit_code(
         xmsconan_dir=None,
     )
 
-    with patch.dict(os.environ, {}, clear=True):
+    with patch_env(clear=True):
         with pytest.raises(SystemExit) as exc_info:
             docker_publish(args)
     assert exc_info.value.code == 42

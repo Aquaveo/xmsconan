@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy
+from .utils import patch_env
 
 
 @patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
@@ -29,13 +30,12 @@ def test_deploy_with_explicit_args(mock_run):
     )
 
 
-@patch.dict(
-    "os.environ",
+@patch_env(
     {
         "AQUAPI_URL": "https://env.example.com/",
         "AQUAPI_USERNAME": "envuser",
         "AQUAPI_PASSWORD": "envpass",
-    },
+    }
 )
 @patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
 def test_deploy_from_env_vars(mock_run):
@@ -50,7 +50,7 @@ def test_deploy_from_env_vars(mock_run):
     )
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch(
     "xmsconan.ci_tools.wheel_deploy.load_credentials",
     return_value={
@@ -72,7 +72,7 @@ def test_deploy_from_config_file(mock_run, mock_creds):
     )
 
 
-@patch.dict("os.environ", {}, clear=True)
+@patch_env(clear=True)
 @patch(
     "xmsconan.ci_tools.wheel_deploy.load_credentials",
     return_value={},
@@ -83,7 +83,7 @@ def test_missing_url_raises(mock_creds):
         wheel_deploy()
 
 
-@patch.dict("os.environ", {"AQUAPI_URL": "https://x/"}, clear=True)
+@patch_env({"AQUAPI_URL": "https://x/"}, clear=True)
 @patch(
     "xmsconan.ci_tools.wheel_deploy.load_credentials",
     return_value={},
@@ -94,10 +94,9 @@ def test_missing_username_raises(mock_creds):
         wheel_deploy()
 
 
-@patch.dict(
-    "os.environ",
+@patch_env(
     {"AQUAPI_URL": "https://x/", "AQUAPI_USERNAME": "u"},
-    clear=True,
+    clear=True
 )
 @patch(
     "xmsconan.ci_tools.wheel_deploy.load_credentials",
@@ -109,11 +108,8 @@ def test_missing_password_raises(mock_creds):
         wheel_deploy()
 
 
-@patch.dict("os.environ", {}, clear=True)
-@patch(
-    "xmsconan.ci_tools.wheel_deploy.subprocess.run",
-    side_effect=subprocess.CalledProcessError(1, "devpi"),
-)
+@patch_env(clear=True)
+@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run", side_effect=subprocess.CalledProcessError(1, "devpi"))
 def test_propagates_called_process_error(mock_run):
     """Verify CalledProcessError propagates to caller."""
     with pytest.raises(subprocess.CalledProcessError):
