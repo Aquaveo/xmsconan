@@ -192,6 +192,32 @@ def test_create_build_profile_writes_settings_and_options(tmp_path):
     assert "os=Linux" in content
 
 
+@patch_env(clear=True)
+def test_create_build_profile_writes_dependency_options(tmp_path):
+    """Per-dependency option overrides land in the profile as pkg/*:opt=value lines."""
+    p = XmsConanPackager("lidar")
+    p.generate_configurations(system_platform="linux")
+
+    pybind_configs = [c for c in p.configurations if c["options"].get("pybind") is True]
+    assert pybind_configs, "expected at least one pybind=True configuration on Linux"
+    config = pybind_configs[0]
+    config["dependency_options"] = {
+        "boost":   {"wchar_t": "builtin"},
+        "laslib":  {"shared": True},
+        "example": {"test_option": "test-value"},
+    }
+
+    profile_path = p.create_build_profile(config)
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    assert "os=Linux" in content
+    assert "&:pybind=True" in content
+    assert "boost/*:wchar_t=builtin" in content
+    assert "laslib/*:shared=True" in content
+    assert "example/*:test_option=test-value" in content
+
+
 # --- print_configuration_table ---
 
 
