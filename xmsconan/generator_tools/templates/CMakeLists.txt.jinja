@@ -203,6 +203,31 @@ if (BUILD_TESTING)
     list(APPEND EXT_INCLUDE_DIRS ${cxxtest_INCLUDE_DIRS})
 
     if (cxxtest_FOUND)
+        # Pre-cache CXXTEST_PYTHON_TESTGEN_EXECUTABLE before include("FindCxxTest").
+        # The conan cxxtest recipe ships bin/cxxtestgen without the execute bit, and
+        # under cmake_minimum_required >= 3.19 (CMP0109 NEW) CMake's find_program in
+        # FindCxxTest.cmake rejects it. Pre-set cache values aren't subject to the
+        # executability check, so seeding the var here keeps FindCxxTest functional
+        # regardless of cmake_minimum_required value.
+        list(GET cxxtest_INCLUDE_DIRS 0 _xmsconan_cxxtest_include_dir)
+        get_filename_component(_xmsconan_cxxtest_root
+            "${_xmsconan_cxxtest_include_dir}" DIRECTORY)
+        if (WIN32)
+            set(_xmsconan_cxxtestgen_path "${_xmsconan_cxxtest_root}/bin/cxxtestgen.bat")
+        else ()
+            set(_xmsconan_cxxtestgen_path "${_xmsconan_cxxtest_root}/bin/cxxtestgen")
+        endif ()
+        if (NOT EXISTS "${_xmsconan_cxxtestgen_path}")
+            message(FATAL_ERROR
+                "Could not locate cxxtestgen at ${_xmsconan_cxxtestgen_path}")
+        endif ()
+        set(CXXTEST_PYTHON_TESTGEN_EXECUTABLE "${_xmsconan_cxxtestgen_path}"
+            CACHE FILEPATH
+            "Path to cxxtestgen (pre-cached to bypass CMP0109 NEW)" FORCE)
+        unset(_xmsconan_cxxtest_include_dir)
+        unset(_xmsconan_cxxtest_root)
+        unset(_xmsconan_cxxtestgen_path)
+
         include("FindCxxTest")
         include_directories(${CXXTEST_INCLUDE_DIR})
         enable_testing()
