@@ -97,7 +97,13 @@ class XmsConanPackager(object):
         return self._configurations
 
     def generate_configurations(self, system_platform=None):
-        """Generate the configurations for the build process."""
+        """
+        Generate the configurations for the build process.
+
+        Considers common Conan settings like arch, build_type, compiler, and os. Also considers standard XMS options:
+        pybind, testing, wchar_t. Result is essentially every combination of values for those settings that make sense
+        to build for the given platform.
+        """
         # Get system_platform name
         auto_detected = system_platform is None
         if system_platform is None:
@@ -187,7 +193,17 @@ class XmsConanPackager(object):
         return combinations
 
     def filter_configurations(self, filter_dict):
-        """Filter the configurations based on the filter_dict."""
+        """
+        Filter the configurations based on the filter_dict.
+
+        Should only be called after `self.generate_configurations` has been called to initialize the configurations.
+
+        The filter dict specifies values of things to keep. Example:
+        {
+          'options': { 'testing': True },  # only keep testing configurations
+          'build_type': 'Debug'  # ... that are built in debug mode
+        }
+        """
         if self.configurations is None:
             return
         filtered_configurations = []
