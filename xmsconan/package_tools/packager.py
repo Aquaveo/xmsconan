@@ -489,6 +489,9 @@ class XmsConanPackager(object):
             f.write('\n[options]\n')
             for k, v in configuration['options'].items():
                 f.write(f'&:{k}={v}\n')
+            for dep_name, dep_opts in configuration.get('profile_options', {}).items():
+                for opt_name, opt_value in dep_opts.items():
+                    f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
             # For Linux pybind builds, ensure all dependencies are static
             if configuration.get('os') == 'Linux' and configuration['options'].get('pybind'):
                 f.write('*:shared=False\n')
