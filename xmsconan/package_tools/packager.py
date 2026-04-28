@@ -152,7 +152,7 @@ class XmsConanPackager(object):
                 'AQUAPI_PASSWORD': aquapi_password,
                 'AQUAPI_URL': aquapi_url,
             }
-            combination['profile_options'] = self._profile_options
+            combination['profile_options'] = copy.deepcopy(self._profile_options)
             if self._artifacts_dir:
                 combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
 
@@ -475,7 +475,7 @@ class XmsConanPackager(object):
 
     def create_build_profile(self, configuration):
         """Create a temporary build profile."""
-        settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv']}
+        settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv', 'profile_options']}
 
         # Create a temporary directory
         temp_profile_path = os.path.join(self._temp_dir_path, 'temp_profile')
