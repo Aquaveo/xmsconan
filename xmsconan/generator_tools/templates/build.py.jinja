@@ -35,6 +35,7 @@ if __name__ == "__main__":
         build_missing=args.build_missing,
         artifacts_dir=args.artifacts_dir,
         test_shards=test_shards,
+        profile_options=conanfile.CONAN_PROFILE_OPTIONS,
     )
     builder.generate_configurations()
     if args.filter:
