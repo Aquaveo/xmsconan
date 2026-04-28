@@ -61,7 +61,7 @@ class XmsConanPackager(object):
 
     SHARD_TIMEOUT = 600  # seconds per shard (10 minutes)
 
-    def __init__(self, library_name, conanfile_path='.', build_missing=False, artifacts_dir=None, test_shards=0):
+    def __init__(self, library_name, conanfile_path='.', build_missing=False, artifacts_dir=None, test_shards=0, profile_options=None):
         """Initialize the packager.
 
         Args:
@@ -71,6 +71,10 @@ class XmsConanPackager(object):
             artifacts_dir: If set, test artifacts are saved here during builds.
             test_shards: If > 1, skip tests during build and run them afterward
                 in parallel shards using GTest's GTEST_TOTAL_SHARDS.
+            profile_options: Per-dependency option overrides written into each
+                configuration's profile, e.g. {'boost': {'shared': True}}.
+                Each dep/opt pair is emitted as a `pkg/*:opt=value` line in the
+                profile's [options] section.
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
@@ -78,6 +82,7 @@ class XmsConanPackager(object):
         self._build_missing = build_missing
         self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
         self._test_shards = test_shards
+        self._profile_options = profile_options or {}
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
@@ -147,6 +152,7 @@ class XmsConanPackager(object):
                 'AQUAPI_PASSWORD': aquapi_password,
                 'AQUAPI_URL': aquapi_url,
             }
+            combination['profile_options'] = self._profile_options
             if self._artifacts_dir:
                 combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
 
