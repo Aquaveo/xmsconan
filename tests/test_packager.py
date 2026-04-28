@@ -223,14 +223,21 @@ def test_create_build_profile_with_no_profile_options(tmp_path):
     """No pkg/*: lines are emitted when profile_options is absent or empty."""
     p = XmsConanPackager("xmscore")
     p.generate_configurations(system_platform="linux")
-    config = p.configurations[0]
 
-    profile_path = p.create_build_profile(config)
-    with open(profile_path, "r") as f:
-        content = f.read()
+    # Test both: config without the key at all, and config with an explicit empty dict.
+    config_absent = p.configurations[0]
+    config_empty = dict(p.configurations[0])
+    config_empty["profile_options"] = {}
 
-    for line in content.splitlines():
-        assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
+    for config in (config_absent, config_empty):
+        profile_path = p.create_build_profile(config)
+        with open(profile_path, "r") as f:
+            content = f.read()
+        # The spec mandates `pkg/*:opt=value` form for dep-qualified lines, so
+        # checking for `/*:` is sufficient. Update if the spec ever broadens to
+        # version-qualified forms like `pkg/1.0:`.
+        for line in content.splitlines():
+            assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
 
 
 # --- print_configuration_table ---
