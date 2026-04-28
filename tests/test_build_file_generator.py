@@ -290,6 +290,35 @@ def test_extra_dependency_options_passes_through(tmp_path):
     assert (output_dir / "out.txt").read_text(encoding="utf-8") == "opts={'boost': {'without_stacktrace': False}}\n"
 
 
+def test_conan_profile_options_reaches_template_context(tmp_path):
+    """Nested TOML tables for conan_profile_options reach the template as a dict."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[conan_profile_options.boost]\n'
+        'wchar_t = "builtin"\n',
+        encoding="utf-8",
+    )
+
+    tpl_dir = tmp_path / "templates"
+    tpl_dir.mkdir()
+    (tpl_dir / "out.txt.jinja").write_text(
+        "opts={{ conan_profile_options }}\n",
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    assert (output_dir / "out.txt").read_text(encoding="utf-8") == "opts={'boost': {'wchar_t': 'builtin'}}\n"
+
+
 def test_conanfile_emits_extra_dependency_options(tmp_path):
     """conanfile.py includes an extra_dependency_options class attribute when set."""
     toml_file = tmp_path / "build.toml"
