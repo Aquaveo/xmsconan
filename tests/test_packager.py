@@ -218,6 +218,21 @@ def test_create_build_profile_writes_profile_options(tmp_path):
     assert "example/*:test_option=test-value" in content
 
 
+@patch_env(clear=True)
+def test_create_build_profile_with_no_profile_options(tmp_path):
+    """No pkg/*: lines are emitted when profile_options is absent or empty."""
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    config = p.configurations[0]
+
+    profile_path = p.create_build_profile(config)
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    for line in content.splitlines():
+        assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
+
+
 # --- print_configuration_table ---
 
 
