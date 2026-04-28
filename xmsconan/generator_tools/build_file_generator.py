@@ -88,6 +88,7 @@ def render_template_with_toml(
     toml_data.setdefault("xms_dependency_options", {})
     toml_data.setdefault("xms_dependencies", [])
     toml_data.setdefault("extra_dependency_options", {})
+    toml_data.setdefault("conan_profile_options", {})
 
     # Normalize xms_dependencies: add no_python=False if missing
     if "xms_dependencies" in toml_data:
