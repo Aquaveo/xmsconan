@@ -193,6 +193,53 @@ def test_create_build_profile_writes_settings_and_options(tmp_path):
 
 
 @patch_env(clear=True)
+def test_create_build_profile_not_confused_by_new_combination_keys(tmp_path):
+    """
+    Ensure adding a new key to combinations doesn't trip up the profile generator.
+
+    The profile generator mixes setting names and some of its own things in the same combination dict. It has a
+    hard-coded list of keys it treats as "special" and assumes everything else is a setting name (since setting names
+    are an open-ended set). When new keys get added, they might be assumed to be setting names.
+
+    It would be better to have a separate namespace for settings so this isn't an issue, but I didn't want to untangle
+    that right now so I added a Band-Aid test that will catch it.
+    """
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+
+    profile_path = p.create_build_profile(p.configurations[0])
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    expected = (
+        '[settings]\n'
+         'os=Linux\n'
+         'build_type=Release\n'
+         'arch=x86_64\n'
+         'compiler=gcc\n'
+         'compiler.version=13\n'
+         'compiler.cppstd=gnu17\n'
+         'compiler.libcxx=libstdc++11\n'
+         '\n'
+         '[options]\n'
+         '&:wchar_t=builtin\n'
+         '&:pybind=False\n'
+         '&:testing=False\n'
+         '\n'
+         '[buildenv]\n'
+         'XMS_VERSION=None\n'
+         'PYTHON_TARGET_VERSION=3.13\n'
+         'CI_COMMIT_TAG=False\n'
+         'RELEASE_PYTHON=False\n'
+         'AQUAPI_USERNAME=None\n'
+         'AQUAPI_PASSWORD=None\n'
+         'AQUAPI_URL=None\n'
+    )
+
+    assert content == expected
+
+
+@patch_env(clear=True)
 def test_create_build_profile_writes_profile_options(tmp_path):
     """Per-dependency option overrides land in the profile as pkg/*:opt=value lines."""
     p = XmsConanPackager("lidar")
