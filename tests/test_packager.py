@@ -240,6 +240,22 @@ def test_create_build_profile_with_no_profile_options(tmp_path):
             assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
 
 
+@patch_env(clear=True)
+def test_packager_applies_profile_options_to_configurations():
+    """Constructor stores profile_options; generate_configurations attaches it to every combination."""
+    profile_options = {
+        "boost":   {"wchar_t": "builtin"},
+        "laslib":  {"shared": True},
+        "example": {"test_option": "test-value"},
+    }
+    p = XmsConanPackager("lidar", profile_options=profile_options)
+    p.generate_configurations(system_platform="linux")
+
+    assert p.configurations
+    for cfg in p.configurations:
+        assert cfg["profile_options"] == profile_options
+
+
 # --- print_configuration_table ---
 
 
