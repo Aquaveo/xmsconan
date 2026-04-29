@@ -152,7 +152,6 @@ class XmsConanPackager(object):
                 'AQUAPI_PASSWORD': aquapi_password,
                 'AQUAPI_URL': aquapi_url,
             }
-            combination['profile_options'] = copy.deepcopy(self._profile_options)
             if self._artifacts_dir:
                 combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
 
@@ -475,7 +474,7 @@ class XmsConanPackager(object):
 
     def create_build_profile(self, configuration):
         """Create a temporary build profile."""
-        settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv', 'profile_options']}
+        settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv']}
 
         # Create a temporary directory
         temp_profile_path = os.path.join(self._temp_dir_path, 'temp_profile')
@@ -489,7 +488,7 @@ class XmsConanPackager(object):
             f.write('\n[options]\n')
             for k, v in configuration['options'].items():
                 f.write(f'&:{k}={v}\n')
-            for dep_name, dep_opts in configuration.get('profile_options', {}).items():
+            for dep_name, dep_opts in self._profile_options.items():
                 for opt_name, opt_value in dep_opts.items():
                     f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
             # For Linux pybind builds, ensure all dependencies are static
