@@ -265,6 +265,13 @@ def test_create_build_profile_writes_profile_options(tmp_path):
     assert "laslib/*:shared=True" in content
     assert "example/*:test_option=test-value" in content
 
+    # Per-dep overrides must appear after *:shared=False so the wildcard
+    # doesn't override them under conan2's last-wins option resolution.
+    wildcard_pos = content.find("*:shared=False")
+    laslib_pos = content.find("laslib/*:shared=True")
+    assert wildcard_pos != -1, "expected *:shared=False line for Linux pybind config"
+    assert laslib_pos > wildcard_pos, "laslib override must appear after *:shared=False wildcard"
+
 
 @patch_env(clear=True)
 def test_create_build_profile_with_no_profile_options(tmp_path):
