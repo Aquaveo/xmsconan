@@ -49,8 +49,10 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
 
     if platform == "linux":
         subprocess.run(_pip_install_cmd("auditwheel", "patchelf"), check=True)
+        libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = os.path.join(wheel_dir, "libs")
+        existing = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = libs_path + (":" + existing if existing else "")
         for whl in wheels:
             subprocess.run(
                 ["auditwheel", "repair", whl, "-w", repaired_dir],
@@ -59,8 +61,10 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
             )
     elif platform == "macos":
         subprocess.run(_pip_install_cmd("delocate"), check=True)
+        libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = os.environ.copy()
-        env["DYLD_LIBRARY_PATH"] = os.path.join(wheel_dir, "libs")
+        existing = env.get("DYLD_LIBRARY_PATH", "")
+        env["DYLD_LIBRARY_PATH"] = libs_path + (":" + existing if existing else "")
         for whl in wheels:
             subprocess.run(
                 ["delocate-wheel", "-w", repaired_dir, "-v", whl],
@@ -69,7 +73,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
             )
     elif platform == "windows":
         subprocess.run(_pip_install_cmd("delvewheel"), check=True)
-        libs_path = os.path.join(wheel_dir, "libs")
+        libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         for whl in wheels:
             subprocess.run(
                 [
