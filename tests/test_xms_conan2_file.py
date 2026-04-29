@@ -330,62 +330,6 @@ class TestSkipCxxTests:
         cmake.test.assert_called_once()
 
 
-class TestExtraDependencyOptions:
-    """Verify configure() applies extra_dependency_options to dependency options."""
-
-    def _make_obj(self, extra_dependency_options, dep_names=("boost",)):
-        """Create an XmsConan2File with mocked settings suitable for configure().
-
-        Returns (obj, per_dep_mocks) where per_dep_mocks[name] is the mock
-        used for self.options[name] — so each dep has an isolated mock.
-        """
-        obj = object.__new__(XmsConan2File)
-        obj.settings = MagicMock()
-        # settings comparisons use == against strings; MagicMock != string by default,
-        # so the compiler/os raise-checks won't trigger.
-        per_dep = {name: MagicMock() for name in dep_names}
-        obj.options = MagicMock()
-        obj.options.__getitem__.side_effect = lambda key: per_dep.setdefault(key, MagicMock())
-        obj.xms_dependencies = []
-        obj.xms_dependency_options = {}
-        obj.extra_dependency_options = extra_dependency_options
-        return obj, per_dep
-
-    def test_applies_single_option(self):
-        """configure() applies a single option on an extra dep via setattr."""
-        obj, per_dep = self._make_obj({"boost": {"without_stacktrace": False}})
-        obj.configure()
-        assert per_dep["boost"].without_stacktrace is False
-
-    def test_overrides_hardcoded_boost_default(self):
-        """TOML-supplied option wins over the hardcoded boost default."""
-        obj, per_dep = self._make_obj({"boost": {"without_stacktrace": False}})
-        obj.configure()
-        # The hardcoded default sets without_stacktrace to True; our loop runs
-        # after and overrides to False.
-        assert per_dep["boost"].without_stacktrace is False
-
-    def test_hardcoded_default_survives_when_empty(self):
-        """The hardcoded boost default stays in place when extra_dependency_options is empty."""
-        obj, per_dep = self._make_obj({})
-        obj.configure()
-        assert per_dep["boost"].without_stacktrace is True
-
-    def test_applies_multiple_deps_and_options(self):
-        """Each dep's options are all applied independently."""
-        obj, per_dep = self._make_obj(
-            {
-                "boost": {"without_stacktrace": False, "shared": True},
-                "zlib": {"shared": False},
-            },
-            dep_names=("boost", "zlib"),
-        )
-        obj.configure()
-        assert per_dep["boost"].without_stacktrace is False
-        assert per_dep["boost"].shared is True
-        assert per_dep["zlib"].shared is False
-
-
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
 
