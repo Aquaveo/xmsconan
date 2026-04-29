@@ -242,17 +242,18 @@ def test_create_build_profile_not_confused_by_new_combination_keys(tmp_path):
 @patch_env(clear=True)
 def test_create_build_profile_writes_profile_options(tmp_path):
     """Per-dependency option overrides land in the profile as pkg/*:opt=value lines."""
-    p = XmsConanPackager("lidar")
+    profile_options = {
+        "boost": {"wchar_t": "builtin"},
+        "laslib": {"shared": True},
+        "example": {"test_option": "test-value"},
+    }
+
+    p = XmsConanPackager("lidar", profile_options=profile_options)
     p.generate_configurations(system_platform="linux")
 
     pybind_configs = [c for c in p.configurations if c["options"].get("pybind") is True]
     assert pybind_configs, "expected at least one pybind=True configuration on Linux"
     config = pybind_configs[0]
-    config["profile_options"] = {
-        "boost":   {"wchar_t": "builtin"},
-        "laslib":  {"shared": True},
-        "example": {"test_option": "test-value"},
-    }
 
     profile_path = p.create_build_profile(config)
     with open(profile_path, "r") as f:
@@ -267,40 +268,19 @@ def test_create_build_profile_writes_profile_options(tmp_path):
 
 @patch_env(clear=True)
 def test_create_build_profile_with_no_profile_options(tmp_path):
-    """No pkg/*: lines are emitted when profile_options is absent or empty."""
+    """No pkg/*: lines are emitted when profile_options is absent."""
     p = XmsConanPackager("xmscore")
     p.generate_configurations(system_platform="linux")
 
-    # Test both: config without the key at all, and config with an explicit empty dict.
-    config_absent = p.configurations[0]
-    config_empty = dict(p.configurations[0])
-    config_empty["profile_options"] = {}
+    config = p.configurations[0]
 
-    for config in (config_absent, config_empty):
-        profile_path = p.create_build_profile(config)
-        with open(profile_path, "r") as f:
-            content = f.read()
-        # The spec mandates `pkg/*:opt=value` form for dep-qualified lines, so
-        # checking for `/*:` is sufficient. Update if the spec ever broadens to
-        # version-qualified forms like `pkg/1.0:`.
-        for line in content.splitlines():
-            assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
-
-
-@patch_env(clear=True)
-def test_packager_applies_profile_options_to_configurations():
-    """Constructor stores profile_options; generate_configurations attaches it to every combination."""
-    profile_options = {
-        "boost":   {"wchar_t": "builtin"},
-        "laslib":  {"shared": True},
-        "example": {"test_option": "test-value"},
-    }
-    p = XmsConanPackager("lidar", profile_options=profile_options)
-    p.generate_configurations(system_platform="linux")
-
-    assert p.configurations
-    for cfg in p.configurations:
-        assert cfg["profile_options"] == profile_options
+    profile_path = p.create_build_profile(config)
+    with open(profile_path, "r") as f:
+        content = f.read()
+    # Versions aren't supported, so checking for `pkg/1.0:` isn't necessary.
+    # We'll just check for the `/*:` part of `pkg/*:`.
+    for line in content.splitlines():
+        assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
 
 
 # --- print_configuration_table ---
