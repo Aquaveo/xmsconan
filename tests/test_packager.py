@@ -241,7 +241,7 @@ def test_create_build_profile_not_confused_by_new_combination_keys(tmp_path):
 
 @patch_env(clear=True)
 def test_create_build_profile_writes_profile_options(tmp_path):
-    """Per-dependency option overrides land in the profile as pkg/*:opt=value lines."""
+    """Per-dependency option overrides result in `pkg/*:opt=value` lines being written to the profile."""
     profile_options = {
         "boost": {"wchar_t": "builtin"},
         "laslib": {"shared": True},
