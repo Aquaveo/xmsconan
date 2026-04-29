@@ -76,10 +76,48 @@ def test_linux_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     # auditwheel repair
     repair_call = mock_run.call_args_list[1]
     assert repair_call[0][0][0] == "auditwheel"
-    assert Path(repair_call[1]["env"]["LD_LIBRARY_PATH"]) == Path("/tmp/wh/libs")
+    assert Path(repair_call[1]["env"]["LD_LIBRARY_PATH"]) == Path(
+        os.path.abspath("/tmp/wh/libs")
+    )
 
     mock_rmtree.assert_called_once_with("/tmp/wh")
     mock_move.assert_called_once_with("/tmp/wh_repaired", "/tmp/wh")
+
+
+@patch("xmsconan.ci_tools.wheel_repair.shutil.move")
+@patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
+@patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
+@patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["wh/foo.whl"])
+def test_linux_repair_absolutizes_relative_wheel_dir(mock_glob, mock_run, mock_rmtree, mock_move):
+    """A relative wheel_dir produces an absolute LD_LIBRARY_PATH."""
+    wheel_repair(wheel_dir="wh", platform="linux")
+
+    repair_call = mock_run.call_args_list[1]
+    ld_library_path = repair_call[1]["env"]["LD_LIBRARY_PATH"]
+    # The staged libs path is prepended; it must be absolute.
+    expected = os.path.abspath(os.path.join("wh", "libs"))
+    assert ld_library_path.startswith(expected), (
+        f"expected LD_LIBRARY_PATH to start with absolute {expected!r}, "
+        f"got {ld_library_path!r}"
+    )
+    assert os.path.isabs(expected)
+
+
+@patch("xmsconan.ci_tools.wheel_repair.shutil.move")
+@patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
+@patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
+@patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/foo.whl"])
+def test_linux_repair_preserves_existing_ld_library_path(mock_glob, mock_run, mock_rmtree, mock_move):
+    """An inherited LD_LIBRARY_PATH is preserved (prepended, not overwritten)."""
+    with patch.dict(os.environ, {"LD_LIBRARY_PATH": "/preexisting/lib"}):
+        wheel_repair(wheel_dir="/tmp/wh", platform="linux")
+
+    repair_call = mock_run.call_args_list[1]
+    ld_library_path = repair_call[1]["env"]["LD_LIBRARY_PATH"]
+    expected_first = os.path.abspath("/tmp/wh/libs")
+    # Staged dir comes first (prepended), so it wins linker resolution,
+    # and the inherited path is preserved after it.
+    assert ld_library_path == expected_first + ":" + "/preexisting/lib"
 
 
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
@@ -97,7 +135,9 @@ def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     # delocate-wheel
     repair_call = mock_run.call_args_list[1]
     assert repair_call[0][0][0] == "delocate-wheel"
-    assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path("/tmp/wh/libs")
+    assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path(
+        os.path.abspath("/tmp/wh/libs")
+    )
 
 
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
@@ -117,7 +157,7 @@ def test_windows_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     cmd = repair_call[0][0]
     assert cmd[0] == "delvewheel"
     assert "--add-path" in cmd
-    assert os.path.join("/tmp/wh", "libs") in cmd
+    assert os.path.abspath(os.path.join("/tmp/wh", "libs")) in cmd
     assert "--namespace-pkg" in cmd
     assert "xms" in cmd
 
