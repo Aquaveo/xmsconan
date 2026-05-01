@@ -69,7 +69,7 @@ class XmsConanPackager(object):
             build_missing=False,
             artifacts_dir=None,
             test_shards=0,
-            profile_options: Optional[dict]=None
+            profile_options: Optional[dict] = None
     ):
         """Initialize the packager.
 
