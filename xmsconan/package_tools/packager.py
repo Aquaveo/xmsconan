@@ -489,12 +489,6 @@ class XmsConanPackager(object):
             f.write('\n[options]\n')
             for k, v in configuration['options'].items():
                 f.write(f'&:{k}={v}\n')
-            # Nobody remembers for sure why this is here. Someone thought it was an obscure bug that might have been
-            # exclusive to an old Docker image. It may be unnecessary now.
-            if configuration.get('os') == 'Linux' and configuration['options'].get('pybind'):
-                f.write('*:shared=False\n')
-            # Conan2 seems to apply option values in a last-wins order, so the hard-coded default needs to come first
-            # or nobody will ever be able to override it with their build.toml.
             for dep_name, dep_opts in self._profile_options.items():
                 for opt_name, opt_value in dep_opts.items():
                     f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
