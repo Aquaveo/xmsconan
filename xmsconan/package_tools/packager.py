@@ -489,7 +489,8 @@ class XmsConanPackager(object):
             f.write('\n[options]\n')
             for k, v in configuration['options'].items():
                 f.write(f'&:{k}={v}\n')
-            for dep_name, dep_opts in self._profile_options.items():
+
+            for dep_name, dep_opts in _profile_order(self._profile_options):
                 for opt_name, opt_value in dep_opts.items():
                     f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
 
@@ -554,3 +555,16 @@ class XmsConanPackager(object):
         print('\n')
         for line in table:
             print(line)
+
+
+def _profile_order(packages: dict):
+    """Yield the keys and values in a profile options dict in the order they should be written to the profile."""
+    # Conan2 uses last-wins resolution, but most-specific-wins seems more reasonable.
+    # Put the wildcards first so they can be overridden.
+    if '*' in packages:
+        yield '*', packages['*']
+
+    # The rest are sorted for easy scanning.
+    for key in sorted(packages.keys()):
+        if key != '*':
+            yield key, packages[key]
