@@ -51,8 +51,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
         subprocess.run(_pip_install_cmd("auditwheel", "patchelf"), check=True)
         libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = os.environ.copy()
-        existing = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = libs_path + (":" + existing if existing else "")
+        env["LD_LIBRARY_PATH"] = libs_path
         for whl in wheels:
             subprocess.run(
                 ["auditwheel", "repair", whl, "-w", repaired_dir],
@@ -63,8 +62,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
         subprocess.run(_pip_install_cmd("delocate"), check=True)
         libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = os.environ.copy()
-        existing = env.get("DYLD_LIBRARY_PATH", "")
-        env["DYLD_LIBRARY_PATH"] = libs_path + (":" + existing if existing else "")
+        env["DYLD_LIBRARY_PATH"] = libs_path
         for whl in wheels:
             subprocess.run(
                 ["delocate-wheel", "-w", repaired_dir, "-v", whl],
