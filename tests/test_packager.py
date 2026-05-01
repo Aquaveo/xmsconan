@@ -9,7 +9,6 @@ import pytest
 from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
 from .utils import patch_env
 
-
 # --- get_current_arch ---
 
 
@@ -583,8 +582,7 @@ def test_run_no_shard_when_shards_is_one(mock_run):
 
 
 @patch_env(clear=True)
-@patch("xmsconan.package_tools.packager.subprocess.run",
-       return_value=subprocess.CompletedProcess([], 0))
+@patch("xmsconan.package_tools.packager.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
 def test_run_sharded_tests_handles_subprocess_exception(mock_run, tmp_path):
     """Exception in a shard thread is caught and reported as a failure."""
     artifacts_dir = tmp_path / "artifacts"
@@ -612,8 +610,7 @@ def test_run_sharded_tests_handles_subprocess_exception(mock_run, tmp_path):
 
 
 @patch_env(clear=True)
-@patch("xmsconan.package_tools.packager.subprocess.run",
-       return_value=subprocess.CompletedProcess([], 0))
+@patch("xmsconan.package_tools.packager.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
 def test_run_sharded_tests_handles_timeout(mock_run, tmp_path):
     """Verify TimeoutExpired in a shard is caught and reported as a failure."""
     artifacts_dir = tmp_path / "artifacts"

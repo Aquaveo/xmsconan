@@ -91,9 +91,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
 
 def main():
     """CLI entry point for ``xmsconan_wheel_repair``."""
-    parser = argparse.ArgumentParser(
-        description="Repair a Python wheel for the current platform.",
-    )
+    parser = argparse.ArgumentParser(description="Repair a Python wheel for the current platform.", )
     parser.add_argument(
         "--wheel-dir",
         default="wheelhouse",

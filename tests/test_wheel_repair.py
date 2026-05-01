@@ -8,7 +8,6 @@ import pytest
 
 from xmsconan.ci_tools.wheel_repair import _detect_platform, _pip_install_cmd, wheel_repair
 
-
 # --- _detect_platform ---
 
 
@@ -116,9 +115,7 @@ def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     # delocate-wheel
     repair_call = mock_run.call_args_list[1]
     assert repair_call[0][0][0] == "delocate-wheel"
-    assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path(
-        os.path.abspath("/tmp/wh/libs")
-    )
+    assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path(os.path.abspath("/tmp/wh/libs"))
 
 
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
