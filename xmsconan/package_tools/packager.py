@@ -62,7 +62,15 @@ class XmsConanPackager(object):
 
     SHARD_TIMEOUT = 600  # seconds per shard (10 minutes)
 
-    def __init__(self, library_name, conanfile_path='.', build_missing=False, artifacts_dir=None, test_shards=0, profile_options: Optional[dict]=None):
+    def __init__(
+            self,
+            library_name,
+            conanfile_path='.',
+            build_missing=False,
+            artifacts_dir=None,
+            test_shards=0,
+            profile_options: Optional[dict]=None
+    ):
         """Initialize the packager.
 
         Args:
