@@ -61,11 +61,12 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 
 ### Dependencies
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `xms_dependencies` | array[object] | `[]` | XMS library dependencies. Each object: `{name="xmscore", version="7.0.0", no_python=false}`. Set `no_python=true` to exclude from Python package dependencies. |
-| `extra_dependencies` | array[string] | `[]` | Additional Conan dependencies (format: `["package/version"]`) |
-| `xms_dependency_options` | object | `{}` | Per-dependency option overrides (format: `{"dep_name": {"pybind": false}}`) |
+| Field                    | Type          | Default | Description                                                                                                                                                                                                                  |
+|--------------------------|---------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `profile_options`        | object        | `{}`    | Dependent package options (format: `{"dep_name": {"option": "value"}}`). Emits values to the `[options]` section of profiles for all configurations being built.                                                             |
+| `xms_dependencies`       | array[object] | `[]`    | XMS library dependencies. Each object: `{name="xmscore", version="7.0.0", no_python=false}`. Set `no_python=true` to exclude from Python package dependencies.                                                               |
+| `extra_dependencies`     | array[string] | `[]`    | Additional Conan dependencies (format: `["package/version"]`)                                                                                                                                                                |
+| `xms_dependency_options` | object        | `{}`    | Per-dependency option overrides (format: `{"dep_name": {"pybind": false}}`). Applied in the generated conanfile's `configure()` method. Appears to be unreliable in some cases (at minimum, `profile_options` overrides it). |
 
 ### Build Configuration
 
