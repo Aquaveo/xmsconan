@@ -11,6 +11,9 @@ pip install xmsconan
 ## Usage
 
 This package provides tools for building and generating files for XMS projects using Conan.
+The generation system only targets Conan 2. Conan 1 projects typically had handwritten
+conanfiles that would inherit `xmsconan.xms_conan_file.XmsConanFile` and use the builder
+returned by `xmsconan.build_helpers.get_builder()`.
 
 ### Unified CLI
 
