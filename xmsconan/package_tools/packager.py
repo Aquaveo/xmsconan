@@ -63,13 +63,13 @@ class XmsConanPackager(object):
     SHARD_TIMEOUT = 600  # seconds per shard (10 minutes)
 
     def __init__(
-            self,
-            library_name,
-            conanfile_path='.',
-            build_missing=False,
-            artifacts_dir=None,
-            test_shards=0,
-            profile_options: Optional[dict] = None
+        self,
+        library_name,
+        conanfile_path='.',
+        build_missing=False,
+        artifacts_dir=None,
+        test_shards=0,
+        profile_options: Optional[dict] = None
     ):
         """Initialize the packager.
 
@@ -226,7 +226,7 @@ class XmsConanPackager(object):
             for key, value in filter_dict.items():
                 if key in ['options', 'buildenv']:
                     for option_key, option_value in value.items():
-                        if option_key in configuration[key].keys() and configuration[key].get(option_key) != option_value:
+                        if option_key in configuration[key] and configuration[key].get(option_key) != option_value:
                             include_configuration = False
                 elif key in configuration.keys() and configuration.get(key) != value:
                     include_configuration = False
@@ -277,8 +277,7 @@ class XmsConanPackager(object):
                     label = self._config_label(combination)
                     sharded_test_runs.append(label)
             except subprocess.CalledProcessError:
-                self.printer.print_message(
-                    f'ERROR building configuration {i + 1} of {len(self.configurations)}')
+                self.printer.print_message(f'ERROR building configuration {i + 1} of {len(self.configurations)}')
                 failing_configurations.append(i)
             self.printer.print_message('*-' * 40 + '\n')
 
@@ -337,8 +336,7 @@ class XmsConanPackager(object):
                 try:
                     result = future.result()
                 except (OSError, subprocess.TimeoutExpired) as exc:
-                    self.printer.print_message(
-                        f'  Shard {shard_index + 1}/{self._test_shards} ERROR: {exc}')
+                    self.printer.print_message(f'  Shard {shard_index + 1}/{self._test_shards} ERROR: {exc}')
                     failures.append(f'{label}-shard-{shard_index}')
                     continue
                 if result.returncode != 0:

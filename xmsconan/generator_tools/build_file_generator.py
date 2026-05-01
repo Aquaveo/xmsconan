@@ -16,7 +16,6 @@ try:
 except ModuleNotFoundError:
     tomllib = None
 
-
 LOGGER = logging.getLogger(__name__)
 
 
