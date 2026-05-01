@@ -265,12 +265,29 @@ def test_create_build_profile_writes_profile_options(tmp_path):
     assert "laslib/*:shared=True" in content
     assert "example/*:test_option=test-value" in content
 
-    # Per-dep overrides must appear after *:shared=False so the wildcard
-    # doesn't override them under conan2's last-wins option resolution.
-    wildcard_pos = content.find("*:shared=False")
-    laslib_pos = content.find("laslib/*:shared=True")
-    assert wildcard_pos != -1, "expected *:shared=False line for Linux pybind config"
-    assert laslib_pos > wildcard_pos, "laslib override must appear after *:shared=False wildcard"
+
+@patch_env(clear=True)
+def test_create_build_profile_puts_wildcards_first(tmp_path):
+    """Wildcard dependency options appear before non-wildcard ones."""
+    profile_options = {
+        "boost": {"wchar_t": "builtin"},
+        "*": {"everything": True},
+        "example": {"test_option": "test-value"},
+    }
+
+    p = XmsConanPackager("lidar", profile_options=profile_options)
+    p.generate_configurations(system_platform="linux")
+
+    config = p.configurations[0]
+    profile_path = p.create_build_profile(config)
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    boost_location = content.find('boost/*:wchar_t=builtin')
+    wild_card_location = content.find('*:everything=True')
+    example_location = content.find('example/*:test_option=test-value')
+    assert boost_location >= 0 and wild_card_location >= 0 and example_location >= 0
+    assert wild_card_location < boost_location and wild_card_location < example_location
 
 
 @patch_env(clear=True)
