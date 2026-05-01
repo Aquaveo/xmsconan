@@ -275,7 +275,7 @@ def test_create_build_profile_writes_profile_options(tmp_path):
 
 @patch_env(clear=True)
 def test_create_build_profile_with_no_profile_options(tmp_path):
-    """No pkg/*: lines are emitted when profile_options is absent."""
+    """No pkg/*: lines are emitted when profile_options is absent or empty."""
     p = XmsConanPackager("xmscore")
     p.generate_configurations(system_platform="linux")
 
