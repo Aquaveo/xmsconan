@@ -314,6 +314,59 @@ def test_generates_conanfile_without_profile_options(tmp_path):
     assert "CONAN_PROFILE_OPTIONS = {}" in content
 
 
+def test_cmake_template_emits_source_group_tree(tmp_path):
+    """Generated CMakeLists.txt contains a source_group(TREE) call with unquoted variables.
+
+    The unquoted form is required: a quoted "${var}" with an empty variable
+    would expand to a literal empty-string filename and fail CMake's TREE-root
+    check at configure time. This test locks in the shape so future edits
+    can't silently introduce the broken form.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'python_namespaced_dir = "core"\n'
+        'library_sources = []\n'
+        'library_headers = []\n'
+        'testing_headers = []\n'
+        'pybind_sources = []\n'
+        'pybind_headers = []\n',
+        encoding="utf-8",
+    )
+
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("CMakeLists.txt.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    content = (output_dir / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    # The exact call must be present.
+    assert "source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}" in content
+
+    # Each variable must be unquoted to avoid the empty-string-as-filename
+    # failure mode in configurations where some lists are empty.
+    for var in (
+        "${xmscore_sources}",
+        "${xmscore_headers}",
+        "${xmscore_py}",
+        "${xmscore_py_headers}",
+        "${test_cpp_sources}",
+        "${test_headers}",
+    ):
+        assert var in content, f"expected {var} in source_group call"
+        # Quoted form would surround the variable with double-quotes.
+        assert f'"{var}"' not in content, f"{var} must not be quoted in source_group call"
+
+
 def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     """build.py is generated with --test-shards argument and auto mode logic."""
     tpl_dir = tmp_path / "tpl"
