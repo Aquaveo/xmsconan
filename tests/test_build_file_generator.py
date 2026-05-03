@@ -387,3 +387,31 @@ def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     assert "--test-shards" in content
     assert "auto" in content
     assert "os.cpu_count()" in content
+
+
+def test_render_raises_clear_error_for_missing_toml_key(tmp_path):
+    """Missing required keys produce a 'Missing field in build.toml' error message."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "x"\ndescription = "y"\n',
+        encoding="utf-8",
+    )
+
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    (tpl_dir / "needs_var.txt.jinja").write_text(
+        "{{ missing_key }}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        render_template_with_toml(
+            toml_file_path=str(toml_file),
+            version="1.0",
+            template_dir=str(tpl_dir),
+            output_dir=str(tmp_path / "out"),
+        )
+
+    msg = str(exc_info.value)
+    assert "Missing field in build.toml" in msg
+    assert "missing_key" in msg

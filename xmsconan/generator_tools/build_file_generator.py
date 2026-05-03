@@ -9,6 +9,7 @@ import sys
 
 # 2. Third party modules
 from jinja2 import Environment, StrictUndefined
+from jinja2.exceptions import UndefinedError
 import toml
 
 try:
@@ -126,7 +127,10 @@ def render_template_with_toml(
         template = env.from_string(template_content)
 
         # Render the template with the TOML data
-        rendered_content = template.render(toml_data)
+        try:
+            rendered_content = template.render(toml_data)
+        except UndefinedError as e:
+            raise ValueError(f'Missing field in build.toml: {e}.') from e
 
         # Determine the output file name (strip `.jinja` extension)
         output_file_name = template_file.stem
