@@ -407,7 +407,11 @@ class XmsConanPackager(object):
             version: Package version (default '*' matches any).
 
         Returns:
-            True if at least one wheel was extracted, False otherwise.
+            True only when a wheel was extracted for every version in
+            ``self.python_versions``. Returns False on a partial fan-out
+            (some expected versions missing) or when nothing was extracted,
+            so callers can distinguish "shipped all wheels" from "shipped a
+            subset" before publishing.
         """
         ref = f'{self._library_name}/{version}'
         result = subprocess.run(
@@ -455,7 +459,19 @@ class XmsConanPackager(object):
 
         if not extracted:
             self.printer.print_message('No pybind package found to extract.')
-        return extracted
+            return False
+
+        expected_versions = set(self._python_versions)
+        missing = expected_versions - seen_python_versions
+        if missing:
+            missing_list = ', '.join(sorted(missing))
+            self.printer.print_message(
+                f'Warning: extracted wheels for {sorted(seen_python_versions)} '
+                f'but expected {sorted(expected_versions)} '
+                f'(missing python_version: {missing_list}).'
+            )
+            return False
+        return True
 
     def collect_dependency_libs(self, output_dir):
         """Collect shared libraries from the Conan cache for wheel repair.
