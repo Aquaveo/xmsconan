@@ -23,7 +23,7 @@ def get_builder(library_name):
 
     # Add environment variables to build definitions
     xms_version = os.getenv('XMS_VERSION', None)
-    python_target_version = os.getenv('PYTHON_TARGET_VERSION', "3.10")
+    python_target_version = os.getenv('PYTHON_TARGET_VERSION', "3.13")
     ci_commit_tag = os.environ.get('CI_COMMIT_TAG', 'False')  # Gitlab
     release_python = os.getenv('RELEASE_PYTHON', 'False')
     aquapi_username = os.getenv('AQUAPI_USERNAME', None)

@@ -140,6 +140,57 @@ def test_testing_variants_added_for_all():
     assert len(testing_configs) > 0
 
 
+@patch_env(clear=True)
+def test_pybind_fans_out_per_python_version():
+    """Each pybind variant is duplicated per configured python version."""
+    p = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
+    p.generate_configurations(system_platform="linux")
+
+    pybind_configs = [c for c in p.configurations if c["options"].get("pybind") is True]
+    assert pybind_configs, "expected at least one pybind config"
+
+    versions_seen = {c["options"].get("python_version") for c in pybind_configs}
+    assert versions_seen == {"3.10", "3.13"}
+
+    for cfg in pybind_configs:
+        # python_version option must align with the buildenv var so the
+        # generated cmake/profile reads back the same value.
+        assert cfg["buildenv"]["PYTHON_TARGET_VERSION"] == cfg["options"]["python_version"]
+
+
+@patch_env(clear=True)
+def test_non_pybind_configs_have_no_python_version_option():
+    """python_version is omitted from non-pybind builds (recipe drops it from package_id)."""
+    p = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
+    p.generate_configurations(system_platform="linux")
+
+    for cfg in p.configurations:
+        if cfg["options"].get("pybind") is True:
+            continue
+        assert "python_version" not in cfg["options"]
+
+
+def test_python_versions_default_when_env_unset(monkeypatch):
+    """python_versions falls back to the default list when env is unset."""
+    monkeypatch.delenv("PYTHON_TARGET_VERSION", raising=False)
+    p = XmsConanPackager("xmscore")
+    assert p.python_versions == XmsConanPackager.DEFAULT_PYTHON_VERSIONS
+
+
+def test_python_versions_honors_env_when_arg_missing(monkeypatch):
+    """A single-version env override collapses the fan-out to that version."""
+    monkeypatch.setenv("PYTHON_TARGET_VERSION", "3.10")
+    p = XmsConanPackager("xmscore")
+    assert p.python_versions == ["3.10"]
+
+
+def test_python_versions_arg_wins_over_env(monkeypatch):
+    """Explicit python_versions kwarg overrides the env."""
+    monkeypatch.setenv("PYTHON_TARGET_VERSION", "3.10")
+    p = XmsConanPackager("xmscore", python_versions=["3.13"])
+    assert p.python_versions == ["3.13"]
+
+
 # --- filter_configurations ---
 
 

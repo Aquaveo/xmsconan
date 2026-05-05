@@ -69,7 +69,8 @@ class XmsConanPackager(object):
         build_missing=False,
         artifacts_dir=None,
         test_shards=0,
-        profile_options: Optional[dict] = None
+        profile_options: Optional[dict] = None,
+        python_versions: Optional[list] = None,
     ):
         """Initialize the packager.
 
@@ -84,6 +85,12 @@ class XmsConanPackager(object):
                 configuration's profile, e.g. {'boost': {'shared': True}}.
                 Each dep/opt pair is emitted as a `pkg/*:opt=value` line in the
                 profile's [options] section.
+            python_versions: Python versions to fan out pybind builds across
+                (e.g. ["3.10", "3.13"]). When None, falls back to the
+                ``PYTHON_TARGET_VERSION`` environment variable (single value)
+                or the default list ["3.10", "3.13"]. Each pybind variant is
+                duplicated per version with the matching ``python_version``
+                Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
@@ -92,6 +99,7 @@ class XmsConanPackager(object):
         self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
         self._test_shards = test_shards
         self._profile_options = profile_options or {}
+        self._python_versions = self._resolve_python_versions(python_versions)
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
@@ -99,6 +107,23 @@ class XmsConanPackager(object):
     def __del__(self):
         """Cleanup the temporary directory."""
         self._temp_dir.cleanup()
+
+    DEFAULT_PYTHON_VERSIONS = ["3.13"]
+
+    @classmethod
+    def _resolve_python_versions(cls, python_versions):
+        """Resolve the python_versions list from the constructor arg or env."""
+        if python_versions:
+            return list(python_versions)
+        env_version = os.getenv('PYTHON_TARGET_VERSION')
+        if env_version:
+            return [env_version]
+        return list(cls.DEFAULT_PYTHON_VERSIONS)
+
+    @property
+    def python_versions(self):
+        """Get the list of python versions pybind builds will fan out across."""
+        return list(self._python_versions)
 
     @property
     def library_name(self):
@@ -136,7 +161,10 @@ class XmsConanPackager(object):
         combinations = [dict(zip(keys, combination)) for combination in itertools.product(*values)]
 
         xms_version = os.getenv('XMS_VERSION', None)
-        python_target_version = os.getenv('PYTHON_TARGET_VERSION', "3.13")
+        # Non-pybind builds don't depend on the python version (the recipe
+        # drops it from package_id), but PYTHON_TARGET_VERSION still feeds
+        # CMake / pre-conan2 paths, so seed it with the highest version.
+        default_python_version = self._python_versions[-1]
         ci_commit_tag = os.environ.get('CI_COMMIT_TAG', 'False')  # Gitlab
         release_python = os.getenv('RELEASE_PYTHON', 'False')
         aquapi_username = os.getenv('AQUAPI_USERNAME', None)
@@ -154,7 +182,7 @@ class XmsConanPackager(object):
             }
             combination['buildenv'] = {
                 'XMS_VERSION': xms_version,
-                'PYTHON_TARGET_VERSION': python_target_version,
+                'PYTHON_TARGET_VERSION': default_python_version,
                 'CI_COMMIT_TAG': ci_commit_tag,
                 'RELEASE_PYTHON': release_python,
                 'AQUAPI_USERNAME': aquapi_username,
@@ -187,11 +215,14 @@ class XmsConanPackager(object):
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
                     continue
-                pybind_options = copy.deepcopy(combination)
-                pybind_options['options'].update({
-                    'pybind': True,
-                })
-                pybind_updated_builds.append(pybind_options)
+                for py_version in self._python_versions:
+                    pybind_options = copy.deepcopy(combination)
+                    pybind_options['options'].update({
+                        'pybind': True,
+                        'python_version': py_version,
+                    })
+                    pybind_options['buildenv']['PYTHON_TARGET_VERSION'] = py_version
+                    pybind_updated_builds.append(pybind_options)
 
         testing_updated_builds = []
         for combination in combinations:
@@ -241,7 +272,8 @@ class XmsConanPackager(object):
         if opts.get('testing'):
             parts.append('testing')
         elif opts.get('pybind'):
-            parts.append('pybind')
+            py_version = opts.get('python_version')
+            parts.append(f'pybind-py{py_version}' if py_version else 'pybind')
         if opts.get('wchar_t') == 'typedef':
             parts.append('wchar_typedef')
         return '-'.join(parts)
@@ -363,14 +395,19 @@ class XmsConanPackager(object):
         self.printer.print_message('All packages uploaded successfully.')
 
     def extract_wheel(self, output_dir, version='*'):
-        """Extract the pre-built wheel from the pybind Conan package.
+        """Extract pre-built wheels from every pybind Conan package.
+
+        With multiple ``python_version`` options there can be more than one
+        pybind binary in the cache (e.g. one for 3.10 and one for 3.13);
+        every distinct ``python_version`` value yields a separate wheel and
+        all of them are copied to ``output_dir``.
 
         Args:
-            output_dir: Directory to copy the .whl file into.
+            output_dir: Directory to copy the .whl files into.
             version: Package version (default '*' matches any).
 
         Returns:
-            True if a wheel was extracted, False otherwise.
+            True if at least one wheel was extracted, False otherwise.
         """
         ref = f'{self._library_name}/{version}'
         result = subprocess.run(
@@ -382,18 +419,24 @@ class XmsConanPackager(object):
             return False
 
         data = json.loads(result.stdout)
-        # Collect all pybind candidates with their revision timestamps
-        # so we can pick the most recently built one.
+        # Collect all pybind candidates with their revision timestamps so we
+        # can pick the most recent one per python_version.
         candidates = []
         for exact_ref, cache in data.get('Local Cache', {}).items():
             for rev in cache.get('revisions', {}).values():
                 ts = rev.get('timestamp', 0)
                 for pid, pinfo in rev.get('packages', {}).items():
-                    if pinfo.get('info', {}).get('options', {}).get('pybind') == 'True':
-                        candidates.append((ts, exact_ref, pid))
+                    options = pinfo.get('info', {}).get('options', {})
+                    if options.get('pybind') == 'True':
+                        py_version = options.get('python_version', '')
+                        candidates.append((ts, py_version, exact_ref, pid))
         candidates.sort(reverse=True)  # newest first
 
-        for _ts, exact_ref, pid in candidates:
+        seen_python_versions = set()
+        extracted = False
+        for _ts, py_version, exact_ref, pid in candidates:
+            if py_version in seen_python_versions:
+                continue
             path_result = subprocess.run(
                 ['conan', 'cache', 'path', f'{exact_ref}:{pid}'],
                 capture_output=True, text=True
@@ -402,15 +445,17 @@ class XmsConanPackager(object):
             dist_dir = os.path.join(pkg_dir, 'dist')
             if not os.path.isdir(dist_dir):
                 continue
+            seen_python_versions.add(py_version)
             os.makedirs(output_dir, exist_ok=True)
             for fname in os.listdir(dist_dir):
                 if fname.endswith('.whl'):
                     shutil.copy2(os.path.join(dist_dir, fname), output_dir)
                     self.printer.print_message(f'Extracted {fname} to {output_dir}')
-            return True
+                    extracted = True
 
-        self.printer.print_message('No pybind package found to extract.')
-        return False
+        if not extracted:
+            self.printer.print_message('No pybind package found to extract.')
+        return extracted
 
     def collect_dependency_libs(self, output_dir):
         """Collect shared libraries from the Conan cache for wheel repair.
@@ -443,7 +488,7 @@ class XmsConanPackager(object):
                         count += 1
         self.printer.print_message(f'Collected {count} shared libraries to {output_dir}')
 
-    def repair_linux_wheel(self, wheel_dir):
+    def repair_linux_wheel(self, wheel_dir, python_version=None):
         """Repair a Linux wheel for manylinux_2_28 using a Docker container.
 
         Runs auditwheel inside quay.io/pypa/manylinux_2_28 to produce a
@@ -451,6 +496,12 @@ class XmsConanPackager(object):
 
         Args:
             wheel_dir: Directory containing the .whl file and libs/ subdirectory.
+            python_version: Python version (e.g. "3.10") used to pick the
+                manylinux ``cpXY-cpXY`` interpreter that runs auditwheel.
+                When None, the highest version from ``self.python_versions``
+                is used. Auditwheel itself is python-version-agnostic for
+                repairing, but the manylinux image needs *some* installed
+                interpreter to run pip.
         """
         machine = platform.machine().lower()
         arch_map = {
@@ -463,13 +514,17 @@ class XmsConanPackager(object):
         image = f'quay.io/pypa/manylinux_2_28_{arch}'
         abs_wheel_dir = os.path.abspath(wheel_dir)
 
-        self.printer.print_message(f'Repairing wheel with auditwheel in {image}')
+        if python_version is None:
+            python_version = self._python_versions[-1]
+        cp_tag = f'cp{python_version.replace(".", "")}'
+
+        self.printer.print_message(f'Repairing wheel with auditwheel in {image} (python {python_version})')
         cmd = [
             'docker', 'run', '--rm',
             '-v', f'{abs_wheel_dir}:/wheels',
             image,
             'bash', '-c',
-            'export PATH="/opt/python/cp313-cp313/bin:$PATH" && '
+            f'export PATH="/opt/python/{cp_tag}-{cp_tag}/bin:$PATH" && '
             'pip install auditwheel patchelf && '
             'LD_LIBRARY_PATH=/wheels/libs auditwheel repair /wheels/*.whl '
             '-w /wheels_repaired && '
@@ -522,14 +577,14 @@ class XmsConanPackager(object):
 
         headers = ["#", "cppstd", "runtime", "build_type", "compiler", "compiler.version", "arch",
                    f"{self._library_name}:wchar_t", f"{self._library_name}:pybind",
-                   f"{self._library_name}:testing"]
+                   f"{self._library_name}:testing", f"{self._library_name}:python_version"]
         table = []
 
         # Create the header row
         header_row = "| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} |" \
-                     " {:^17} | {:^16} | {:^17} |".format(*headers)
+                     " {:^17} | {:^16} | {:^17} | {:^15} |".format(*headers)
         separator = "+-----+----------+----------+--------------+----------------+--------------------+--------+" \
-                    "-------------------+------------------+-------------------+"
+                    "-------------------+------------------+-------------------+-----------------+"
 
         # Add the header row and separator to the table
         table.append(separator)
@@ -542,7 +597,9 @@ class XmsConanPackager(object):
             wchar_t_option = config['options'].get('wchar_t', False)
             pybind_option = config['options'].get('pybind', False)
             testing_option = config['options'].get('testing', False)
-            row = "| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} | {:^17} | {:^16} | {:^17} |".format(
+            python_version_option = config['options'].get('python_version', '-')
+            row = ("| {:^3} | {:^8} | {:^8} | {:^12} | {:^14} | {:^18} | {:^6} |"
+                   " {:^17} | {:^16} | {:^17} | {:^15} |").format(
                 i + 1,
                 config.get("compiler.cppstd", ""),
                 config.get("compiler.runtime", ""),
@@ -553,6 +610,7 @@ class XmsConanPackager(object):
                 wchar_t_option,
                 'True' if pybind_option else 'False',
                 'True' if testing_option else 'False',
+                python_version_option,
             )
             table.append(row)
             table.append(separator)

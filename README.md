@@ -2,6 +2,8 @@
 
 Methods and Modules used to aid in xmsconan projects.
 
+> **Setting up a new library or trying to remember how a flag works?** See [docs/USAGE.md](docs/USAGE.md) — the consumer-facing guide. The rest of this README is a quick orientation.
+
 ## Installation
 
 ```bash
