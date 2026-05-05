@@ -191,6 +191,54 @@ def test_python_versions_arg_wins_over_env(monkeypatch):
     assert p.python_versions == ["3.13"]
 
 
+@patch_env(clear=True)
+@pytest.mark.parametrize("bogus", ["3", "3.x", "py3.13", "", "3.10.0"])
+def test_python_versions_rejects_malformed_entries(bogus):
+    """Non-X.Y strings fail fast instead of silently propagating."""
+    with pytest.raises(ValueError):
+        XmsConanPackager("xmscore", python_versions=["3.13", bogus])
+
+
+@patch_env(clear=True)
+def test_python_versions_rejects_non_string_entries():
+    """Numeric entries are caught even though they look version-ish."""
+    with pytest.raises(ValueError):
+        XmsConanPackager("xmscore", python_versions=[3.13])
+
+
+@patch_env(clear=True)
+def test_python_versions_rejects_non_list():
+    """A bare string is a common mistake but is rejected explicitly."""
+    with pytest.raises(ValueError):
+        XmsConanPackager("xmscore", python_versions="3.13")
+
+
+@patch_env(clear=True)
+def test_python_versions_empty_list_falls_back_to_default():
+    """An empty list is treated like None — fall back to env / default."""
+    p = XmsConanPackager("xmscore", python_versions=[])
+    assert p.python_versions == XmsConanPackager.DEFAULT_PYTHON_VERSIONS
+
+
+@patch_env({"PYTHON_TARGET_VERSION": "py313"}, clear=True)
+def test_python_versions_rejects_malformed_env():
+    """An obviously-broken PYTHON_TARGET_VERSION is rejected too."""
+    with pytest.raises(ValueError):
+        XmsConanPackager("xmscore")
+
+
+@patch_env(clear=True)
+def test_default_python_version_uses_max_not_list_order():
+    """Non-pybind buildenv seeds PYTHON_TARGET_VERSION with the highest version
+    regardless of how python_versions is ordered."""
+    p = XmsConanPackager("xmscore", python_versions=["3.13", "3.10"])
+    p.generate_configurations(system_platform="linux")
+    non_pybind = [c for c in p.configurations if not c["options"].get("pybind")]
+    assert non_pybind, "expected at least one non-pybind config"
+    for cfg in non_pybind:
+        assert cfg["buildenv"]["PYTHON_TARGET_VERSION"] == "3.13"
+
+
 # --- filter_configurations ---
 
 

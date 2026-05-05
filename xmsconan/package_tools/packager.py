@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,7 @@ class XmsConanPackager(object):
         artifacts_dir=None,
         test_shards=0,
         profile_options: Optional[dict] = None,
-        python_versions: Optional[list] = None,
+        python_versions: Optional[list[str]] = None,
     ):
         """Initialize the packager.
 
@@ -106,19 +107,56 @@ class XmsConanPackager(object):
 
     def __del__(self):
         """Cleanup the temporary directory."""
-        self._temp_dir.cleanup()
+        # Constructor validation can raise before _temp_dir is assigned.
+        temp_dir = getattr(self, '_temp_dir', None)
+        if temp_dir is not None:
+            temp_dir.cleanup()
 
     DEFAULT_PYTHON_VERSIONS = ["3.13"]
+    _PYTHON_VERSION_RE = re.compile(r'^\d+\.\d+$')
 
     @classmethod
-    def _resolve_python_versions(cls, python_versions):
-        """Resolve the python_versions list from the constructor arg or env."""
-        if python_versions:
-            return list(python_versions)
+    def _resolve_python_versions(cls, python_versions: Optional[list[str]]):
+        """Resolve the python_versions list from the constructor arg or env.
+
+        Validation here only checks the *shape* of each entry (a ``"X.Y"``
+        string). It does not check membership in the recipe's allowed set
+        (see ``XmsConan2File.options["python_version"]``); a syntactically
+        valid but unsupported version like ``"3.11"`` will pass this gate
+        and fail later when Conan rejects the option.
+
+        Raises:
+            ValueError: When ``python_versions`` is not iterable, contains a
+                non-string entry, or contains a string that is not in
+                ``"X.Y"`` form.
+        """
+        if python_versions is not None:
+            if not isinstance(python_versions, (list, tuple)):
+                raise ValueError(
+                    f'python_versions must be a list or tuple, got {type(python_versions).__name__}'
+                )
+            if python_versions:
+                cleaned = []
+                for entry in python_versions:
+                    if not isinstance(entry, str) or not cls._PYTHON_VERSION_RE.match(entry):
+                        raise ValueError(
+                            f'python_versions entries must be "X.Y" strings, got {entry!r}'
+                        )
+                    cleaned.append(entry)
+                return cleaned
         env_version = os.getenv('PYTHON_TARGET_VERSION')
         if env_version:
+            if not cls._PYTHON_VERSION_RE.match(env_version):
+                raise ValueError(
+                    f'PYTHON_TARGET_VERSION must be an "X.Y" string, got {env_version!r}'
+                )
             return [env_version]
         return list(cls.DEFAULT_PYTHON_VERSIONS)
+
+    @staticmethod
+    def _highest_python_version(versions):
+        """Return the version string with the largest (major, minor) tuple."""
+        return max(versions, key=lambda v: tuple(int(p) for p in v.split('.')))
 
     @property
     def python_versions(self):
@@ -164,7 +202,7 @@ class XmsConanPackager(object):
         # Non-pybind builds don't depend on the python version (the recipe
         # drops it from package_id), but PYTHON_TARGET_VERSION still feeds
         # CMake / pre-conan2 paths, so seed it with the highest version.
-        default_python_version = self._python_versions[-1]
+        default_python_version = self._highest_python_version(self._python_versions)
         ci_commit_tag = os.environ.get('CI_COMMIT_TAG', 'False')  # Gitlab
         release_python = os.getenv('RELEASE_PYTHON', 'False')
         aquapi_username = os.getenv('AQUAPI_USERNAME', None)
@@ -504,20 +542,17 @@ class XmsConanPackager(object):
                         count += 1
         self.printer.print_message(f'Collected {count} shared libraries to {output_dir}')
 
-    def repair_linux_wheel(self, wheel_dir, python_version=None):
+    def repair_linux_wheel(self, wheel_dir):
         """Repair a Linux wheel for manylinux_2_28 using a Docker container.
 
         Runs auditwheel inside quay.io/pypa/manylinux_2_28 to produce a
-        portable manylinux wheel. Requires Docker.
+        portable manylinux wheel. Requires Docker. Auditwheel is itself
+        python-version-agnostic for the repair step, but the manylinux
+        image needs *some* installed interpreter to run pip; we use the
+        highest version from ``self.python_versions``.
 
         Args:
             wheel_dir: Directory containing the .whl file and libs/ subdirectory.
-            python_version: Python version (e.g. "3.10") used to pick the
-                manylinux ``cpXY-cpXY`` interpreter that runs auditwheel.
-                When None, the highest version from ``self.python_versions``
-                is used. Auditwheel itself is python-version-agnostic for
-                repairing, but the manylinux image needs *some* installed
-                interpreter to run pip.
         """
         machine = platform.machine().lower()
         arch_map = {
@@ -530,8 +565,7 @@ class XmsConanPackager(object):
         image = f'quay.io/pypa/manylinux_2_28_{arch}'
         abs_wheel_dir = os.path.abspath(wheel_dir)
 
-        if python_version is None:
-            python_version = self._python_versions[-1]
+        python_version = self._highest_python_version(self._python_versions)
         cp_tag = f'cp{python_version.replace(".", "")}'
 
         self.printer.print_message(f'Repairing wheel with auditwheel in {image} (python {python_version})')
