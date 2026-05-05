@@ -229,8 +229,7 @@ def test_python_versions_rejects_malformed_env():
 
 @patch_env(clear=True)
 def test_default_python_version_uses_max_not_list_order():
-    """Non-pybind buildenv seeds PYTHON_TARGET_VERSION with the highest version
-    regardless of how python_versions is ordered."""
+    """Non-pybind buildenv seeds PYTHON_TARGET_VERSION with the highest version regardless of list order."""
     p = XmsConanPackager("xmscore", python_versions=["3.13", "3.10"])
     p.generate_configurations(system_platform="linux")
     non_pybind = [c for c in p.configurations if not c["options"].get("pybind")]
