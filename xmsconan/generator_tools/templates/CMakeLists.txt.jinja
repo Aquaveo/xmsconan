@@ -212,11 +212,10 @@ if (BUILD_TESTING)
         list(GET cxxtest_INCLUDE_DIRS 0 _xmsconan_cxxtest_include_dir)
         get_filename_component(_xmsconan_cxxtest_root
             "${_xmsconan_cxxtest_include_dir}" DIRECTORY)
-        if (WIN32)
-            set(_xmsconan_cxxtestgen_path "${_xmsconan_cxxtest_root}/bin/cxxtestgen.bat")
-        else ()
-            set(_xmsconan_cxxtestgen_path "${_xmsconan_cxxtest_root}/bin/cxxtestgen")
-        endif ()
+        # Always use bin/cxxtestgen (the Python script). FindCxxTest invokes
+        # ${CXXTEST_TESTGEN_INTERPRETER} (default: python) on this path, so
+        # passing the .bat wrapper makes Python try to parse `@echo off`.
+        set(_xmsconan_cxxtestgen_path "${_xmsconan_cxxtest_root}/bin/cxxtestgen")
         if (NOT EXISTS "${_xmsconan_cxxtestgen_path}")
             message(FATAL_ERROR
                 "Could not locate cxxtestgen at ${_xmsconan_cxxtestgen_path}")
