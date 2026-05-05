@@ -330,6 +330,102 @@ class TestSkipCxxTests:
         cmake.test.assert_called_once()
 
 
+class TestPackageId:
+    """Verify package_id drops python_version for non-pybind builds."""
+
+    class _InfoOptions:
+        """Plain stub so that ``del`` actually removes the attribute."""
+
+        def __init__(self, pybind):
+            self.pybind = pybind
+            self.python_version = "3.13"
+
+    def _make_obj(self, pybind):
+        obj = object.__new__(XmsConan2File)
+        obj.info = MagicMock()
+        obj.info.options = self._InfoOptions(pybind=pybind)
+        return obj
+
+    def test_drops_python_version_when_not_pybind(self):
+        """package_id removes python_version from info.options when pybind is False."""
+        obj = self._make_obj(pybind=False)
+        obj.package_id()
+        assert not hasattr(obj.info.options, "python_version")
+
+    def test_keeps_python_version_for_pybind(self):
+        """package_id keeps python_version on info.options when pybind is True."""
+        obj = self._make_obj(pybind=True)
+        obj.package_id()
+        assert obj.info.options.python_version == "3.13"
+
+
+class TestXmsDependencyPythonVersionPropagation:
+    """Verify configure() propagates python_version into each xms_dependency.
+
+    Consumers rely on the XmsConan2File option flowing into the dep options so
+    that a top-level pybind=True / python_version=3.10 build wires every sister
+    library to the matching ABI.
+    """
+
+    _SENTINEL = object()
+
+    def _make_obj(self, dep_has_python_version, dep_options_override=None):
+        """Construct an obj whose configure() will iterate xms_dependencies."""
+        obj = object.__new__(XmsConan2File)
+        obj.xms_dependencies = ["foo/1.0"]
+        obj.xms_dependency_options = (
+            {"foo": dep_options_override} if dep_options_override else {}
+        )
+
+        # Top-level options
+        obj.options = MagicMock()
+        obj.options.pybind = True
+        obj.options.testing = False
+        obj.options.python_version = "3.10"
+
+        # Dep options accessed via self.options[dep_name]
+        dep_opts = MagicMock()
+        # Pre-set python_version to a sentinel so we can detect whether
+        # configure() actually overwrote it.
+        dep_opts.python_version = self._SENTINEL
+        contains_keys = {"python_version"} if dep_has_python_version else set()
+        dep_opts.__contains__.side_effect = lambda key: key in contains_keys
+
+        boost_opts = MagicMock()
+        obj.options.__getitem__.side_effect = (
+            lambda key: dep_opts if key == "foo" else boost_opts
+        )
+
+        # Settings — pick something configure() doesn't reject.
+        obj.settings = MagicMock()
+        obj.settings.os = MagicMock(__str__=lambda s: "Linux")
+        obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
+        obj.settings.compiler.version = MagicMock(value="13.0")
+
+        return obj, dep_opts
+
+    def test_propagates_top_level_python_version(self):
+        """Without a per-dep override, the top-level python_version flows through."""
+        obj, dep_opts = self._make_obj(dep_has_python_version=True)
+        obj.configure()
+        assert dep_opts.python_version == "3.10"
+
+    def test_per_dep_override_wins(self):
+        """An xms_dependency_options entry overrides the top-level value."""
+        obj, dep_opts = self._make_obj(
+            dep_has_python_version=True,
+            dep_options_override={"python_version": "3.13"},
+        )
+        obj.configure()
+        assert dep_opts.python_version == "3.13"
+
+    def test_skipped_when_dep_lacks_option(self):
+        """Deps that don't expose python_version aren't touched."""
+        obj, dep_opts = self._make_obj(dep_has_python_version=False)
+        obj.configure()
+        assert dep_opts.python_version is self._SENTINEL
+
+
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
 

@@ -240,7 +240,7 @@ What this turns on:
 - **Conan binaries.** Each Windows pybind variant carries the `python_version` option in its `package_id`, so consumers select `xmscore/X.Y.Z@... pybind=True python_version=3.10` vs `=3.13`. Non-pybind builds drop `python_version` from `package_id`, so testing/plain-library binaries remain a single shared binary regardless.
 - **Wheel output.** Windows produces both `cp310-cp310-win_amd64.whl` and `cp313-cp313-win_amd64.whl`; pip on the consumer side picks the right one.
 
-For local builds (`python build.py`), the packager still fans out per `python_version` when given a list — useful when you're on Windows and want to build both Python wheels at once.
+For local builds (`python build.py`), the matrix is single-version: it uses `PYTHON_TARGET_VERSION` from the environment if set, otherwise `3.13`. Per-`python_version` fan-out is currently a CI/Windows-only feature; to build both wheels locally you'd need to invoke `python build.py` once per version (or construct `XmsConanPackager` directly with `python_versions=["3.10", "3.13"]`).
 
 > **Runner / image expectations.** Opt-in assumes the `GLR-py310` GitLab Windows runner tag exists. The Linux/Mac side keeps using existing `conan-gcc13-py3.13` images, so no new images are required.
 
