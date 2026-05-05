@@ -8,7 +8,7 @@ version = "{{ version }}"
 description = "{{ description }}"
 license = { text = "BSD 2-Clause License" }
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 keywords = []
 
 authors = [{ name = "Aquaveo" }]
@@ -39,7 +39,7 @@ ext-modules = [
 ]
 {% endif %}
 [tool.cibuildwheel]
-build = "cp313-*"
+build = ["cp310-*", "cp313-*"]
 skip = ["*-musllinux_*"]
 
 [tool.cibuildwheel.windows]

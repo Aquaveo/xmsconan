@@ -97,6 +97,7 @@ def generate_ci(
         "docker_image": ci_config.get("docker_image", ""),
         "ci_split_tests": ci_config.get("split_tests", False),
         "ci_test_shards": ci_config.get("test_shards", 0),
+        "ci_python_versions": list(ci_config.get("python_versions", ["3.13"])),
     }
 
     # Select template and output path

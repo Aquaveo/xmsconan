@@ -96,10 +96,10 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v2
       # Setup Python
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       # Install Python Dependencies
       - name: Install Python Dependencies
         run: |
@@ -484,12 +484,12 @@ jobs:
       fail-fast: false
       matrix:
         platform: [windows-2022]
-        python-version: ['3.13']
+        python-version: << ci_python_versions | tojson >>
         compiler-version: [17]
         build_type: [Release, Debug]
 
     env:
-      MATRIX_NAME: ${{ matrix.platform }}-VS${{ matrix.compiler-version }}-${{ matrix.build_type }}
+      MATRIX_NAME: ${{ matrix.platform }}-VS${{ matrix.compiler-version }}-${{ matrix.build_type }}-py${{ matrix.python-version }}
       # Library Variables
       LIBRARY_NAME: << library_name >>
       XMS_VERSION: '0.0.0'
@@ -516,10 +516,10 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v2
       # Setup Python
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       # Setup Dev Command Prompt env for MSVC
       - name: Setup MSVC env
         uses: ilammy/msvc-dev-cmd@v1
@@ -584,7 +584,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ runner.os }}
+          name: wheel-${{ runner.os }}-py${{ matrix.python-version }}
           path: wheelhouse/*.whl
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi

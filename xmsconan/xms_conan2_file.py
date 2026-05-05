@@ -35,6 +35,7 @@ class XmsConan2File(ConanFile):
         "wchar_t": ["builtin", "typedef"],
         "pybind": [True, False],
         "testing": [True, False],
+        "python_version": ["3.10", "3.13"],
     }
     xms_dependencies = []
     extra_dependencies = []
@@ -48,6 +49,7 @@ class XmsConan2File(ConanFile):
         'wchar_t': 'builtin',
         'pybind': False,
         'testing': False,
+        'python_version': '3.13',
     }
 
     def requirements(self):
@@ -101,6 +103,15 @@ class XmsConan2File(ConanFile):
             dep_opts = self.xms_dependency_options.get(dep_name, {})
             self.options[dep_name].pybind = dep_opts.get('pybind', self.options.pybind)
             self.options[dep_name].testing = dep_opts.get('testing', self.options.testing)
+            if 'python_version' in self.options[dep_name]:
+                self.options[dep_name].python_version = dep_opts.get(
+                    'python_version', self.options.python_version
+                )
+
+    def package_id(self):
+        """Drop python_version from the package_id when not building Python bindings."""
+        if not self.info.options.pybind:
+            del self.info.options.python_version
 
     def layout(self):
         """The layout method."""
@@ -131,7 +142,7 @@ class XmsConan2File(ConanFile):
 
         # Version Info
         tc.variables["XMS_VERSION"] = '{}'.format(self.version)
-        tc.variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
+        tc.variables["PYTHON_TARGET_VERSION"] = str(self.options.python_version)
 
         if self.options.pybind:
             for key, value in self._get_python_cmake_hints().items():
@@ -158,7 +169,7 @@ class XmsConan2File(ConanFile):
 
         # Version Info
         variables["XMS_VERSION"] = '{}'.format(self.version)
-        variables["PYTHON_TARGET_VERSION"] = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
+        variables["PYTHON_TARGET_VERSION"] = str(self.options.python_version)
 
         if self.options.pybind:
             variables.update(self._get_python_cmake_hints())
@@ -334,7 +345,7 @@ class XmsConan2File(ConanFile):
         """Run Python tests in a virtual environment and optionally upload."""
         build_venv_dir = os.path.join(self.build_folder, "venv")
         tests_dest_dir = os.path.join(self.build_folder, "tests")
-        python_target_version = self.buildenv.vars(self).get("PYTHON_TARGET_VERSION", "3.13")
+        python_target_version = str(self.options.python_version)
 
         if sys.platform == "win32":
             python_executable = os.path.join(build_venv_dir, "Scripts", "python.exe")

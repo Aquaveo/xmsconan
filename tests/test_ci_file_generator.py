@@ -127,12 +127,83 @@ def test_ci_config_options_passed_to_template(tmp_path):
 
 
 def test_github_linux_uses_container_image(ci_toml, tmp_path):
-    """Linux job uses the Aquaveo Docker container image."""
+    """Linux job uses the Aquaveo 3.13 Docker container image (Linux is 3.13-only)."""
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
     assert "ghcr.io/aquaveo/conan-gcc13-py3.13:latest" in content
+
+
+def test_github_default_python_version_is_3_13_only(ci_toml, tmp_path):
+    """Without [ci].python_versions every matrix is just 3.13 (3.10 is opt-in)."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    # Flake and Mac use a hard-coded matrix; Windows renders ci_python_versions
+    # via tojson (double-quoted). Linux has no python-version matrix axis.
+    assert content.count("python-version: ['3.13']") == 2  # flake + mac
+    assert content.count('python-version: ["3.13"]') == 1  # windows
+    assert '"3.10"' not in content
+
+
+def test_github_python_versions_opt_in_adds_3_10_only_on_windows(tmp_path):
+    """[ci].python_versions = ["3.10", "3.13"] only expands the Windows matrix."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.10", "3.13"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    # Only Windows matrix expands; mac stays 3.13 only.
+    assert content.count('python-version: ["3.10", "3.13"]') == 1
+    assert content.count("python-version: ['3.13']") == 2  # flake + mac
+
+
+def test_gitlab_default_python_version_is_3_13_only(tmp_path):
+    """Without [ci].python_versions GitLab references only 3.13."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert "PYTHON_TARGET_VERSION: '3.13'" in content
+    assert "PYTHON_TARGET_VERSION: '3.10'" not in content
+
+
+def test_gitlab_python_versions_opt_in_only_fans_out_windows(tmp_path):
+    """[ci].python_versions = ["3.10", "3.13"] only expands the Windows matrix in GitLab."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.10", "3.13"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    # Only Windows fans out; PY_TAG variable is windows-only.
+    assert "PY_TAG: 'py310'" in content
+    assert "PY_TAG: 'py313'" in content
+    # Linux jobs are single-version and use a static image.
+    assert "conan-gcc13-py3.13" in content
+    assert "cp313-cp313" in content
+    # Linux jobs are NOT fanned out — so CP_TAG (only the wheel-repair var) is gone.
+    assert "CP_TAG" not in content
 
 
 def test_github_linux_no_setup_python(ci_toml, tmp_path):
@@ -489,7 +560,9 @@ def test_gitlab_ci_test_shards_without_split_tests_no_parallel(tmp_path):
     content = ci_file.read_text(encoding="utf-8")
     assert '"Run C++ Tests":' not in content
     assert "GTEST_TOTAL_SHARDS" not in content
-    assert "parallel:" not in content
+    # The python-version matrix uses `parallel:` too, so check for the
+    # test-sharding form ("parallel: <int>") specifically.
+    assert "parallel: 4" not in content
 
 
 def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
