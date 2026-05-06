@@ -25,6 +25,12 @@ for mod_name in [
 _conan_stubs["conan"].ConanFile = type("ConanFile", (), {})
 sys.modules["conan"].ConanFile = _conan_stubs["conan"].ConanFile
 
+# Ensure ConanException is a real Exception subclass so ``except ConanException``
+# clauses in production code evaluate correctly under the stubs.
+_conan_stubs["conan.errors"].ConanException = type("ConanException", (Exception,), {})
+sys.modules["conan.errors"].ConanException = _conan_stubs["conan.errors"].ConanException
+
+from conan.errors import ConanException  # noqa: E402
 from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402
 
 
@@ -365,11 +371,16 @@ class TestXmsDependencyPythonVersionPropagation:
     Consumers rely on the XmsConan2File option flowing into the dep options so
     that a top-level pybind=True / python_version=3.10 build wires every sister
     library to the matching ABI.
+
+    In Conan 2, ``self.options[dep_name]`` returns a freshly-created empty
+    consumer-side override proxy — ``'python_version' in <proxy>`` is always
+    False — so the propagation must not gate the assignment on a containment
+    check.  Setting an attribute on the proxy is the supported way to push a
+    downstream option override; if the dep recipe doesn't define the option,
+    Conan raises ConanException, which we tolerate.
     """
 
-    _SENTINEL = object()
-
-    def _make_obj(self, dep_has_python_version, dep_options_override=None):
+    def _make_obj(self, dep_options_override=None, dep_raises=False):
         """Construct an obj whose configure() will iterate xms_dependencies."""
         obj = object.__new__(XmsConan2File)
         obj.xms_dependencies = ["foo/1.0"]
@@ -383,13 +394,26 @@ class TestXmsDependencyPythonVersionPropagation:
         obj.options.testing = False
         obj.options.python_version = "3.10"
 
-        # Dep options accessed via self.options[dep_name]
-        dep_opts = MagicMock()
-        # Pre-set python_version to a sentinel so we can detect whether
-        # configure() actually overwrote it.
-        dep_opts.python_version = self._SENTINEL
-        contains_keys = {"python_version"} if dep_has_python_version else set()
-        dep_opts.__contains__.side_effect = lambda key: key in contains_keys
+        # Dep options accessed via self.options[dep_name].  Mirror Conan 2's
+        # empty proxy: ``in`` reports False for everything.  When the dep
+        # recipe lacks python_version, assigning it raises ConanException.
+        if dep_raises:
+            class _RaisingDepOpts:
+                pybind = None
+                testing = None
+
+                def __contains__(self, _key):
+                    return False
+
+                def __setattr__(self, name, value):
+                    if name == "python_version":
+                        raise ConanException(f"option '{name}' doesn't exist")
+                    object.__setattr__(self, name, value)
+
+            dep_opts = _RaisingDepOpts()
+        else:
+            dep_opts = MagicMock()
+            dep_opts.__contains__.return_value = False
 
         boost_opts = MagicMock()
         obj.options.__getitem__.side_effect = (
@@ -406,24 +430,22 @@ class TestXmsDependencyPythonVersionPropagation:
 
     def test_propagates_top_level_python_version(self):
         """Without a per-dep override, the top-level python_version flows through."""
-        obj, dep_opts = self._make_obj(dep_has_python_version=True)
+        obj, dep_opts = self._make_obj()
         obj.configure()
         assert dep_opts.python_version == "3.10"
 
     def test_per_dep_override_wins(self):
         """An xms_dependency_options entry overrides the top-level value."""
         obj, dep_opts = self._make_obj(
-            dep_has_python_version=True,
             dep_options_override={"python_version": "3.13"},
         )
         obj.configure()
         assert dep_opts.python_version == "3.13"
 
-    def test_skipped_when_dep_lacks_option(self):
-        """Deps that don't expose python_version aren't touched."""
-        obj, dep_opts = self._make_obj(dep_has_python_version=False)
-        obj.configure()
-        assert dep_opts.python_version is self._SENTINEL
+    def test_tolerates_dep_without_python_version_option(self):
+        """Deps whose recipe doesn't define python_version don't break configure()."""
+        obj, _dep_opts = self._make_obj(dep_raises=True)
+        obj.configure()  # must not raise
 
 
 class TestGetPythonCmakeHints:
