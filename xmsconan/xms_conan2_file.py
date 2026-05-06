@@ -103,10 +103,15 @@ class XmsConan2File(ConanFile):
             dep_opts = self.xms_dependency_options.get(dep_name, {})
             self.options[dep_name].pybind = dep_opts.get('pybind', self.options.pybind)
             self.options[dep_name].testing = dep_opts.get('testing', self.options.testing)
-            if 'python_version' in self.options[dep_name]:
+            # In Conan 2, ``self.options[dep_name]`` is the consumer-side override
+            # proxy and ``in`` always reports False, so assign unconditionally and
+            # tolerate deps whose recipe doesn't define ``python_version``.
+            try:
                 self.options[dep_name].python_version = dep_opts.get(
                     'python_version', self.options.python_version
                 )
+            except ConanException:
+                pass
 
     def package_id(self):
         """Drop python_version from the package_id when not building Python bindings."""
