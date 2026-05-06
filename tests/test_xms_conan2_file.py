@@ -30,8 +30,8 @@ sys.modules["conan"].ConanFile = _conan_stubs["conan"].ConanFile
 _conan_stubs["conan.errors"].ConanException = type("ConanException", (Exception,), {})
 sys.modules["conan.errors"].ConanException = _conan_stubs["conan.errors"].ConanException
 
-from conan.errors import ConanException  # noqa: E402
-from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402
+from conan.errors import ConanException  # noqa: E402,I100,I202
+from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402,I201
 
 
 def _make_conan_file(os_name, arch):
