@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Optional
+from typing import Any, Optional
 
 from xmsconan.package_tools.printer import Printer
 
@@ -104,6 +104,17 @@ class XmsConanPackager(object):
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
+
+        # Disable boost stacktrace to avoid __cxa_allocate_exception symbol
+        # conflict with -static-libstdc++ in pybind shared modules.
+        self._set_default_option_value('boost', 'without_stacktrace', True)
+
+        # Disable boost.locale: boost/1.86.0 passes
+        # `boost.locale.iconv.lib=libiconv` to b2 unconditionally on macOS,
+        # but b2 >=5.2 validates command-line features before loading the
+        # locale Jamfile and rejects it as unknown. No xms library uses
+        # boost.locale, so dropping it is the cleanest unblock.
+        self._set_default_option_value('boost', 'without_locale', True)
 
     def __del__(self):
         """Cleanup the temporary directory."""
@@ -669,6 +680,22 @@ class XmsConanPackager(object):
         print('\n')
         for line in table:
             print(line)
+
+    def _set_default_option_value(self, package: str, option: str, value: Any):
+        """
+        Set an option's value if not already set.
+
+        Args:
+            package: Name of the package to assign a default to.
+            option: Name of the option to assign a default to.
+            value: Default value to assign.
+        """
+        self._profile_options.setdefault(package, {})
+        if option in self._profile_options[package]:
+            # TODO: Make some sort of warning visible
+            return
+
+        self._profile_options[package][option] = value
 
 
 def _profile_order(packages: dict):
