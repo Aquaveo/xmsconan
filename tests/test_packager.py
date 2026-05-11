@@ -322,6 +322,8 @@ def test_create_build_profile_not_confused_by_new_combination_keys(tmp_path):
         '&:wchar_t=builtin\n'
         '&:pybind=False\n'
         '&:testing=False\n'
+        'boost/*:without_stacktrace=True\n'
+        'boost/*:without_locale=True\n'
         '\n'
         '[buildenv]\n'
         'XMS_VERSION=None\n'
@@ -389,7 +391,7 @@ def test_create_build_profile_puts_wildcards_first(tmp_path):
 
 @patch_env(clear=True)
 def test_create_build_profile_with_no_profile_options(tmp_path):
-    """No pkg/*: lines are emitted when profile_options is absent or empty."""
+    """Only the built-in boost defaults are emitted when no caller-supplied profile_options exist."""
     p = XmsConanPackager("xmscore")
     p.generate_configurations(system_platform="linux")
 
@@ -398,10 +400,14 @@ def test_create_build_profile_with_no_profile_options(tmp_path):
     profile_path = p.create_build_profile(config)
     with open(profile_path, "r") as f:
         content = f.read()
-    # Versions aren't supported, so checking for `pkg/1.0:` isn't necessary.
-    # We'll just check for the `/*:` part of `pkg/*:`.
-    for line in content.splitlines():
-        assert "/*:" not in line, f"unexpected dep-qualified line: {line!r}"
+    # The packager unconditionally injects boost defaults (without_stacktrace,
+    # without_locale).  Any other `pkg/*:` line would indicate a stray
+    # caller-supplied option leaking through.
+    dep_lines = [line for line in content.splitlines() if "/*:" in line]
+    assert dep_lines == [
+        "boost/*:without_stacktrace=True",
+        "boost/*:without_locale=True",
+    ]
 
 
 # --- print_configuration_table ---

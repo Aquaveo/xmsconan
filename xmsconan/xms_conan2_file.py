@@ -77,12 +77,6 @@ class XmsConan2File(ConanFile):
 
     def configure(self):
         """The configure method."""
-        # self.version = envvars.get('XMS_VERSION', '99.99.99')
-
-        # Disable boost stacktrace to avoid __cxa_allocate_exception symbol
-        # conflict with -static-libstdc++ in pybind shared modules.
-        self.options["boost"].without_stacktrace = True
-
         # Raise ConanExceptions for Unsupported Versions
         s_os = self.settings.os
         s_compiler = self.settings.compiler
