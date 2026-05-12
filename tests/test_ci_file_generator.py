@@ -589,6 +589,76 @@ def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
     assert "xvfb-run" in test_section.group()
 
 
+def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
+    """Setting [ci].coverage = true renders an additional Coverage.yaml workflow."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'coverage = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
+    assert cov.exists()
+    content = cov.read_text(encoding="utf-8")
+    assert "xmsconan_coverage" in content
+    assert "ghcr.io/aquaveo/conan-gcc13-py3.13" in content
+
+
+def test_github_coverage_yaml_omitted_when_coverage_false(ci_toml, tmp_path):
+    """Coverage.yaml is not rendered when ci.coverage is not set."""
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
+    assert not cov.exists()
+
+
+def test_github_coverage_uses_xvfb_image_when_requested(tmp_path):
+    """coverage + xvfb selects the x11-gdal container image."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsvtk"\n'
+        'description = "desc"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'coverage = true\n'
+        'xvfb = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
+    content = cov.read_text(encoding="utf-8")
+    assert "ghcr.io/aquaveo/conan-gcc13-x11-gdal-py3.13" in content
+
+
+def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
+    """The GitLab Coverage stage now invokes xmsconan_coverage instead of inline gcovr."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'coverage = true\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert "xmsconan_coverage" in content
+    # The hand-rolled coverage preset / profile references should be gone.
+    assert "linux_testing_debug_coverage" not in content
+    assert "cmake --preset coverage" not in content
+
+
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     """python_namespaced_dir defaults to library_name[3:]."""
     toml_file = tmp_path / "build.toml"

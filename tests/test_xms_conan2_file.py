@@ -448,6 +448,107 @@ class TestXmsDependencyPythonVersionPropagation:
         obj.configure()  # must not raise
 
 
+class TestCoverageWiring:
+    """Verify the conanfile cooperates with XMS_COVERAGE for combined builds."""
+
+    def test_configure_options_method_removed(self):
+        """The configure_options() method that del'd pybind on non-Release is gone.
+
+        Pybind must be permitted with any build_type so the coverage workflow
+        can run testing=True, pybind=True, build_type=Debug in one shot.
+        """
+        assert not hasattr(XmsConan2File, "configure_options")
+
+    def test_run_python_tests_uses_pytest_cov_when_env_set(self, tmp_path):
+        """When XMS_COVERAGE=1, pytest is invoked with --cov flags."""
+        obj = object.__new__(XmsConan2File)
+        obj.build_folder = str(tmp_path / "build")
+        obj.source_folder = str(tmp_path / "source")
+        os.makedirs(obj.build_folder, exist_ok=True)
+        os.makedirs(os.path.join(obj.source_folder, "_package", "tests"), exist_ok=True)
+        with open(os.path.join(obj.source_folder, "pytest.ini"), "w") as f:
+            f.write("[pytest]\n")
+        obj.options = MagicMock()
+        obj.options.python_version = "3.13"
+        obj.python_namespaced_dir = "core"
+        obj.xms_dependencies = []
+        obj.dependencies = MagicMock()
+        obj.dependencies.host = {}
+        obj.run = MagicMock()
+        obj.output = MagicMock()
+        # Stub _find_wheel so we don't need a real wheel.
+        obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
+
+        os.environ["XMS_COVERAGE"] = "1"
+        try:
+            obj.run_python_tests()
+        finally:
+            del os.environ["XMS_COVERAGE"]
+
+        pytest_calls = [c for c in obj.run.call_args_list if "-m pytest" in str(c)]
+        assert pytest_calls, "expected at least one pytest invocation"
+        pytest_cmd = str(pytest_calls[-1])
+        assert "--cov=xms.core" in pytest_cmd
+        assert "--cov-report=xml:" in pytest_cmd
+        assert "--cov-report=html:" in pytest_cmd
+        assert "--cov-report=json:" in pytest_cmd
+
+    def test_run_python_tests_does_not_add_cov_when_env_unset(self, tmp_path):
+        """Without XMS_COVERAGE, no --cov flags are added."""
+        obj = object.__new__(XmsConan2File)
+        obj.build_folder = str(tmp_path / "build")
+        obj.source_folder = str(tmp_path / "source")
+        os.makedirs(obj.build_folder, exist_ok=True)
+        os.makedirs(os.path.join(obj.source_folder, "_package", "tests"), exist_ok=True)
+        with open(os.path.join(obj.source_folder, "pytest.ini"), "w") as f:
+            f.write("[pytest]\n")
+        obj.options = MagicMock()
+        obj.options.python_version = "3.13"
+        obj.python_namespaced_dir = "core"
+        obj.xms_dependencies = []
+        obj.dependencies = MagicMock()
+        obj.dependencies.host = {}
+        obj.run = MagicMock()
+        obj.output = MagicMock()
+        obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
+
+        os.environ.pop("XMS_COVERAGE", None)
+        obj.run_python_tests()
+
+        pytest_cmd = str(obj.run.call_args_list[-1])
+        assert "--cov" not in pytest_cmd
+
+    def test_run_python_tests_raises_when_cov_target_unknown(self, tmp_path):
+        """XMS_COVERAGE=1 without python_namespaced_dir must fail loudly.
+
+        Falling back to ``--cov=xms`` would silently mix in coverage from
+        xms_dependencies installed in the venv.
+        """
+        obj = object.__new__(XmsConan2File)
+        obj.build_folder = str(tmp_path / "build")
+        obj.source_folder = str(tmp_path / "source")
+        os.makedirs(obj.build_folder, exist_ok=True)
+        os.makedirs(os.path.join(obj.source_folder, "_package", "tests"), exist_ok=True)
+        with open(os.path.join(obj.source_folder, "pytest.ini"), "w") as f:
+            f.write("[pytest]\n")
+        obj.options = MagicMock()
+        obj.options.python_version = "3.13"
+        obj.python_namespaced_dir = None
+        obj.xms_dependencies = []
+        obj.dependencies = MagicMock()
+        obj.dependencies.host = {}
+        obj.run = MagicMock()
+        obj.output = MagicMock()
+        obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
+
+        os.environ["XMS_COVERAGE"] = "1"
+        try:
+            with pytest.raises(ConanException, match="python_namespaced_dir"):
+                obj.run_python_tests()
+        finally:
+            del os.environ["XMS_COVERAGE"]
+
+
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
 

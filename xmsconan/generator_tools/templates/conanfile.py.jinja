@@ -14,6 +14,7 @@ class {{ library_name|title }}ConanFile(XmsConan2File):
     version = "{{ version }}"
     testing_framework = "{{ testing_framework }}"
     python_binding_type = "{{ python_binding_type | default('pybind11') }}"
+    python_namespaced_dir = "{{ python_namespaced_dir }}"
     {%- if xms_dependency_options is defined and xms_dependency_options %}
     xms_dependency_options = {{ xms_dependency_options }}
     {%- endif %}
