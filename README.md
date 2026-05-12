@@ -37,7 +37,7 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan conan-deploy` | Save, restore, or upload Conan packages in CI |
 | `xmsconan publish` | Build, repair, and deploy a library |
 
-Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, etc.) remain available for backwards compatibility.
+Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, etc.) remain available for backwards compatibility. The coverage runner is currently exposed only as a legacy script, `xmsconan_coverage` (see `docs/USAGE.md` §11).
 
 ## build.toml Schema Reference
 
