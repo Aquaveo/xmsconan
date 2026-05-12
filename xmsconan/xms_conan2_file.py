@@ -43,7 +43,9 @@ class XmsConan2File(ConanFile):
     extra_export_sources = []
     testing_framework = "cxxtest"  # Options: "cxxtest" or "gtest"
     python_binding_type = "pybind11"  # Options: "pybind11" or "vtk_wrap"
-    python_namespaced_dir = None  # Submodule under xms.<...> (e.g. "core"). Set by the generated subclass; required when XMS_COVERAGE=1 so pytest-cov scopes to xms.<python_namespaced_dir>.
+    # Submodule under xms.<...> (e.g. "core"). Set by the generated subclass; required
+    # when XMS_COVERAGE=1 so pytest-cov scopes to xms.<python_namespaced_dir>.
+    python_namespaced_dir = None
     xms_dependency_options = {}  # Per-dependency option overrides: {"dep_name": {"pybind": False, "testing": False}}
 
     default_options = {

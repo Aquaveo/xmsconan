@@ -91,9 +91,9 @@ def _find_coverage_package(library_name: str) -> tuple[str, str]:
                 info = pinfo.get("info", {})
                 opts = info.get("options", {})
                 settings = info.get("settings", {})
-                if (opts.get("testing") == "True"
-                        and opts.get("pybind") == "True"
-                        and settings.get("build_type") == "Debug"):
+                if (opts.get("testing") == "True" and
+                        opts.get("pybind") == "True" and
+                        settings.get("build_type") == "Debug"):
                     candidates.append((ts, exact_ref, pid))
     if not candidates:
         raise RuntimeError(

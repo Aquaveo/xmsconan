@@ -619,7 +619,7 @@ def test_github_coverage_yaml_omitted_when_coverage_false(ci_toml, tmp_path):
 
 
 def test_github_coverage_uses_xvfb_image_when_requested(tmp_path):
-    """coverage + xvfb selects the x11-gdal container image."""
+    """Coverage + xvfb selects the x11-gdal container image."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmsvtk"\n'

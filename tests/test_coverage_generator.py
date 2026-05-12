@@ -20,15 +20,18 @@ class TestCoverageContextDefaults:
     """Defaults baked into _coverage_context match the issue spec."""
 
     def test_thresholds_default_to_zero(self):
+        """Both thresholds default to 0 (report-only mode)."""
         ctx = _coverage_context({}, "xmscore")
         assert ctx["cpp_threshold"] == 0.0
         assert ctx["python_threshold"] == 0.0
 
     def test_filters_default_to_library_prefix(self):
+        """The default gcovr filter scopes to the library's own source tree."""
         ctx = _coverage_context({}, "xmsgrid")
         assert ctx["filters"] == ["xmsgrid/"]
 
     def test_excludes_baked_in_when_absent(self):
+        """Default excludes drop *.t.h, the pybind dir, and the package tests."""
         ctx = _coverage_context({}, "xmsgrid")
         excludes = ctx["excludes"]
         assert any(r".*\.t\.h$" in e for e in excludes)
@@ -36,10 +39,12 @@ class TestCoverageContextDefaults:
         assert any("_package/tests" in e for e in excludes)
 
     def test_user_supplied_filters_win(self):
+        """User-supplied filters replace the defaults entirely."""
         ctx = _coverage_context({"filters": ["only/"]}, "xmsgrid")
         assert ctx["filters"] == ["only/"]
 
     def test_user_supplied_thresholds_win(self):
+        """User-supplied thresholds replace the defaults and are coerced to float."""
         ctx = _coverage_context(
             {"cpp_threshold": 70, "python_threshold": 65}, "xmsgrid",
         )
@@ -51,11 +56,13 @@ class TestPercentExtraction:
     """JSON summary parsing for both layers."""
 
     def test_cpp_percent_from_gcovr_summary(self, tmp_path):
+        """Reads line_percent from a gcovr JSON summary."""
         summary = tmp_path / "cov-cpp-summary.json"
         summary.write_text(json.dumps({"line_percent": 72.4}))
         assert _cpp_percent_from_summary(summary) == 72.4
 
     def test_py_percent_from_pytest_cov_summary(self, tmp_path):
+        """Reads totals.percent_covered from a pytest-cov JSON summary."""
         summary = tmp_path / "cov-py-summary.json"
         summary.write_text(json.dumps({"totals": {"percent_covered": 81.2}}))
         assert _py_percent_from_summary(summary) == 81.2
@@ -65,10 +72,12 @@ class TestGithubStepSummary:
     """Markdown table append behavior for $GITHUB_STEP_SUMMARY."""
 
     def test_no_op_when_env_missing(self, tmp_path):
+        """Does nothing (and does not raise) when $GITHUB_STEP_SUMMARY is unset."""
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
         _append_github_summary([("C++", 70.0, 72.5, True)])
 
     def test_appends_rows_to_file(self, tmp_path):
+        """Appends a markdown table for each row, preserving prior content."""
         summary_path = tmp_path / "summary.md"
         summary_path.write_text("# preamble\n")
         os.environ["GITHUB_STEP_SUMMARY"] = str(summary_path)
@@ -92,6 +101,7 @@ class TestFindCoveragePackage:
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_picks_newest_matching_package(self, mock_run):
+        """When multiple revisions match, the highest timestamp wins."""
         mock_run.return_value = MagicMock(
             stdout=json.dumps({
                 "Local Cache": {
@@ -131,6 +141,7 @@ class TestFindCoveragePackage:
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_raises_when_no_match(self, mock_run):
+        """Raises a clear error when the cache has no matching package."""
         mock_run.return_value = MagicMock(
             stdout=json.dumps({"Local Cache": {}}), returncode=0,
         )
@@ -208,6 +219,7 @@ class TestRunCoverageThresholdGating:
     def test_passes_when_both_layers_meet_threshold(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
+        """Exits 0 when C++ and Python percentages both clear their thresholds."""
         toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
             tmp_path, cpp_percent=72.5, py_percent=71.2,
         )
@@ -226,6 +238,7 @@ class TestRunCoverageThresholdGating:
     def test_fails_when_cpp_under_threshold(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
+        """Exits 1 when C++ percentage is below cpp_threshold."""
         toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
             tmp_path, cpp_percent=65.0, py_percent=85.0,
         )
@@ -244,6 +257,7 @@ class TestRunCoverageThresholdGating:
     def test_fails_when_python_under_threshold(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
+        """Exits 1 when Python percentage is below python_threshold."""
         toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
             tmp_path, cpp_percent=85.0, py_percent=50.0,
         )
@@ -258,5 +272,6 @@ class TestRunCoverageThresholdGating:
 
 
 def test_run_coverage_raises_on_missing_toml(tmp_path):
+    """A missing build.toml surfaces a FileNotFoundError immediately."""
     with pytest.raises(FileNotFoundError):
         run_coverage(str(tmp_path / "missing.toml"), "0.0.0", str(tmp_path))
