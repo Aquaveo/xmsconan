@@ -1,8 +1,8 @@
 """Tests for coverage_tools.coverage_generator."""
 import json
 import os
-import subprocess
 from pathlib import Path
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
