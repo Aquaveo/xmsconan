@@ -518,6 +518,51 @@ class TestCoverageWiring:
         pytest_cmd = str(obj.run.call_args_list[-1])
         assert "--cov" not in pytest_cmd
 
+    def test_configure_raises_when_coverage_set_without_namespaced_dir(self):
+        """XMS_COVERAGE=1 + missing python_namespaced_dir fails at configure time.
+
+        The deep run_python_tests check still exists as defense in depth, but
+        catching this in configure() avoids wasting a full instrumented build
+        before the failure surfaces.
+        """
+        obj = object.__new__(XmsConan2File)
+        obj.python_namespaced_dir = None
+        obj.options = MagicMock()
+        obj.options.pybind = False
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        obj.settings = MagicMock()
+        obj.settings.os = MagicMock(__str__=lambda s: "Linux")
+        obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
+        obj.settings.compiler.version = MagicMock(value="13.0")
+
+        os.environ["XMS_COVERAGE"] = "1"
+        try:
+            with pytest.raises(ConanException, match="python_namespaced_dir"):
+                obj.configure()
+        finally:
+            del os.environ["XMS_COVERAGE"]
+
+    def test_configure_permits_missing_namespaced_dir_without_coverage(self):
+        """Without XMS_COVERAGE, an unset python_namespaced_dir is allowed."""
+        obj = object.__new__(XmsConan2File)
+        obj.python_namespaced_dir = None
+        obj.options = MagicMock()
+        obj.options.pybind = False
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        obj.settings = MagicMock()
+        obj.settings.os = MagicMock(__str__=lambda s: "Linux")
+        obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
+        obj.settings.compiler.version = MagicMock(value="13.0")
+
+        os.environ.pop("XMS_COVERAGE", None)
+        obj.configure()  # must not raise
+
     def test_run_python_tests_raises_when_cov_target_unknown(self, tmp_path):
         """XMS_COVERAGE=1 without python_namespaced_dir must fail loudly.
 

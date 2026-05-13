@@ -1,6 +1,7 @@
 """Tests for coverage_tools.coverage_generator."""
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -66,6 +67,33 @@ class TestPercentExtraction:
         summary = tmp_path / "cov-py-summary.json"
         summary.write_text(json.dumps({"totals": {"percent_covered": 81.2}}))
         assert _py_percent_from_summary(summary) == 81.2
+
+    def test_cpp_percent_raises_on_missing_key(self, tmp_path):
+        """Schema drift (missing line_percent) raises rather than silently returning 0%."""
+        summary = tmp_path / "cov-cpp-summary.json"
+        summary.write_text(json.dumps({"some_other_key": 1.0}))
+        with pytest.raises(ValueError) as exc_info:
+            _cpp_percent_from_summary(summary)
+        assert str(summary) in str(exc_info.value)
+        assert "line_percent" in str(exc_info.value)
+
+    def test_py_percent_raises_on_missing_totals(self, tmp_path):
+        """Schema drift (missing totals) raises rather than silently returning 0%."""
+        summary = tmp_path / "cov-py-summary.json"
+        summary.write_text(json.dumps({}))
+        with pytest.raises(ValueError) as exc_info:
+            _py_percent_from_summary(summary)
+        assert str(summary) in str(exc_info.value)
+        assert "percent_covered" in str(exc_info.value)
+
+    def test_py_percent_raises_on_missing_percent_covered(self, tmp_path):
+        """Schema drift (totals present but missing percent_covered) raises."""
+        summary = tmp_path / "cov-py-summary.json"
+        summary.write_text(json.dumps({"totals": {}}))
+        with pytest.raises(ValueError) as exc_info:
+            _py_percent_from_summary(summary)
+        assert str(summary) in str(exc_info.value)
+        assert "percent_covered" in str(exc_info.value)
 
 
 class TestGithubStepSummary:
@@ -147,6 +175,36 @@ class TestFindCoveragePackage:
         )
         with pytest.raises(RuntimeError, match="No testing=True"):
             _find_coverage_package("xmscore")
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_accepts_bool_and_lowercase_truthy_options(self, mock_run):
+        """Conan's option repr is not contractually 'True' — accept bool/case variants."""
+        mock_run.return_value = MagicMock(
+            stdout=json.dumps({
+                "Local Cache": {
+                    "xmscore/1.0.0": {
+                        "revisions": {
+                            "rev1": {
+                                "timestamp": 100,
+                                "packages": {
+                                    "pid": {
+                                        "info": {
+                                            # bool True (not the string "True")
+                                            "options": {"testing": True, "pybind": "true"},
+                                            "settings": {"build_type": "Debug"},
+                                        }
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }),
+            returncode=0,
+        )
+        ref, pid = _find_coverage_package("xmscore")
+        assert ref == "xmscore/1.0.0"
+        assert pid == "pid"
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_skips_release_builds(self, mock_run):
@@ -270,8 +328,142 @@ class TestRunCoverageThresholdGating:
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
         assert exit_code == 1
 
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_fails_when_raw_just_below_threshold(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """A raw 69.95% must not pass a 70.0 threshold via display rounding."""
+        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=69.95, py_percent=99.0,
+        )
+        mock_run.side_effect = fake_run
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+        assert exit_code == 1, "69.95% must not satisfy a 70.0 threshold"
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_xmsconan_gen_called_with_explicit_output_dir(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """run_coverage passes --output_dir to xmsconan_gen instead of relying on cwd."""
+        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        )
+        captured_cmds = []
+
+        def capture(cmd, env=None, cwd=None, **kw):
+            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = capture
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        gen_cmds = [c for c in captured_cmds
+                    if isinstance(c, list) and c and c[0] == "xmsconan_gen"]
+        assert gen_cmds, "xmsconan_gen should have been invoked"
+        gen_cmd = gen_cmds[0]
+        assert "--output_dir" in gen_cmd, (
+            f"xmsconan_gen must be invoked with --output_dir; got {gen_cmd}"
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_failure_still_produces_artifacts(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """A failing build.py does not abort gcovr or artifact collection.
+
+        Coverage artifacts and the step summary are most valuable when a test
+        failed; the tool exits non-zero but only after producing them.
+        """
+        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=99.0, py_percent=99.0,
+        )
+
+        def run_with_build_failure(cmd, env=None, cwd=None, **kw):
+            is_build_py = isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "build.py"
+            if is_build_py:
+                raise subprocess.CalledProcessError(1, cmd)
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = run_with_build_failure
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        assert exit_code != 0, "Build failure must surface as non-zero exit"
+        assert (tmp_path / "cov-cpp-summary.json").exists(), (
+            "gcovr summary must be produced even when the build step failed"
+        )
+
 
 def test_run_coverage_raises_on_missing_toml(tmp_path):
     """A missing build.toml surfaces a FileNotFoundError immediately."""
     with pytest.raises(FileNotFoundError):
         run_coverage(str(tmp_path / "missing.toml"), "0.0.0", str(tmp_path))
+
+
+class TestMainErrorHandling:
+    """main()'s error path preserves captured stderr and the traceback."""
+
+    def test_calledprocesserror_stderr_surfaces(self, capsys, monkeypatch):
+        """A CalledProcessError carrying conan stderr is printed, not swallowed."""
+        from xmsconan.coverage_tools import coverage_generator
+
+        boom = subprocess.CalledProcessError(
+            1, ["conan", "list"], output="", stderr="ERROR: conan list blew up\n",
+        )
+        monkeypatch.setattr(
+            coverage_generator, "run_coverage",
+            MagicMock(side_effect=boom),
+        )
+        monkeypatch.setattr(
+            "sys.argv", ["xmsconan_coverage", "build.toml"],
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            coverage_generator.main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        # Original conan stderr must reach the operator.
+        assert "ERROR: conan list blew up" in captured.err
+        # Full traceback should be present (frame from main() is enough proof).
+        assert "Traceback" in captured.err
+
+    def test_generic_exception_prints_traceback(self, capsys, monkeypatch):
+        """Non-CalledProcessError failures still get a traceback (not just str(e))."""
+        from xmsconan.coverage_tools import coverage_generator
+
+        monkeypatch.setattr(
+            coverage_generator, "run_coverage",
+            MagicMock(side_effect=RuntimeError("kapow")),
+        )
+        monkeypatch.setattr(
+            "sys.argv", ["xmsconan_coverage", "build.toml"],
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            coverage_generator.main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "kapow" in captured.err
+        assert "Traceback" in captured.err

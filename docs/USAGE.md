@@ -142,7 +142,7 @@ These drive the CI templates. All optional.
 | `[ci].windows` | `true` | Emit a Windows job. |
 | `[ci].linux_arm` | `false` | Emit a Linux ARM job (GitHub only). |
 | `[ci].deploy` | `true` | Emit deploy jobs (only run on tag pushes). |
-| `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan_coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
+| `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
 | `[ci].xvfb` | `false` | Wrap test execution in `xvfb-run` (use for libraries that link X11/VTK). |
 | `[ci].split_tests` | `false` | Split build and C++ test into two stages so testing artifacts can be reused. |
 | `[ci].test_shards` | `0` | When >1 (and `split_tests=true`), shard C++ tests over N parallel jobs using gtest sharding. |
@@ -151,11 +151,11 @@ These drive the CI templates. All optional.
 
 ### 5.7 Coverage thresholds (`[coverage]` table)
 
-Consumed by `xmsconan_coverage`; only relevant when `[ci].coverage = true` (or when you run the tool locally). All optional.
+Consumed by `xmsconan coverage`; only relevant when `[ci].coverage = true` (or when you run the tool locally). All optional.
 
 | Field | Default | Description |
 |---|---|---|
-| `[coverage].cpp_threshold` | `0` | Minimum C++ line coverage percent. `xmsconan_coverage` exits non-zero when gcovr reports below this. |
+| `[coverage].cpp_threshold` | `0` | Minimum C++ line coverage percent. `xmsconan coverage` exits non-zero when gcovr reports below this. |
 | `[coverage].python_threshold` | `0` | Minimum Python line coverage percent (pytest-cov). |
 | `[coverage].filters` | `["<library_name>/"]` | gcovr `--filter` patterns. Defaults to the library's own source tree. |
 | `[coverage].excludes` | `[".*\\.t\\.h$", ".*/<library_name>/python/.*", ".*/_package/tests/.*"]` | gcovr `--exclude` patterns. Strips test fixtures, the pybind layer, and the Python test tree from the C++ measurement. |
@@ -342,12 +342,12 @@ The generated jobs follow the pattern:
 
 ---
 
-## 11. Coverage (`xmsconan_coverage`)
+## 11. Coverage (`xmsconan coverage`)
 
-`xmsconan_coverage` runs a single instrumented build and produces combined C++ and Python coverage reports. Configured via the `[coverage]` table in `build.toml` (§5.7).
+`xmsconan coverage` (also available as the legacy `xmsconan_coverage` script) runs a single instrumented build and produces combined C++ and Python coverage reports. Configured via the `[coverage]` table in `build.toml` (§5.7).
 
 ```bash
-xmsconan_coverage --version 0.0.0 build.toml
+xmsconan coverage --version 0.0.0 build.toml
 ```
 
 What it does:
@@ -356,29 +356,29 @@ What it does:
 2. Sets `XMS_COVERAGE=1` and invokes `build.py --filter '{"build_type":"Debug","testing":true,"pybind":true}'` — one Conan-create that builds the library, links the test runner, and produces the wheel from the *same* `.gcno` set.
 3. Locates the resulting package in the Conan cache and runs `gcovr` (C++) against `build_folder` with `--root source_folder`, and reads pytest-cov's JSON summary that the recipe wrote into `build_folder` while running the wheel's test suite.
 4. Writes `cov-cpp.xml`, `cov-py.xml`, `cov-cpp-summary.json`, `cov-py-summary.json`, `coverage-html-cpp/`, and `coverage-html-py/` into `--output_dir`.
-5. Compares the line-coverage percent for each layer against `[coverage].cpp_threshold` / `[coverage].python_threshold` and exits non-zero on regression. When `$GITHUB_STEP_SUMMARY` is set, a markdown table is appended.
+5. Compares the line-coverage percent for each layer against `[coverage].cpp_threshold` / `[coverage].python_threshold` and exits non-zero on regression. The tool also exits non-zero if `build.py` reported a test failure earlier — but only *after* still producing gcovr reports, copying artifacts, and (if `$GITHUB_STEP_SUMMARY` is set) appending the markdown summary, so the coverage data and the failing-test signal are both visible in the same run. If a coverage summary file is present but missing its expected keys (gcovr/pytest-cov schema drift, truncated write), the tool raises rather than reporting a misleading 0%.
 
 ### 11.1 What this requires of the recipe
 
-- `python_namespaced_dir` **must** be set on the recipe (it is by default — `xmsconan_gen` derives it from `library_name`). With `XMS_COVERAGE=1` the recipe targets `pytest-cov` at exactly `xms.<python_namespaced_dir>` so coverage doesn't leak across `xms_dependencies` installed in the build venv. The run fails fast if it's unset.
+- `python_namespaced_dir` **must** be set on the recipe (it is by default — `xmsconan_gen` derives it from `library_name`). With `XMS_COVERAGE=1` the recipe targets `pytest-cov` at exactly `xms.<python_namespaced_dir>` so coverage doesn't leak across `xms_dependencies` installed in the build venv. The recipe's `configure()` raises at install time if `XMS_COVERAGE=1` is set without `python_namespaced_dir`, so the run fails fast before a full instrumented build is wasted.
 - The compiler must support `--coverage` (GCC/Clang). MSVC is rejected by the generated `CMakeLists.txt` when `XMS_COVERAGE` is non-empty.
 - `gcovr` must be on `PATH` (the generated CI pipelines `pip install gcovr` for you).
 
 ### 11.2 `[ci].xvfb = true`
 
-If the library needs an X server to run its tests (VTK, GUI libs), `xmsconan_coverage` re-execs itself under `xvfb-run -a -s "-screen 0 1280x1024x24"` automatically. A missing `xvfb-run` is logged as a warning, not a fatal error, so the test failures surface clearly.
+If the library needs an X server to run its tests (VTK, GUI libs), `xmsconan coverage` re-execs itself under `xvfb-run -a -s "-screen 0 1280x1024x24"` automatically. A missing `xvfb-run` is logged as a warning, not a fatal error, so the test failures surface clearly.
 
 ### 11.3 Environment variables consumed
 
 | Variable | Set by | Effect |
 |---|---|---|
-| `XMS_COVERAGE` | `xmsconan_coverage` | Recipe-side flag. Enables `--coverage` in `CMakeLists.txt`, installs `pytest-cov`, and passes `--cov=xms.<python_namespaced_dir>` to pytest. |
+| `XMS_COVERAGE` | `xmsconan coverage` | Recipe-side flag. Enables `--coverage` in `CMakeLists.txt`, installs `pytest-cov`, and passes `--cov=xms.<python_namespaced_dir>` to pytest. |
 | `XMS_COVERAGE_PIP_INDEX` | you | Optional extra `--extra-index-url` for the build venv's `pip install` when coverage is enabled (useful when `pytest-cov` lives on a private index). |
 | `GITHUB_STEP_SUMMARY` | GitHub Actions | When set, a coverage summary table is appended. |
 
 ### 11.4 GitLab vs GitHub
 
-- **GitLab**: `xmsconan ci` emits a `Coverage` stage that calls `xmsconan_coverage`, exposes `cov-cpp.xml` as the `cobertura` coverage report, and ships HTML to Pages. The `coverage:` regex still matches gcovr's `TOTAL` line (the `--txt` summary is printed to stdout).
+- **GitLab**: `xmsconan ci` emits a `Coverage` stage that invokes `xmsconan_coverage` (the legacy alias used throughout the generated CI for consistency with `xmsconan_gen`, `xmsconan_conan_setup`, etc.; equivalent to `xmsconan coverage`), exposes `cov-cpp.xml` as the `cobertura` coverage report, and ships HTML to Pages. The `coverage:` regex still matches gcovr's `TOTAL` line (the `--txt` summary is printed to stdout). The `pages` stage publishes a small landing page at the Pages root linking both `cpp/` and `python/` reports (the Python link is dropped if Python coverage was not produced).
 - **GitHub**: `xmsconan ci` emits a separate `Coverage.yaml` workflow that runs on `push` and `pull_request`, uploads `coverage-html-*/` and `cov-*.xml` as artifacts, and appends a summary table to the run page.
 
 ---

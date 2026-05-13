@@ -75,6 +75,16 @@ class XmsConan2File(ConanFile):
 
     def configure(self):
         """The configure method."""
+        # Fail fast at configure time when XMS_COVERAGE is requested but the
+        # recipe does not name a python_namespaced_dir for pytest-cov to
+        # target. Surfacing this before the build avoids burning a full
+        # instrumented build only to abort deep in run_python_tests.
+        if os.environ.get("XMS_COVERAGE") and not self.python_namespaced_dir:
+            raise ConanException(
+                "XMS_COVERAGE=1 requires python_namespaced_dir to be set on the "
+                "recipe so pytest-cov measures only this library's namespace."
+            )
+
         # Raise ConanExceptions for Unsupported Versions
         s_os = self.settings.os
         s_compiler = self.settings.compiler

@@ -30,6 +30,7 @@ xmsconan gen --help          # help for a specific command
 |---------|-------------|
 | `xmsconan gen` | Generate build files from templates |
 | `xmsconan ci` | Generate CI pipeline files (GitLab/GitHub) from templates |
+| `xmsconan coverage` | Run unified C++/Python coverage (see `docs/USAGE.md` §11) |
 | `xmsconan build` | Build XMS libraries |
 | `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |
 | `xmsconan wheel-repair` | Repair Python wheels for the current platform (Linux/macOS/Windows) |
@@ -37,7 +38,7 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan conan-deploy` | Save, restore, or upload Conan packages in CI |
 | `xmsconan publish` | Build, repair, and deploy a library |
 
-Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, etc.) remain available for backwards compatibility. The coverage runner is currently exposed only as a legacy script, `xmsconan_coverage` (see `docs/USAGE.md` §11).
+Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, `xmsconan_coverage`, etc.) remain available for backwards compatibility.
 
 ## build.toml Schema Reference
 

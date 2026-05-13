@@ -277,10 +277,11 @@ Coverage:
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
 <% endif %>
   script:
-    - pip install conan gcovr xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install conan "gcovr>=7,<9" xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - xmsconan_coverage --version 0.0.0 build.toml
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - xmsconan_coverage --version ${PACKAGE_VERSION} build.toml
   artifacts:
     reports:
       coverage_report:
@@ -300,8 +301,19 @@ pages:
   script:
     - mkdir -p public
     - cp -r coverage-html-cpp public/cpp
-    - if [ -d coverage-html-py ]; then cp -r coverage-html-py public/python; fi
-    - cp coverage-html-cpp/index.html public/index.html
+    - HAS_PY=0
+    - if [ -d coverage-html-py ]; then cp -r coverage-html-py public/python; HAS_PY=1; fi
+    - |
+      {
+        echo '<!DOCTYPE html>'
+        echo '<html lang="en"><head><meta charset="utf-8">'
+        echo '<title><< library_name >> coverage</title></head><body>'
+        echo '<h1><< library_name >> coverage</h1>'
+        echo '<ul>'
+        echo '<li><a href="cpp/index.html">C++ coverage (gcovr)</a></li>'
+        [ "$HAS_PY" -eq 1 ] && echo '<li><a href="python/index.html">Python coverage (pytest-cov)</a></li>'
+        echo '</ul></body></html>'
+      } > public/index.html
   artifacts:
     paths:
       - public

@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import traceback
 
 # 2. Third party modules
 try:
@@ -38,7 +39,23 @@ def _configure_logging(args):
         level = logging.DEBUG
     else:
         level = logging.INFO
-    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
+    # force=True so reconfiguration works when basicConfig has already been
+    # called (e.g., by the xmsconan dispatcher or an earlier subcommand).
+    logging.basicConfig(level=level, format='%(levelname)s: %(message)s', force=True)
+
+
+def _opt_is_truthy(value) -> bool:
+    """Return True if a Conan option value represents truthy regardless of repr.
+
+    Conan does not contractually stringify booleans to ``"True"``; depending on
+    the serializer path the value may come through as a real ``bool`` or as a
+    case-variant string. Treat all of those as the same answer.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return False
 
 
 def _load_toml(toml_path: Path) -> dict:
@@ -91,9 +108,9 @@ def _find_coverage_package(library_name: str) -> tuple[str, str]:
                 info = pinfo.get("info", {})
                 opts = info.get("options", {})
                 settings = info.get("settings", {})
-                if opts.get("testing") != "True":
+                if not _opt_is_truthy(opts.get("testing")):
                     continue
-                if opts.get("pybind") != "True":
+                if not _opt_is_truthy(opts.get("pybind")):
                     continue
                 if settings.get("build_type") != "Debug":
                     continue
@@ -146,16 +163,38 @@ def _run_gcovr(source_folder: Path, build_folder: Path, coverage_cfg: dict,
 
 
 def _cpp_percent_from_summary(summary_path: Path) -> float:
-    """Extract the line coverage percentage from a gcovr JSON summary."""
+    """Extract the line coverage percentage from a gcovr JSON summary.
+
+    Raises ``ValueError`` naming the summary path when the expected key is
+    absent, so a gcovr schema change or a truncated write surfaces as a clear
+    diagnostic rather than collapsing to an indistinguishable 0%.
+    """
     data = json.loads(summary_path.read_text(encoding="utf-8"))
-    return float(data.get("line_percent", 0.0))
+    try:
+        return float(data["line_percent"])
+    except KeyError as exc:
+        raise ValueError(
+            f"gcovr summary at {summary_path} is missing key 'line_percent'; "
+            "gcovr schema may have changed or the file is truncated."
+        ) from exc
 
 
 def _py_percent_from_summary(summary_path: Path) -> float:
-    """Extract the line coverage percentage from a pytest-cov JSON summary."""
+    """Extract the line coverage percentage from a pytest-cov JSON summary.
+
+    Raises ``ValueError`` naming the summary path when the expected key is
+    absent, so a pytest-cov schema change or a truncated write surfaces as a
+    clear diagnostic rather than collapsing to an indistinguishable 0%.
+    """
     data = json.loads(summary_path.read_text(encoding="utf-8"))
-    totals = data.get("totals", {})
-    return float(totals.get("percent_covered", 0.0))
+    try:
+        return float(data["totals"]["percent_covered"])
+    except KeyError as exc:
+        raise ValueError(
+            f"pytest-cov summary at {summary_path} is missing "
+            "'totals.percent_covered'; pytest-cov schema may have changed or "
+            "the file is truncated."
+        ) from exc
 
 
 def _append_github_summary(rows: list[tuple[str, float, float, bool]]):
@@ -197,16 +236,33 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
         _reexec_under_xvfb()
 
     # 1. Generate build artifacts.
-    _run(["xmsconan_gen", "--version", version, str(toml_file)], cwd=str(output_dir))
+    _run(
+        ["xmsconan_gen", "--version", version, "--output_dir", str(output_dir),
+         str(toml_file)],
+        cwd=str(output_dir),
+    )
 
-    # 2. Single instrumented build: testing + pybind + Debug.
+    # 2. Single instrumented build: testing + pybind + Debug. A test failure
+    #    inside conan create's test phase must NOT abort the rest of the run —
+    #    the artifacts and step summary are most valuable exactly when a test
+    #    failed, so we record the failure and press on.
     env = os.environ.copy()
     env["XMS_COVERAGE"] = "1"
     filter_arg = '{"build_type":"Debug","testing":true,"pybind":true}'
-    _run(
-        [sys.executable, "build.py", "--version", version, "--filter", filter_arg],
-        env=env, cwd=str(output_dir),
-    )
+    tests_failed = False
+    try:
+        _run(
+            [sys.executable, "build.py", "--version", version, "--filter", filter_arg],
+            env=env, cwd=str(output_dir),
+        )
+    except subprocess.CalledProcessError as exc:
+        tests_failed = True
+        LOGGER.error(
+            "build.py exited %s during the coverage build; continuing through "
+            "gcovr and artifact collection so partial coverage and the step "
+            "summary remain available.",
+            exc.returncode,
+        )
 
     # 3. Find the build/source folder for the instrumented package.
     exact_ref, pid = _find_coverage_package(library_name)
@@ -235,17 +291,19 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             shutil.rmtree(py_html_dst)
         shutil.copytree(py_html_src, py_html_dst)
 
-    # 6. Threshold gating.
-    cpp_actual = round(_cpp_percent_from_summary(cpp_summary), 1)
-    py_actual = round(_py_percent_from_summary(py_summary), 1) if py_summary.exists() else 0.0
+    # 6. Threshold gating. Compare raw percentages so a 69.95% build does not
+    #    sneak past a 70.0 threshold via display rounding; round only when
+    #    formatting for the log line and the GitHub step summary table.
+    cpp_raw = _cpp_percent_from_summary(cpp_summary)
+    py_raw = _py_percent_from_summary(py_summary) if py_summary.exists() else 0.0
     cpp_threshold = coverage_cfg["cpp_threshold"]
     py_threshold = coverage_cfg["python_threshold"]
-    cpp_pass = cpp_actual >= cpp_threshold
-    py_pass = py_actual >= py_threshold
+    cpp_pass = cpp_raw >= cpp_threshold
+    py_pass = py_raw >= py_threshold
 
     rows = [
-        ("C++", cpp_threshold, cpp_actual, cpp_pass),
-        ("Python", py_threshold, py_actual, py_pass),
+        ("C++", cpp_threshold, round(cpp_raw, 1), cpp_pass),
+        ("Python", py_threshold, round(py_raw, 1), py_pass),
     ]
     LOGGER.info("Coverage summary:")
     for layer, threshold, actual, passed in rows:
@@ -253,11 +311,14 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
                     layer, actual, threshold, "PASS" if passed else "FAIL")
     _append_github_summary(rows)
 
-    return 0 if (cpp_pass and py_pass) else 1
+    if tests_failed:
+        LOGGER.error("Coverage gate FAIL: build.py exited non-zero earlier; "
+                     "see the build log above for the failing test(s).")
+    return 0 if (cpp_pass and py_pass and not tests_failed) else 1
 
 
 def main():
-    """Entry point for the xmsconan_coverage console script."""
+    """Entry point for ``xmsconan coverage`` (and the legacy ``xmsconan_coverage`` script)."""
     parser = argparse.ArgumentParser(description="Run xmsconan unified coverage workflow.")
     parser.add_argument(
         "--output_dir", default=".",
@@ -285,9 +346,19 @@ def main():
 
     try:
         exit_code = run_coverage(args.toml_file, version, args.output_dir)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        raise SystemExit(1) from e
+    except Exception as exc:
+        # subprocess.run(..., capture_output=True, check=True) callers
+        # (_find_coverage_package, _conan_cache_path) raise CalledProcessError
+        # with the conan stderr buffered inside. Surface it before printing the
+        # traceback so the operator sees the actual conan diagnostic.
+        if isinstance(exc, subprocess.CalledProcessError):
+            stderr = exc.stderr
+            if stderr:
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", errors="replace")
+                print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
+        traceback.print_exc()
+        raise SystemExit(1) from exc
     raise SystemExit(exit_code)
 
 

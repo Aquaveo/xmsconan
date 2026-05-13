@@ -40,12 +40,24 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          pip install conan wheel gcovr
+          pip install conan wheel "gcovr>=7,<9"
           pip install xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
 
       - name: Setup Conan
         run: xmsconan_conan_setup --remote-url ${{ env.CONAN_REMOTE_URL }} --login
         shell: bash
+
+      # Get Tag Name (so coverage reports advertise the tag rather than 0.0.0
+      # when the workflow runs on a tagged push).
+      - name: Get Tag
+        id: gitTag
+        uses: little-core-labs/get-git-tag@v3.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+      - name: Set Coverage Version
+        uses: allenevans/set-env@v2.0.0
+        with:
+          XMS_VERSION: ${{ steps.gitTag.outputs.tag }}
+        if: startsWith(github.ref, 'refs/tags/')
 
       - name: Run Coverage
         run: xmsconan_coverage --version ${{ env.XMS_VERSION }} build.toml
