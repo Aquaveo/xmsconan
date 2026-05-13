@@ -43,6 +43,9 @@ class XmsConan2File(ConanFile):
     extra_export_sources = []
     testing_framework = "cxxtest"  # Options: "cxxtest" or "gtest"
     python_binding_type = "pybind11"  # Options: "pybind11" or "vtk_wrap"
+    # Submodule under xms.<...> (e.g. "core"). Set by the generated subclass; required
+    # when XMS_COVERAGE=1 so pytest-cov scopes to xms.<python_namespaced_dir>.
+    python_namespaced_dir = None
     xms_dependency_options = {}  # Per-dependency option overrides: {"dep_name": {"pybind": False, "testing": False}}
 
     default_options = {
@@ -70,13 +73,18 @@ class XmsConan2File(ConanFile):
         for dependency in self.extra_dependencies:
             self.requires(dependency)
 
-    def configure_options(self):
-        """Configure the options for the conan class."""
-        if self.settings.build_type != "Release":
-            del self.options.pybind
-
     def configure(self):
         """The configure method."""
+        # Fail fast at configure time when XMS_COVERAGE is requested but the
+        # recipe does not name a python_namespaced_dir for pytest-cov to
+        # target. Surfacing this before the build avoids burning a full
+        # instrumented build only to abort deep in run_python_tests.
+        if os.environ.get("XMS_COVERAGE") and not self.python_namespaced_dir:
+            raise ConanException(
+                "XMS_COVERAGE=1 requires python_namespaced_dir to be set on the "
+                "recipe so pytest-cov measures only this library's namespace."
+            )
+
         # Raise ConanExceptions for Unsupported Versions
         s_os = self.settings.os
         s_compiler = self.settings.compiler
@@ -177,20 +185,15 @@ class XmsConan2File(ConanFile):
         cmake.build()
         cmake.install()
 
-        # Run the tests if it is testing configuration.
-        if self.options.testing:
-            try:
+        try:
+            if self.options.testing:
                 self.run_cxx_tests(cmake)
-            finally:
-                self._save_test_artifacts()
 
-        # If this build is python, build the wheel then run tests.
-        elif self.options.pybind:
-            self._build_wheel()
-            try:
+            if self.options.pybind:
+                self._build_wheel()
                 self.run_python_tests()
-            finally:
-                self._save_test_artifacts()
+        finally:
+            self._save_test_artifacts()
 
     def package(self):
         """The package method of the conan class."""
@@ -345,6 +348,7 @@ class XmsConan2File(ConanFile):
         build_venv_dir = os.path.join(self.build_folder, "venv")
         tests_dest_dir = os.path.join(self.build_folder, "tests")
         python_target_version = str(self.options.python_version)
+        coverage_enabled = bool(os.environ.get("XMS_COVERAGE"))
 
         if sys.platform == "win32":
             python_executable = os.path.join(build_venv_dir, "Scripts", "python.exe")
@@ -359,7 +363,13 @@ class XmsConan2File(ConanFile):
 
         # Install general dependencies
         general_dependencies = ["numpy", "wheel", "pytest"]
-        self.run(_pip_install_cmd(python_executable, *general_dependencies))
+        if coverage_enabled:
+            general_dependencies.append("pytest-cov")
+        pip_extra_args = []
+        pip_index = os.environ.get("XMS_COVERAGE_PIP_INDEX")
+        if coverage_enabled and pip_index:
+            pip_extra_args.extend(["--extra-index-url", pip_index])
+        self.run(_pip_install_cmd(python_executable, *general_dependencies, *pip_extra_args))
 
         # Install xms_dependencies one by one
         for dependency_spec in self.xms_dependencies:
@@ -384,6 +394,22 @@ class XmsConan2File(ConanFile):
         # Run tests using the virtual environment's Python
         pytest_ini = os.path.join(self.source_folder, "pytest.ini")
         pytest_command = f'"{python_executable}" -m pytest -c "{pytest_ini}" {tests_dest_dir} -v'
+        if coverage_enabled:
+            if not self.python_namespaced_dir:
+                raise ConanException(
+                    "XMS_COVERAGE=1 requires python_namespaced_dir to be set on the "
+                    "recipe so pytest-cov measures only this library's namespace."
+                )
+            cov_target = f"xms.{self.python_namespaced_dir}"
+            cov_html_dir = os.path.join(self.build_folder, "coverage-html-py")
+            cov_xml = os.path.join(self.build_folder, "cov-py.xml")
+            cov_json = os.path.join(self.build_folder, "cov-py-summary.json")
+            pytest_command += (
+                f' --cov={cov_target}'
+                f' --cov-report=xml:"{cov_xml}"'
+                f' --cov-report=html:"{cov_html_dir}"'
+                f' --cov-report=json:"{cov_json}"'
+            )
         self.run(pytest_command, cwd=self.build_folder)
 
     def export_sources(self):

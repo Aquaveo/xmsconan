@@ -41,6 +41,22 @@ def _display_name(library_name: str) -> str:
     return "Xms" + library_name[3:].title()
 
 
+def _coverage_context(coverage_config: dict, library_name: str) -> dict:
+    """Build the coverage template context, applying sensible defaults."""
+    default_filters = [f"{library_name}/"]
+    default_excludes = [
+        r".*\.t\.h$",
+        f".*/{library_name}/python/.*",
+        r".*/_package/tests/.*",
+    ]
+    return {
+        "cpp_threshold": float(coverage_config.get("cpp_threshold", 0)),
+        "python_threshold": float(coverage_config.get("python_threshold", 0)),
+        "filters": list(coverage_config.get("filters", default_filters)),
+        "excludes": list(coverage_config.get("excludes", default_excludes)),
+    }
+
+
 def generate_ci(
     toml_file_path: str,
     version: str,
@@ -79,6 +95,7 @@ def generate_ci(
 
     # CI-specific options (for GitLab conditional sections)
     ci_config = toml_data.get("ci", {})
+    coverage_config = toml_data.get("coverage", {})
 
     from xmsconan import __version__ as xmsconan_version
 
@@ -98,19 +115,23 @@ def generate_ci(
         "ci_split_tests": ci_config.get("split_tests", False),
         "ci_test_shards": ci_config.get("test_shards", 0),
         "ci_python_versions": list(ci_config.get("python_versions", ["3.13"])),
+        "coverage": _coverage_context(coverage_config, library_name),
     }
 
-    # Select template and output path
+    # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"
     if ci_type == "github":
-        template_file = template_dir / "github-ci.yaml.jinja"
-        output_path = output_dir / ".github" / "workflows" / f"{display}-CI.yaml"
+        renders = [(template_dir / "github-ci.yaml.jinja",
+                    output_dir / ".github" / "workflows" / f"{display}-CI.yaml")]
+        if context["ci_coverage"]:
+            renders.append((template_dir / "github-coverage.yaml.jinja",
+                            output_dir / ".github" / "workflows" / "Coverage.yaml"))
     else:
-        template_file = template_dir / "gitlab-ci.yml.jinja"
-        output_path = output_dir / ".gitlab-ci.yml"
+        renders = [(template_dir / "gitlab-ci.yml.jinja", output_dir / ".gitlab-ci.yml")]
 
-    if not template_file.exists():
-        raise FileNotFoundError(f"CI template not found: {template_file}")
+    for template_file, _ in renders:
+        if not template_file.exists():
+            raise FileNotFoundError(f"CI template not found: {template_file}")
 
     # Use custom delimiters to avoid conflicts with GitHub Actions ${{ }}
     env = Environment(
@@ -127,16 +148,17 @@ def generate_ci(
         undefined=StrictUndefined,
     )
 
-    template_content = template_file.read_text(encoding="utf-8")
-    template = env.from_string(template_content)
-    rendered = template.render(context)
+    for template_file, output_path in renders:
+        template_content = template_file.read_text(encoding="utf-8")
+        template = env.from_string(template_content)
+        rendered = template.render(context)
 
-    if dry_run:
-        LOGGER.info("[DRY-RUN] Would write CI file: %s", output_path)
-    else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_text_lf(output_path, rendered)
-        LOGGER.info("Generated CI file: %s", output_path)
+        if dry_run:
+            LOGGER.info("[DRY-RUN] Would write CI file: %s", output_path)
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_lf(output_path, rendered)
+            LOGGER.info("Generated CI file: %s", output_path)
 
 
 def main():

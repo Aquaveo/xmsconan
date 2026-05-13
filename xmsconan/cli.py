@@ -12,6 +12,7 @@ import sys
 COMMANDS = {
     "gen": ("Generate build files from templates", "xmsconan.generator_tools.build_file_generator", "main"),
     "ci": ("Generate CI pipeline files from templates", "xmsconan.generator_tools.ci_file_generator", "main"),
+    "coverage": ("Run unified C++/Python coverage", "xmsconan.coverage_tools.coverage_generator", "main"),
     "build": ("Build XMS libraries", "xmsconan.build_tools.build_library", "main"),
     "conan-setup": ("Set up Conan profile and remotes", "xmsconan.ci_tools.conan_setup", "main"),
     "wheel-repair": ("Repair Python wheels for the current platform", "xmsconan.ci_tools.wheel_repair", "main"),
