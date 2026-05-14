@@ -411,6 +411,26 @@ class TestConanCachePath:
         )
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_strips_pid_but_preserves_recipe_revision(self, mock_run):
+        """Recipe revision (``#<hex>``) must survive the strip.
+
+        Conan 2 references look like
+        ``xmscore/0.0.0#<recipe_rev>:<package_id>``. Splitting on the
+        first ``:`` keeps the recipe revision intact — which is what
+        ``conan cache path --folder=source`` actually needs to resolve
+        the source folder of *that revision* (not just the latest
+        recipe). Guards against a future "strip everything after ``#``
+        too" refactor.
+        """
+        mock_run.return_value = MagicMock(stdout="/some/source/path\n")
+        _conan_cache_path("xmscore/0.0.0#deadbeef:abc123", "source")
+        cmd = mock_run.call_args[0][0]
+        assert "xmscore/0.0.0#deadbeef" in cmd
+        assert "abc123" not in " ".join(cmd), (
+            "pid must be stripped, but the recipe revision (after #) must remain"
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_returns_path_from_stdout(self, mock_run):
         """The trimmed stdout becomes the returned Path."""
         mock_run.return_value = MagicMock(stdout="  /trimmed/path  \n")
