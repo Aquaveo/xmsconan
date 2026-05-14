@@ -173,6 +173,49 @@ def test_explicit_coverage_false_overrides_env():
 
 
 @patch_env(clear=True)
+def test_coverage_true_propagates_xms_coverage_into_buildenv():
+    """coverage=True must export XMS_COVERAGE into the profile's [buildenv].
+
+    Without it the activation script never sets ``XMS_COVERAGE`` for the
+    CMake child process, so ``CMakeLists.txt.jinja``'s
+    ``if (DEFINED ENV{XMS_COVERAGE})`` guard is false, ``--coverage`` is
+    never added to the compile flags, no ``.gcno``/``.gcda`` files are
+    produced, and gcovr reports 0% with "All coverage data is filtered
+    out" (issue #69 — the 2.14.0/2.14.1/2.14.2 chain finally got the
+    pipeline to a green run, but the C++ report was empty for exactly
+    this reason).
+    """
+    p = XmsConanPackager("xmscore", coverage=True)
+    p.generate_configurations(system_platform="linux")
+
+    for cfg in p.configurations:
+        assert cfg["buildenv"].get("XMS_COVERAGE") == "1", (
+            f"every configuration must export XMS_COVERAGE=1 in buildenv "
+            f"when coverage=True; missing on {cfg.get('build_type')!r} / "
+            f"options={cfg.get('options')}"
+        )
+
+
+@patch_env(clear=True)
+def test_coverage_false_omits_xms_coverage_from_buildenv():
+    """coverage=False must not leak XMS_COVERAGE into the build profile.
+
+    A non-coverage run reusing the same packager invocation must not
+    pull instrumentation flags into the released binary — that would
+    bloat object size, defeat optimization, and (more importantly)
+    cause ``--coverage`` to be linked into the production wheel.
+    """
+    p = XmsConanPackager("xmscore", coverage=False)
+    p.generate_configurations(system_platform="linux")
+
+    for cfg in p.configurations:
+        assert "XMS_COVERAGE" not in cfg["buildenv"], (
+            f"coverage=False must not export XMS_COVERAGE; leaked on "
+            f"{cfg.get('build_type')!r} / options={cfg.get('options')}"
+        )
+
+
+@patch_env(clear=True)
 def test_testing_variants_added_for_all():
     """Every base config gets a testing variant."""
     p = XmsConanPackager("xmscore")
