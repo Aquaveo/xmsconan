@@ -561,73 +561,77 @@ class TestFindPytestCovArtifact:
 
 
 class TestResolveGcovrFilters:
-    """Filter resolution emits both relative and absolute-anchored forms (PR #72 review).
+    """Filter resolution emits both relative and absolute-anchored forms.
 
-    Without this, the default ``[coverage].filters = ["<library_name>/"]``
-    relies entirely on gcovr's internal path-normalization behavior to
-    decide whether ``xmscore/`` matches the absolute paths embedded in
-    the freshly-instrumented ``.gcno`` files. Subtle, version-specific,
-    silent on failure. Emitting a redundant absolute-path-anchored form
-    can only widen matches (gcovr ORs ``--filter`` entries) so the
-    duplication is purely additive defense.
+    The anchor is the **build** folder, not the recipe source folder:
+    ``cmake_layout()`` copies sources into the build folder before
+    compilation, so ``.gcno`` files embed paths under ``build_folder``.
+    Anchoring against the conan source folder (the original PR #72
+    behavior) silently filtered everything out even when ``.gcno`` and
+    ``.gcda`` files were present.
+
+    Emitting both the relative form and the build-folder-anchored form
+    is purely additive — gcovr ORs ``--filter`` entries — and guards
+    against subtle differences in how gcovr resolves source paths
+    across versions.
     """
 
     def test_simple_relative_filter_emits_both_forms(self):
         """A bare path segment gets both its original AND an anchored copy."""
-        source_folder = Path("/conan/p/xmsXXX/s")
-        out = _resolve_gcovr_filters(["xmscore/"], source_folder)
+        build_folder = Path("/conan/p/b/xmsXXX/b")
+        out = _resolve_gcovr_filters(["xmscore/"], build_folder)
         assert "xmscore/" in out
-        # Anchored form: re.escape of source_folder + "/" + the original
-        # Dots in the source folder must be escaped so they're literal.
+        # Anchored form: re.escape of build_folder + "/" + the original
+        # Dots in the build folder must be escaped so they're literal.
         assert any(
-            "/conan/p/xmsXXX/s/xmscore/" in entry
+            "/conan/p/b/xmsXXX/b/xmscore/" in entry
             for entry in out
             if entry != "xmscore/"
         ), f"expected an absolute-anchored copy in {out}"
         # Exactly two entries (one original, one anchored):
         assert len(out) == 2
 
-    def test_anchored_form_escapes_dots_in_source_folder(self):
-        """The conan source path contains dots (e.g. ``.conan2``) — they must be escaped.
+    def test_anchored_form_escapes_dots_in_build_folder(self):
+        """The conan build path contains dots (e.g. ``.conan2``) — they must be escaped.
 
         Without ``re.escape``, the dots would be regex wildcards and the
         anchored filter would match *anything* in the same position,
         defeating the purpose of anchoring.
         """
         import re as _re
-        source_folder = Path("/github/home/.conan2/p/xmsXXX/s")
-        out = _resolve_gcovr_filters(["xmscore/"], source_folder)
+        build_folder = Path("/github/home/.conan2/p/b/xmsXXX/b")
+        out = _resolve_gcovr_filters(["xmscore/"], build_folder)
         anchored = [e for e in out if e != "xmscore/"][0]
         # The anchored form must work as a regex against the real absolute path.
-        real_path = "/github/home/.conan2/p/xmsXXX/s/xmscore/math/math.cpp"
+        real_path = "/github/home/.conan2/p/b/xmsXXX/b/xmscore/math/math.cpp"
         assert _re.search(anchored, real_path), (
             f"anchored filter {anchored!r} must match the real absolute path"
         )
         # And it must NOT match a near-miss where the dot is a different char,
         # proving the dot was actually escaped:
-        near_miss = "/github/home/Xconan2/p/xmsXXX/s/xmscore/math/math.cpp"
+        near_miss = "/github/home/Xconan2/p/b/xmsXXX/b/xmscore/math/math.cpp"
         assert not _re.search(anchored, near_miss), (
             f"anchored filter {anchored!r} must treat dots as literals"
         )
 
     def test_regex_pattern_passes_through_unchanged(self):
         """A pattern with regex metacharacters is the user's deliberate choice."""
-        source_folder = Path("/conan/p/xmsXXX/s")
-        out = _resolve_gcovr_filters([r".*/xmscore/.*\.cpp$"], source_folder)
+        build_folder = Path("/conan/p/b/xmsXXX/b")
+        out = _resolve_gcovr_filters([r".*/xmscore/.*\.cpp$"], build_folder)
         assert out == [r".*/xmscore/.*\.cpp$"], (
             "regex-looking filters must not be doubled-up — user knows what they want"
         )
 
     def test_absolute_pattern_passes_through_unchanged(self):
         """An already-absolute pattern is treated as the user's deliberate choice."""
-        source_folder = Path("/conan/p/xmsXXX/s")
-        out = _resolve_gcovr_filters(["/some/abs/path/"], source_folder)
+        build_folder = Path("/conan/p/b/xmsXXX/b")
+        out = _resolve_gcovr_filters(["/some/abs/path/"], build_folder)
         assert out == ["/some/abs/path/"]
 
     def test_anchored_pattern_with_caret_passes_through(self):
         """``^``-anchored patterns are explicit regexes and shouldn't be doubled."""
-        source_folder = Path("/conan/p/xmsXXX/s")
-        out = _resolve_gcovr_filters(["^xmscore/"], source_folder)
+        build_folder = Path("/conan/p/b/xmsXXX/b")
+        out = _resolve_gcovr_filters(["^xmscore/"], build_folder)
         assert out == ["^xmscore/"]
 
     def test_empty_filter_list_returns_empty(self):
@@ -636,9 +640,9 @@ class TestResolveGcovrFilters:
 
     def test_mixed_list_handles_each_independently(self):
         """A mix of simple-relative and regex patterns: each treated correctly."""
-        source_folder = Path("/conan/p/xmsXXX/s")
+        build_folder = Path("/conan/p/b/xmsXXX/b")
         out = _resolve_gcovr_filters(
-            ["xmscore/", r".*/python/.*"], source_folder,
+            ["xmscore/", r".*/python/.*"], build_folder,
         )
         # The simple-relative gets doubled (2 entries); the regex stays once (1 entry).
         assert len(out) == 3
@@ -952,6 +956,79 @@ class TestRunCoverageThresholdGating:
             "testing=True is mutually exclusive with pybind=True in the "
             "packager (issue #64); filter must not request it."
         )
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_gcovr_root_and_filter_anchor_against_build_folder(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """gcovr's --root and the doubled-filter anchor are the BUILD folder.
+
+        ``cmake_layout()`` copies sources into the build folder before
+        compilation, so ``.gcno`` files embed paths under
+        ``build_folder`` — never under the conan source folder. gcovr's
+        ``--filter`` is ``re.match``-style (anchored at the start of an
+        absolute path), so anchoring the doubled filter form against the
+        recipe-scoped source folder (the prior behavior) never matched
+        any real ``.gcno`` path and gcovr silently filtered every file
+        out, even when ``.gcno``/``.gcda`` data was present.
+        """
+        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        )
+        captured_cmds = []
+
+        def capture(cmd, env=None, cwd=None, **kw):
+            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = capture
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: build_folder
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        gcovr_cmds = [
+            c for c in captured_cmds
+            if isinstance(c, list) and c and c[0] == "gcovr"
+        ]
+        assert gcovr_cmds, "gcovr should have been invoked"
+        cmd = gcovr_cmds[0]
+
+        # 1. --root must be the build folder, not the source folder.
+        root_idx = cmd.index("--root")
+        assert cmd[root_idx + 1] == str(build_folder), (
+            f"--root must be {build_folder!s}, got {cmd[root_idx + 1]!r}. "
+            "Anchoring against the source folder filters out every file "
+            "since .gcno paths live under build_folder."
+        )
+        assert str(source_folder) not in cmd, (
+            "source_folder must not appear anywhere in the gcovr command — "
+            "it is irrelevant to .gcno path resolution."
+        )
+
+        # 2. The doubled --filter form must anchor against the build folder.
+        filter_args = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--filter"]
+        anchored = [
+            f for f in filter_args
+            if f != "xmscore/" and "xmscore/" in f
+        ]
+        assert anchored, (
+            "expected a build-folder-anchored copy of the default filter "
+            f"among --filter entries; got {filter_args!r}"
+        )
+        # re.escape on a path with literal characters produces the same
+        # path; the key invariant is that the anchored form starts with
+        # an escaped build_folder prefix.
+        import re as _re
+        for entry in anchored:
+            real_source = f"{build_folder.as_posix()}/xmscore/math/math.cpp"
+            assert _re.search(entry, real_source), (
+                f"anchored filter {entry!r} must match a real .gcno-style "
+                f"absolute path under the build folder; tested against "
+                f"{real_source!r}"
+            )
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")

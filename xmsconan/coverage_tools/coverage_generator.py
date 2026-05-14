@@ -261,16 +261,21 @@ def _is_simple_relative_filter_pattern(pattern: str) -> bool:
     return True
 
 
-def _resolve_gcovr_filters(filters, source_folder: Path):
+def _resolve_gcovr_filters(filters, build_folder: Path):
     """Build the list of ``--filter`` values to pass to gcovr.
 
     For each entry in ``filters`` that looks like a simple relative
     path segment (per ``_is_simple_relative_filter_pattern``), this
     function emits *two* entries: the original (which matches against
     relative-to-root paths, gcovr's default normalization), AND an
-    absolute-path-anchored form (``re.escape(source_folder) + "/" +
+    absolute-path-anchored form (``re.escape(build_folder) + "/" +
     pattern``) which matches the absolute paths embedded in ``.gcno``
-    files if gcovr ever falls back to absolute matching.
+    files. ``conan``'s ``cmake_layout()`` copies sources *into* the
+    build folder before compilation, so ``.gcno`` paths point under
+    ``build_folder``, not under the recipe's source folder — anchoring
+    against ``source_folder`` would never match (see issue causing the
+    "all coverage data is filtered out" diagnostic even when ``.gcno``
+    and ``.gcda`` files are present).
 
     Multiple ``--filter`` entries are OR'd by gcovr (a file is kept if
     any filter matches), so emitting both forms is purely additive — it
@@ -284,7 +289,7 @@ def _resolve_gcovr_filters(filters, source_folder: Path):
     # ``.gcno`` source paths there are forward-slash even when the
     # helper executes on a Windows dev machine.
     result = []
-    abs_root = source_folder.as_posix().rstrip("/")
+    abs_root = build_folder.as_posix().rstrip("/")
     for pattern in filters:
         result.append(pattern)
         if _is_simple_relative_filter_pattern(pattern):
@@ -340,9 +345,17 @@ def _assert_gcovr_collected_data(summary_path: Path, build_folder: Path,
     )
 
 
-def _run_gcovr(source_folder: Path, build_folder: Path, coverage_cfg: dict,
+def _run_gcovr(build_folder: Path, coverage_cfg: dict,
                output_dir: Path) -> Path:
-    """Run gcovr against the build folder. Returns path to JSON summary."""
+    """Run gcovr against the build folder. Returns path to JSON summary.
+
+    ``--root`` is the build folder rather than the conan source folder
+    because ``cmake_layout()`` copies sources into the build folder
+    before compilation; ``.gcno`` files therefore embed paths under
+    ``build_folder``, and gcovr's default ``re.match``-style filter
+    semantics need ``--root`` to align with those paths or every file
+    is silently filtered out.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     html_index = output_dir / "coverage-html-cpp" / "index.html"
     html_index.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +364,7 @@ def _run_gcovr(source_folder: Path, build_folder: Path, coverage_cfg: dict,
 
     cmd = [
         "gcovr",
-        "--root", str(source_folder),
+        "--root", str(build_folder),
         "--txt",
         "--html-details", str(html_index),
         "--xml", str(xml_path),
@@ -360,7 +373,7 @@ def _run_gcovr(source_folder: Path, build_folder: Path, coverage_cfg: dict,
         "--gcov-ignore-errors=source_not_found",
     ]
     resolved_filters = _resolve_gcovr_filters(
-        coverage_cfg.get("filters", []), source_folder,
+        coverage_cfg.get("filters", []), build_folder,
     )
     for f in resolved_filters:
         cmd.extend(["--filter", f])
@@ -491,16 +504,18 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             exc.returncode,
         )
 
-    # 3. Find the build/source folder for the instrumented package.
+    # 3. Find the build folder for the instrumented package. The conan
+    #    source folder is intentionally not looked up: ``cmake_layout()``
+    #    copies sources into the build folder before compilation, so
+    #    every ``.gcno`` path points under ``build_folder`` and the
+    #    recipe-scoped source folder is irrelevant to gcovr.
     exact_ref, pid = _find_coverage_package(library_name, coverage_python_version)
     ref_with_pid = f"{exact_ref}:{pid}"
     build_folder = _conan_cache_path(ref_with_pid, "build")
-    source_folder = _conan_cache_path(ref_with_pid, "source")
     LOGGER.info("Coverage build folder:  %s", build_folder)
-    LOGGER.info("Coverage source folder: %s", source_folder)
 
     # 4. Generate C++ coverage report via gcovr.
-    cpp_summary = _run_gcovr(source_folder, build_folder, coverage_cfg, output_dir)
+    cpp_summary = _run_gcovr(build_folder, coverage_cfg, output_dir)
 
     # 5. Locate Python coverage artifacts produced inside the build folder by
     #    run_python_tests, and copy them up to the workspace root. The recipe
