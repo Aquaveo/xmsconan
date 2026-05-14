@@ -325,12 +325,11 @@ Prerequisites: `conan` and `gcovr` on `PATH`, plus a working C++
 toolchain (`g++` on Linux). The test is automatically skipped on
 Windows because coverage instrumentation requires gcc/clang.
 
-The same test runs in CI under [`.github/workflows/integration.yaml`](.github/workflows/integration.yaml)
-on a weekly cron and on demand via `workflow_dispatch`. It is the
-wire-format canary for the `xmsconan coverage` pipeline — failure here
-means xmsconan and one of the CLIs it shells out to (conan, cmake,
-gcovr, pytest-cov) no longer agree on a shape, before any downstream
-library's CI catches it.
+It is the wire-format canary for the `xmsconan coverage` pipeline —
+failure here means xmsconan and one of the CLIs it shells out to
+(conan, cmake, gcovr, pytest-cov) no longer agree on a shape, before
+any downstream library's CI catches it. Run it locally before merging
+any change that touches the coverage tooling.
 
 ## License
 
