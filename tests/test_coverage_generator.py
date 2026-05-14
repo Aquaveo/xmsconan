@@ -382,6 +382,52 @@ class TestRunCoverageThresholdGating:
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_py_filter_uses_nested_options_shape(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """The --filter passed to build.py nests pybind/testing under "options".
+
+        XmsConanPackager.filter_configurations silently drops flat top-level
+        pybind/testing keys (the bug fixed in issue #62 by raising on unknown
+        keys, but this test pins the call site too so the regression cannot
+        come back via the coverage tool).
+        """
+        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        )
+        captured_cmds = []
+
+        def capture(cmd, env=None, cwd=None, **kw):
+            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = capture
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        build_cmds = [
+            c for c in captured_cmds
+            if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
+        ]
+        assert build_cmds, "build.py should have been invoked"
+        cmd = build_cmds[0]
+        filter_idx = cmd.index("--filter")
+        filter_dict = json.loads(cmd[filter_idx + 1])
+        assert filter_dict["build_type"] == "Debug"
+        assert filter_dict.get("options", {}).get("testing") is True
+        assert filter_dict.get("options", {}).get("pybind") is True
+        # And the bug-triggering shape must NOT come back: testing/pybind
+        # must live under "options", never at the top level.
+        assert "testing" not in filter_dict
+        assert "pybind" not in filter_dict
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_build_failure_still_produces_artifacts(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):

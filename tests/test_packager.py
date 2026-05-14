@@ -131,6 +131,48 @@ def test_pybind_variants_exclude_debug():
 
 
 @patch_env(clear=True)
+def test_pybind_debug_emitted_when_coverage_flag():
+    """coverage=True relaxes the Debug gate so xmsconan_coverage finds a build."""
+    p = XmsConanPackager("xmscore", coverage=True)
+    p.generate_configurations(system_platform="linux")
+
+    debug_pybind = [
+        c for c in p.configurations
+        if c["build_type"] == "Debug" and c["options"].get("pybind") is True
+    ]
+    assert debug_pybind, (
+        "coverage=True must emit at least one Debug+pybind config — without "
+        "it xmsconan_coverage cannot locate a matching package in the cache"
+    )
+
+
+@patch_env({"XMS_COVERAGE": "1"}, clear=True)
+def test_pybind_debug_emitted_when_xms_coverage_env():
+    """XMS_COVERAGE=1 in the env is treated as coverage=True by default."""
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+
+    debug_pybind = [
+        c for c in p.configurations
+        if c["build_type"] == "Debug" and c["options"].get("pybind") is True
+    ]
+    assert debug_pybind
+
+
+@patch_env({"XMS_COVERAGE": "1"}, clear=True)
+def test_explicit_coverage_false_overrides_env():
+    """coverage=False wins over an XMS_COVERAGE=1 env (explicit beats implicit)."""
+    p = XmsConanPackager("xmscore", coverage=False)
+    p.generate_configurations(system_platform="linux")
+
+    debug_pybind = [
+        c for c in p.configurations
+        if c["build_type"] == "Debug" and c["options"].get("pybind") is True
+    ]
+    assert not debug_pybind
+
+
+@patch_env(clear=True)
 def test_testing_variants_added_for_all():
     """Every base config gets a testing variant."""
     p = XmsConanPackager("xmscore")
@@ -268,6 +310,21 @@ def test_filter_configurations_noop_when_none():
     p = XmsConanPackager("xmscore")
     p.filter_configurations({"build_type": "Release"})  # Should not raise
     assert p.configurations is None
+
+
+@patch_env(clear=True)
+def test_filter_configurations_rejects_flat_option_key():
+    """Flat pybind/testing at the top level raises instead of silently dropping.
+
+    The old code silently ignored unknown top-level keys, which is how
+    xmsconan_coverage's flat filter (issue #62) widened the build to every
+    Debug configuration without anyone noticing.
+    """
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+
+    with pytest.raises(ValueError, match="pybind"):
+        p.filter_configurations({"build_type": "Debug", "pybind": True})
 
 
 # --- create_build_profile ---

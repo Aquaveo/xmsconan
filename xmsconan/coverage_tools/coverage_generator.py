@@ -248,7 +248,13 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     #    failed, so we record the failure and press on.
     env = os.environ.copy()
     env["XMS_COVERAGE"] = "1"
-    filter_arg = '{"build_type":"Debug","testing":true,"pybind":true}'
+    # XmsConanPackager.filter_configurations only honors pybind/testing when
+    # they are nested under "options" — a flat dict here silently drops them
+    # (see issue #62), which would widen the build to every Debug config.
+    filter_arg = json.dumps({
+        "build_type": "Debug",
+        "options": {"testing": True, "pybind": True},
+    })
     tests_failed = False
     try:
         _run(
