@@ -72,6 +72,7 @@ class XmsConanPackager(object):
         test_shards=0,
         profile_options: Optional[dict] = None,
         python_versions: Optional[list[str]] = None,
+        coverage: Optional[bool] = None,
     ):
         """Initialize the packager.
 
@@ -92,6 +93,11 @@ class XmsConanPackager(object):
                 or the default list ["3.10", "3.13"]. Each pybind variant is
                 duplicated per version with the matching ``python_version``
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
+            coverage: If True, allow Debug+pybind combinations in
+                ``generate_configurations`` so ``xmsconan_coverage`` can
+                produce its single instrumented build. When None, defaults to
+                ``True`` iff ``XMS_COVERAGE=1`` is set in the environment
+                (the var ``xmsconan_coverage`` sets before invoking build.py).
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
@@ -101,6 +107,10 @@ class XmsConanPackager(object):
         self._test_shards = test_shards
         self._profile_options = profile_options or {}
         self._python_versions = self._resolve_python_versions(python_versions)
+        self._coverage = (
+            coverage if coverage is not None
+            else os.environ.get('XMS_COVERAGE') == '1'
+        )
         self.printer = Printer()
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
@@ -260,7 +270,12 @@ class XmsConanPackager(object):
 
         pybind_updated_builds = []
         for combination in combinations:
-            if combination['build_type'] != 'Debug' and \
+            # Debug+pybind is normally redundant (the Release wheel is what
+            # ships), but xmsconan_coverage needs a single Debug+pybind+testing
+            # build to instrument both layers from the same .gcno set — so
+            # relax the Debug gate when coverage is enabled.
+            allow_debug = combination['build_type'] != 'Debug' or self._coverage
+            if allow_debug and \
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
                     continue
@@ -297,9 +312,25 @@ class XmsConanPackager(object):
           'options': { 'testing': True },  # only keep testing configurations
           'build_type': 'Debug'  # ... that are built in debug mode
         }
+
+        Raises ``ValueError`` when a top-level key is neither a known
+        configuration setting nor one of ``options``/``buildenv`` — the prior
+        behavior silently dropped such keys, which is how flat ``pybind``/
+        ``testing`` filters slipped past unnoticed (see issue #62).
         """
         if self.configurations is None:
             return
+        if self.configurations:
+            sample_keys = set(self.configurations[0].keys())
+            for key in filter_dict.keys():
+                if key in ('options', 'buildenv'):
+                    continue
+                if key not in sample_keys:
+                    raise ValueError(
+                        f"Unknown filter key {key!r}: must be a top-level configuration "
+                        f"setting or 'options'/'buildenv'. Did you mean "
+                        f"{{'options': {{'{key}': ...}}}}?"
+                    )
         filtered_configurations = []
         for configuration in self.configurations:
             include_configuration = True
@@ -308,7 +339,7 @@ class XmsConanPackager(object):
                     for option_key, option_value in value.items():
                         if option_key in configuration[key] and configuration[key].get(option_key) != option_value:
                             include_configuration = False
-                elif key in configuration.keys() and configuration.get(key) != value:
+                elif configuration.get(key) != value:
                     include_configuration = False
             if include_configuration:
                 filtered_configurations.append(configuration)
