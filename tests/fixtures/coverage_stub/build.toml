@@ -8,7 +8,15 @@ pybind_sources = ["stub/python/stub_py.cpp"]
 # CxxTest harness — under XMS_COVERAGE=1 the recipe is built with
 # testing=True alongside pybind=True so both run_cxx_tests and
 # run_python_tests contribute .gcda data to the same .gcno set.
-testing_headers = ["stub/stub.t.h"]
+testing_headers = ["stub/stub.t.h", "stub/testing/test_tools.h"]
+# testing_sources mirrors xmscore's TestTools.cpp pattern: a
+# translation unit that references CxxTest::charToString via the
+# inline ValueTraits<char> ctor. With the (pre-2.15.1) template bug
+# that appended testing_sources to the main library, this .o would
+# leak into the pybind module's link and dlopen would fail with an
+# undefined-symbol error — the exact failure xmscore CI hit in 2.15.0.
+# The canary needs this file to exercise that code path.
+testing_sources = ["stub/testing/test_tools.cpp"]
 
 # Both thresholds at 0 — the integration test asserts the report files
 # exist and have non-zero coverage values, not that a particular bar is

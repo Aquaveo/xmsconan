@@ -123,12 +123,18 @@ if (BUILD_TESTING)
     list(APPEND {{ library_name }}_headers
          {%- for header in testing_headers -%}{{ '\n         ' }}{{ header }}{% endfor %}
     )
-{% if testing_sources %}
-    # Add source for testing build only
-    list(APPEND {{ library_name }}_sources
-         {%- for source in testing_sources -%}{{ '\n         ' }}{{ source }}{% endfor %}
+
+    # testing_sources are deliberately NOT appended to {{ library_name }}_sources.
+    # They are compiled directly into the runner target below (per the documented
+    # contract: "testing_sources are compiled into the test runner only").
+    # Putting them in the main static library makes them leak into anything that
+    # links the library — including the pybind module under IS_PYTHON_BUILD —
+    # which produces undefined-symbol errors against cxxtest helpers like
+    # CxxTest::charToString (defined only in cxxtest/ValueTraits.cpp, which is
+    # not transitively pulled by ValueTraits.h).
+    set({{ library_name }}_testing_sources
+        {%- for source in testing_sources -%}{{ '\n        ' }}{{ source }}{% endfor %}
     )
-{% endif %}
 {% if testing_framework == "gtest" %}
     # Google Test configuration
     # Tests are in *.cpp files guarded by #ifdef GTEST_ENABLED, with fixtures declared in *.t.h
@@ -162,7 +168,11 @@ if (BUILD_TESTING)
         endif()
     endforeach()
 
-    add_executable(runner ${CMAKE_CURRENT_BINARY_DIR}/runner.cpp ${test_cpp_sources})
+    add_executable(runner
+        ${CMAKE_CURRENT_BINARY_DIR}/runner.cpp
+        ${test_cpp_sources}
+        ${{ '{' }}{{ library_name }}_testing_sources}
+    )
     target_link_libraries(runner
         ${PROJECT_NAME}
         GTest::gtest
@@ -242,6 +252,9 @@ if (BUILD_TESTING)
         CXXTEST_ADD_TEST(
                 runner runner.cpp ${test_headers}
         )
+        if ({{ library_name }}_testing_sources)
+            target_sources(runner PRIVATE ${{ '{' }}{{ library_name }}_testing_sources})
+        endif ()
         target_link_libraries(runner ${PROJECT_NAME})
 
         if (WIN32)
