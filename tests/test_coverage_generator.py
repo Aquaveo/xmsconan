@@ -650,11 +650,13 @@ class TestIsSimpleRelativeFilterPattern:
     """Classifier for which filter patterns get the anchored-copy treatment."""
 
     def test_bare_path_segment_is_simple_relative(self):
+        """Plain path segments — the default-filter shape — count as simple relative."""
         assert _is_simple_relative_filter_pattern("xmscore/")
         assert _is_simple_relative_filter_pattern("xmscore")
         assert _is_simple_relative_filter_pattern("subdir/lib/")
 
     def test_regex_metachars_disqualify(self):
+        """Any regex metacharacter signals a user-authored regex — leave it alone."""
         assert not _is_simple_relative_filter_pattern(".*xmscore")
         assert not _is_simple_relative_filter_pattern("xms.*core")
         assert not _is_simple_relative_filter_pattern(r"xmscore/.*\.cpp$")
@@ -662,11 +664,13 @@ class TestIsSimpleRelativeFilterPattern:
         assert not _is_simple_relative_filter_pattern("xms?core")
 
     def test_anchors_disqualify(self):
+        """Leading ``^`` / ``/`` / ``(`` are explicit anchors — already user-controlled."""
         assert not _is_simple_relative_filter_pattern("^xmscore")
         assert not _is_simple_relative_filter_pattern("/abs/xmscore")
         assert not _is_simple_relative_filter_pattern("(group)")
 
     def test_empty_string_is_not_simple_relative(self):
+        """An empty pattern is never simple-relative — nothing to anchor."""
         assert not _is_simple_relative_filter_pattern("")
 
 
