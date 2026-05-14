@@ -1,0 +1,16 @@
+library_name = "stub"
+description = "Stub library used by the xmsconan coverage integration test."
+python_namespaced_dir = "stub"
+
+library_sources = ["stub/stub.cpp"]
+library_headers = ["stub/stub.h"]
+pybind_sources = ["stub/python/stub_py.cpp"]
+
+# Both thresholds at 0 — the integration test asserts the report files
+# exist and have non-zero coverage values, not that a particular bar is
+# met. Pinning thresholds here keeps the wire-format canary independent
+# of the actual coverage number, which is a property of the stub's tests.
+[coverage]
+cpp_threshold = 0
+python_threshold = 0
+filters = ["stub/"]

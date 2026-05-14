@@ -2,6 +2,13 @@
 import pytest
 
 
+# tests/fixtures/coverage_stub/_package/tests/test_stub.py is part of the
+# stub recipe that the coverage integration test stands up — it is meant
+# to run inside the recipe's pytest invocation under conan create, not at
+# the xmsconan top-level pytest run, where ``xms.stub`` is not importable.
+collect_ignore = ["fixtures"]
+
+
 @pytest.fixture
 def build_toml(tmp_path):
     """Write a minimal build.toml with library_name and description, return path."""
