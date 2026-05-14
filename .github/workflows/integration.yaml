@@ -56,9 +56,10 @@ jobs:
           XMS_INTEGRATION_TESTS: "1"
           # Wire the Aquaveo conan remote into the test's ephemeral
           # CONAN_HOME so boost (with our packager's option overrides:
-          # without_stacktrace=True, without_locale=True) gets pulled
-          # from a prebuilt binary instead of compiling from source.
-          # Without this, every cron rebuilds boost (~15 min).
+          # without_stacktrace=True, without_locale=True) is pulled
+          # prebuilt from Aquaveo. The matching binary is published
+          # there but not on conancenter — without this remote, every
+          # cron run would compile boost from source (~15 min).
           CONAN_REMOTE_URL: https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
           CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}

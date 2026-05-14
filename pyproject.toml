@@ -61,5 +61,5 @@ local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: end-to-end test that drives real conan + gcovr against a stub recipe. Opt-in via `pytest -m integration`; excluded from the default `pytest` run because it builds boost and produces a full coverage report (multi-minute wall time).",
+    "integration: end-to-end test that drives real conan + gcovr against a stub recipe. Opt-in via `pytest -m integration`; excluded from the default `pytest` run because it spins up a full coverage build (downloads boost/zlib/pybind11 from the Aquaveo remote when configured, compiles the stub library, runs pytest-cov + gcovr — multi-minute wall time).",
 ]
