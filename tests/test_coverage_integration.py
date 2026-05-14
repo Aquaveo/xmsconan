@@ -70,12 +70,13 @@ def stub_workspace(tmp_path, monkeypatch):
     environment (the integration workflow exports them from GitHub
     secrets), the fixture wires the Aquaveo conan remote into the
     ephemeral cache via the same ``conan_setup`` helper CI uses
-    elsewhere — so ``--build=missing`` pulls prebuilt boost from
-    Aquaveo instead of compiling from source, cutting cold-cache wall
-    time from ~15 min to under a minute. Without those env vars the
-    fixture falls back to ``conan profile detect`` alone and accepts
-    the slow path; that keeps the local-dev experience working without
-    requiring credentials.
+    elsewhere. ``conan install`` then pulls prebuilt boost/zlib/pybind11
+    from Aquaveo and the cold-cache run completes in a couple of
+    minutes. Without those env vars conan has no remote with a binary
+    matching the packager's boost options (conancenter does not ship
+    ``without_stacktrace=True, without_locale=True``), and the install
+    fails — local devs who want to run the test without credentials
+    should configure their own remote first.
     """
     workspace = tmp_path / "workspace"
     shutil.copytree(_FIXTURE_DIR, workspace)
@@ -103,13 +104,17 @@ def stub_workspace(tmp_path, monkeypatch):
     else:
         subprocess.run(["conan", "profile", "detect", "--force"], check=True)
 
+    # No ``--build=missing``: Aquaveo ships prebuilt binaries for our
+    # boost option set, so a plain ``conan install`` resolves from the
+    # remote. Falling through to a source build here would mask a real
+    # environment problem — the wire-format canary should fail loudly
+    # when the expected binary is missing, not silently rebuild boost.
     subprocess.run(
         [
             "conan", "install",
             "--requires=boost/1.86.0",
             "--requires=zlib/1.3.1",
             "--requires=pybind11/3.0.1",
-            "--build=missing",
         ],
         check=True,
     )
