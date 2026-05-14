@@ -9,12 +9,15 @@ import pytest
 
 from xmsconan.coverage_tools.coverage_generator import (
     _append_github_summary,
+    _assert_gcovr_collected_data,
     _conan_cache_path,
     _cpp_percent_from_summary,
     _find_coverage_package,
     _find_pytest_cov_artifact,
+    _is_simple_relative_filter_pattern,
     _py_percent_from_summary,
     _resolve_coverage_python_version,
+    _resolve_gcovr_filters,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
@@ -555,6 +558,164 @@ class TestFindPytestCovArtifact:
         """An invalid ``kind`` is a programming error, not a silent fall-through."""
         with pytest.raises(ValueError, match="kind"):
             _find_pytest_cov_artifact(tmp_path, "cov-py.xml", kind="bogus")
+
+
+class TestResolveGcovrFilters:
+    """Filter resolution emits both relative and absolute-anchored forms (PR #72 review).
+
+    Without this, the default ``[coverage].filters = ["<library_name>/"]``
+    relies entirely on gcovr's internal path-normalization behavior to
+    decide whether ``xmscore/`` matches the absolute paths embedded in
+    the freshly-instrumented ``.gcno`` files. Subtle, version-specific,
+    silent on failure. Emitting a redundant absolute-path-anchored form
+    can only widen matches (gcovr ORs ``--filter`` entries) so the
+    duplication is purely additive defense.
+    """
+
+    def test_simple_relative_filter_emits_both_forms(self):
+        """A bare path segment gets both its original AND an anchored copy."""
+        source_folder = Path("/conan/p/xmsXXX/s")
+        out = _resolve_gcovr_filters(["xmscore/"], source_folder)
+        assert "xmscore/" in out
+        # Anchored form: re.escape of source_folder + "/" + the original
+        # Dots in the source folder must be escaped so they're literal.
+        assert any(
+            "/conan/p/xmsXXX/s/xmscore/" in entry
+            for entry in out
+            if entry != "xmscore/"
+        ), f"expected an absolute-anchored copy in {out}"
+        # Exactly two entries (one original, one anchored):
+        assert len(out) == 2
+
+    def test_anchored_form_escapes_dots_in_source_folder(self):
+        """The conan source path contains dots (e.g. ``.conan2``) — they must be escaped.
+
+        Without ``re.escape``, the dots would be regex wildcards and the
+        anchored filter would match *anything* in the same position,
+        defeating the purpose of anchoring.
+        """
+        import re as _re
+        source_folder = Path("/github/home/.conan2/p/xmsXXX/s")
+        out = _resolve_gcovr_filters(["xmscore/"], source_folder)
+        anchored = [e for e in out if e != "xmscore/"][0]
+        # The anchored form must work as a regex against the real absolute path.
+        real_path = "/github/home/.conan2/p/xmsXXX/s/xmscore/math/math.cpp"
+        assert _re.search(anchored, real_path), (
+            f"anchored filter {anchored!r} must match the real absolute path"
+        )
+        # And it must NOT match a near-miss where the dot is a different char,
+        # proving the dot was actually escaped:
+        near_miss = "/github/home/Xconan2/p/xmsXXX/s/xmscore/math/math.cpp"
+        assert not _re.search(anchored, near_miss), (
+            f"anchored filter {anchored!r} must treat dots as literals"
+        )
+
+    def test_regex_pattern_passes_through_unchanged(self):
+        """A pattern with regex metacharacters is the user's deliberate choice."""
+        source_folder = Path("/conan/p/xmsXXX/s")
+        out = _resolve_gcovr_filters([r".*/xmscore/.*\.cpp$"], source_folder)
+        assert out == [r".*/xmscore/.*\.cpp$"], (
+            "regex-looking filters must not be doubled-up — user knows what they want"
+        )
+
+    def test_absolute_pattern_passes_through_unchanged(self):
+        """An already-absolute pattern is treated as the user's deliberate choice."""
+        source_folder = Path("/conan/p/xmsXXX/s")
+        out = _resolve_gcovr_filters(["/some/abs/path/"], source_folder)
+        assert out == ["/some/abs/path/"]
+
+    def test_anchored_pattern_with_caret_passes_through(self):
+        """``^``-anchored patterns are explicit regexes and shouldn't be doubled."""
+        source_folder = Path("/conan/p/xmsXXX/s")
+        out = _resolve_gcovr_filters(["^xmscore/"], source_folder)
+        assert out == ["^xmscore/"]
+
+    def test_empty_filter_list_returns_empty(self):
+        """No filters in, no filters out."""
+        assert _resolve_gcovr_filters([], Path("/anywhere")) == []
+
+    def test_mixed_list_handles_each_independently(self):
+        """A mix of simple-relative and regex patterns: each treated correctly."""
+        source_folder = Path("/conan/p/xmsXXX/s")
+        out = _resolve_gcovr_filters(
+            ["xmscore/", r".*/python/.*"], source_folder,
+        )
+        # The simple-relative gets doubled (2 entries); the regex stays once (1 entry).
+        assert len(out) == 3
+        assert "xmscore/" in out
+        assert r".*/python/.*" in out
+
+
+class TestIsSimpleRelativeFilterPattern:
+    """Classifier for which filter patterns get the anchored-copy treatment."""
+
+    def test_bare_path_segment_is_simple_relative(self):
+        assert _is_simple_relative_filter_pattern("xmscore/")
+        assert _is_simple_relative_filter_pattern("xmscore")
+        assert _is_simple_relative_filter_pattern("subdir/lib/")
+
+    def test_regex_metachars_disqualify(self):
+        assert not _is_simple_relative_filter_pattern(".*xmscore")
+        assert not _is_simple_relative_filter_pattern("xms.*core")
+        assert not _is_simple_relative_filter_pattern(r"xmscore/.*\.cpp$")
+        assert not _is_simple_relative_filter_pattern("xms(core|grid)")
+        assert not _is_simple_relative_filter_pattern("xms?core")
+
+    def test_anchors_disqualify(self):
+        assert not _is_simple_relative_filter_pattern("^xmscore")
+        assert not _is_simple_relative_filter_pattern("/abs/xmscore")
+        assert not _is_simple_relative_filter_pattern("(group)")
+
+    def test_empty_string_is_not_simple_relative(self):
+        assert not _is_simple_relative_filter_pattern("")
+
+
+class TestAssertGcovrCollectedData:
+    """Loud failure when gcovr returns an empty summary (PR #72 review, option B).
+
+    Before this guard, ``line_total == 0`` silently coerced ``cpp_raw``
+    to 0.0 and — with the default ``[coverage].cpp_threshold = 0`` —
+    produced a "PASS" with an empty report. The operator had to scroll
+    the run log for gcovr's `All coverage data is filtered out` line
+    to understand what happened. This guard converts that into a hard
+    failure with a diagnostic naming the three most likely causes.
+    """
+
+    def test_raises_when_line_total_zero(self, tmp_path):
+        """Empty gcovr result → RuntimeError naming the build folder."""
+        summary = tmp_path / "cov-cpp-summary.json"
+        summary.write_text(json.dumps({"line_percent": 0.0, "line_total": 0}))
+        build_folder = tmp_path / "build"
+        with pytest.raises(RuntimeError) as exc_info:
+            _assert_gcovr_collected_data(summary, build_folder, ["xmscore/"])
+        msg = str(exc_info.value)
+        assert str(build_folder) in msg
+        # Diagnostic must name the most likely cause (XMS_COVERAGE / #69):
+        assert "XMS_COVERAGE" in msg or "#69" in msg
+        # And echo the filters we actually used, so the operator can
+        # compare them against the real source paths:
+        assert "xmscore/" in msg
+
+    def test_passes_when_line_total_positive(self, tmp_path):
+        """A real measurement (any non-zero line_total) is not an error.
+
+        Includes the legitimate 0%-but-non-zero-lines case: 1000 lines
+        instrumented, 0 covered by tests. That's a real result, the
+        threshold check handles it, this guard must not interfere.
+        """
+        summary = tmp_path / "cov-cpp-summary.json"
+        summary.write_text(json.dumps({"line_percent": 0.0, "line_total": 1000}))
+        _assert_gcovr_collected_data(summary, tmp_path, ["xmscore/"])
+
+    def test_passes_when_line_total_key_absent(self, tmp_path):
+        """Schema drift (no ``line_total`` at all) is left to the percent extractor.
+
+        ``_cpp_percent_from_summary`` already raises a clear
+        ``ValueError`` on missing keys; this guard doesn't double up.
+        """
+        summary = tmp_path / "cov-cpp-summary.json"
+        summary.write_text(json.dumps({"line_percent": 50.0}))
+        _assert_gcovr_collected_data(summary, tmp_path, ["xmscore/"])
 
 
 class TestRunCoverageThresholdGating:

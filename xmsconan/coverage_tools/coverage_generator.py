@@ -13,6 +13,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -235,6 +236,110 @@ def _conan_cache_path(ref_with_pid: str, folder: str) -> Path:
     return Path(result.stdout.strip())
 
 
+_REGEX_METACHARS = frozenset(r".*+?[]{}|\\$")
+
+
+def _is_simple_relative_filter_pattern(pattern: str) -> bool:
+    """True if ``pattern`` looks like a bare relative path segment.
+
+    The default ``[coverage].filters`` value is ``"<library_name>/"`` — a
+    plain path segment. Such patterns get re-emitted with an absolute-
+    path-anchored copy by ``_resolve_gcovr_filters`` so gcovr can match
+    them regardless of whether it normalizes paths to relative-to-root
+    or compares against absolute paths internally.
+
+    A pattern is considered "simple relative" when it has no leading
+    anchor (``/``, ``^``, ``(``) and no regex metacharacters. Users who
+    write real regexes get their patterns through unchanged.
+    """
+    if not pattern:
+        return False
+    if pattern.startswith(("/", "^", "(")):
+        return False
+    if any(c in pattern for c in _REGEX_METACHARS):
+        return False
+    return True
+
+
+def _resolve_gcovr_filters(filters, source_folder: Path):
+    """Build the list of ``--filter`` values to pass to gcovr.
+
+    For each entry in ``filters`` that looks like a simple relative
+    path segment (per ``_is_simple_relative_filter_pattern``), this
+    function emits *two* entries: the original (which matches against
+    relative-to-root paths, gcovr's default normalization), AND an
+    absolute-path-anchored form (``re.escape(source_folder) + "/" +
+    pattern``) which matches the absolute paths embedded in ``.gcno``
+    files if gcovr ever falls back to absolute matching.
+
+    Multiple ``--filter`` entries are OR'd by gcovr (a file is kept if
+    any filter matches), so emitting both forms is purely additive — it
+    can only widen matches, never narrow them — and guards against
+    subtle differences in how gcovr resolves source paths across
+    versions. Regex-looking patterns and patterns that already start
+    with an anchor pass through unchanged.
+    """
+    # ``as_posix()`` so the anchored form uses forward slashes regardless
+    # of the host OS — coverage runs in a Linux container, and the
+    # ``.gcno`` source paths there are forward-slash even when the
+    # helper executes on a Windows dev machine.
+    result = []
+    abs_root = source_folder.as_posix().rstrip("/")
+    for pattern in filters:
+        result.append(pattern)
+        if _is_simple_relative_filter_pattern(pattern):
+            result.append(re.escape(abs_root) + "/" + pattern)
+    return result
+
+
+def _assert_gcovr_collected_data(summary_path: Path, build_folder: Path,
+                                 filter_args) -> None:
+    """Raise if gcovr's summary reports zero instrumented lines.
+
+    ``line_total == 0`` means gcovr ran successfully but produced an
+    empty report. Three common causes, in descending likelihood:
+
+      1. The binary was compiled without ``--coverage``. ``XMS_COVERAGE``
+         needs to be propagated to CMake (see #69); if the recipe
+         skipped the ``add_compile_options(--coverage -O0 -g)`` block,
+         no ``.gcno`` files exist for gcovr to read.
+      2. ``[coverage].filters`` / ``[coverage].excludes`` filtered out
+         every source file. The defaults are conservative, but a custom
+         filter that doesn't match the absolute paths in the ``.gcno``
+         files would silently exclude everything.
+      3. The build folder is genuinely empty (e.g., the package was
+         pulled from a binary-only cache rather than rebuilt).
+
+    A legitimate 0% (no tests covered any lines) reports
+    ``line_total > 0`` with ``line_percent == 0.0`` — that is NOT
+    raised here; it's a real measurement and the threshold check
+    handles it.
+
+    Schema drift (``line_total`` missing entirely) is tolerated: leave
+    the diagnostic to ``_cpp_percent_from_summary``, which already
+    surfaces missing keys with a clear ``ValueError``.
+    """
+    data = json.loads(summary_path.read_text(encoding="utf-8"))
+    line_total = data.get("line_total")
+    if line_total is None or line_total > 0:
+        return
+    raise RuntimeError(
+        "gcovr collected zero instrumented lines from "
+        f"{build_folder}. The C++ coverage report is empty. "
+        "Common causes:\n"
+        "  1. The binary was compiled without --coverage. Verify that "
+        "XMS_COVERAGE=1 reached the CMake configure step (see #69 — "
+        "this is the most common cause).\n"
+        "  2. The filter patterns excluded every source file. Filters "
+        f"passed to gcovr were: {filter_args!r}. Compare these against "
+        "the absolute source paths embedded in the .gcno files under "
+        f"{build_folder}.\n"
+        "  3. No .gcno files exist in the build folder at all (the "
+        "package may have been pulled from a binary cache rather than "
+        "rebuilt with instrumentation)."
+    )
+
+
 def _run_gcovr(source_folder: Path, build_folder: Path, coverage_cfg: dict,
                output_dir: Path) -> Path:
     """Run gcovr against the build folder. Returns path to JSON summary."""
@@ -254,12 +359,16 @@ def _run_gcovr(source_folder: Path, build_folder: Path, coverage_cfg: dict,
         "--gcov-ignore-errors=no_working_dir_found",
         "--gcov-ignore-errors=source_not_found",
     ]
-    for f in coverage_cfg.get("filters", []):
+    resolved_filters = _resolve_gcovr_filters(
+        coverage_cfg.get("filters", []), source_folder,
+    )
+    for f in resolved_filters:
         cmd.extend(["--filter", f])
     for e in coverage_cfg.get("excludes", []):
         cmd.extend(["--exclude", e])
     cmd.append(str(build_folder))
     _run(cmd)
+    _assert_gcovr_collected_data(json_summary, build_folder, resolved_filters)
     return json_summary
 
 
