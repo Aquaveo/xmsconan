@@ -1,0 +1,66 @@
+name: Integration
+
+# Why this workflow lives separately from xmsconan-ci.yaml:
+#   Each run drives a real ``conan create`` of the stub recipe in
+#   tests/fixtures/coverage_stub — boost gets built from source on a
+#   fresh ephemeral CONAN_HOME, which takes ~15 min. Putting that into
+#   the per-PR pipeline would multiply CI latency for every change.
+#   Instead, we run on a weekly cron and on demand via workflow_dispatch
+#   — that closes the wire-format canary gap from issue #68 without
+#   slowing the inner-loop CI down.
+#
+# Failure here means xmsconan and the CLIs it shells out to (conan,
+# cmake, gcovr, pytest-cov) no longer agree on the wire format. The
+# 2.14.x line shipped seven releases chasing exactly that class of bug
+# because xmscore's CI was the only place the wire was exercised end-to-
+# end — this workflow makes xmsconan itself the first detector.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 07:00 UTC — keeps the canary running without competing for
+    # weekday runner capacity. Cron is in UTC regardless of the runner's
+    # timezone.
+    - cron: "0 7 * * 1"
+
+jobs:
+  coverage-integration:
+    name: Coverage no-mock integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install system tooling (g++, gcovr)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ gcovr
+
+      - name: Install xmsconan and pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run end-to-end coverage integration test
+        env:
+          XMS_INTEGRATION_TESTS: "1"
+          # Wire the Aquaveo conan remote into the test's ephemeral
+          # CONAN_HOME so boost (with our packager's option overrides:
+          # without_stacktrace=True, without_locale=True) gets pulled
+          # from a prebuilt binary instead of compiling from source.
+          # Without this, every cron rebuilds boost (~15 min).
+          CONAN_REMOTE_URL: https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
+        run: |
+          pytest -m integration tests/test_coverage_integration.py -v

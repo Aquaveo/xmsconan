@@ -300,6 +300,38 @@ Replace `--no-deploy` with no flag to also upload each package as it's built.
 
 On Windows, use `nextms-dev-x86` for x86_64 Linux builds. The commands are identical — just change the container name.
 
+## Development
+
+### Running tests
+
+The default suite runs fast and mocks every external tool:
+
+```bash
+pytest tests/ -v
+```
+
+The repository also ships a no-mock integration test that drives
+`xmsconan coverage` end-to-end against a stub recipe (boost, zlib,
+pybind11, a real `conan create`, real `gcovr`, real `pytest-cov`). It
+is registered under the `integration` pytest marker and gated behind
+the `XMS_INTEGRATION_TESTS` environment variable so it does not run by
+default — wall time is in the multi-minute range:
+
+```bash
+XMS_INTEGRATION_TESTS=1 pytest -m integration -v
+```
+
+Prerequisites: `conan` and `gcovr` on `PATH`, plus a working C++
+toolchain (`g++` on Linux). The test is automatically skipped on
+Windows because coverage instrumentation requires gcc/clang.
+
+The same test runs in CI under [`.github/workflows/integration.yaml`](.github/workflows/integration.yaml)
+on a weekly cron and on demand via `workflow_dispatch`. It is the
+wire-format canary for the `xmsconan coverage` pipeline — failure here
+means xmsconan and one of the CLIs it shells out to (conan, cmake,
+gcovr, pytest-cov) no longer agree on a shape, before any downstream
+library's CI catches it.
+
 ## License
 
 BSD 2-Clause License

@@ -58,3 +58,8 @@ include = ["xmsconan*"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: end-to-end test that drives real conan + gcovr against a stub recipe. Opt-in via `pytest -m integration`; excluded from the default `pytest` run because it builds boost and produces a full coverage report (multi-minute wall time).",
+]
