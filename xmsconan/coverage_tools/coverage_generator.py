@@ -160,10 +160,29 @@ def _find_coverage_package(library_name: str, python_version: str) -> tuple[str,
     return exact_ref, pid
 
 
+# Folders that conan 2's `cache path` requires a recipe reference (no
+# `:pid`) for — source, export, and export_source are shared across every
+# package built from the same recipe revision, so a package id is
+# meaningless there and conan rejects ref:pid with
+# ``'--folder source' requires a recipe reference`` (see issue #66).
+_RECIPE_SCOPED_FOLDERS = frozenset({"source", "export", "export_source"})
+
+
 def _conan_cache_path(ref_with_pid: str, folder: str) -> Path:
-    """Resolve `conan cache path <ref>:<pid> --folder=<folder>`."""
+    """Resolve ``conan cache path <ref-or-ref:pid> --folder=<folder>``.
+
+    Conan 2 requires a recipe reference (no package id) for ``source``,
+    ``export``, and ``export_source`` folders, and a package reference
+    (with ``:pid``) for ``build`` and the default package folder. Callers
+    can pass either shape — this strips the pid when the folder is
+    recipe-scoped so the same helper works for both kinds of lookup.
+    """
+    if folder in _RECIPE_SCOPED_FOLDERS:
+        ref = ref_with_pid.split(":", 1)[0]
+    else:
+        ref = ref_with_pid
     result = subprocess.run(
-        ["conan", "cache", "path", ref_with_pid, f"--folder={folder}"],
+        ["conan", "cache", "path", ref, f"--folder={folder}"],
         capture_output=True, text=True, check=True,
     )
     return Path(result.stdout.strip())
