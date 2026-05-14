@@ -504,6 +504,58 @@ class TestFindPytestCovArtifact:
             "a warning naming the collision must be emitted so the operator can fix it"
         )
 
+    def test_kind_dir_filters_out_stale_file_with_same_name(self, tmp_path):
+        """A real directory must win over a same-named stale file (PR #72 review).
+
+        The exact scenario the reviewer flagged: a stale leftover *file*
+        named ``coverage-html-py`` sitting next to (or anywhere near) the
+        real ``coverage-html-py/`` directory. Without ``kind="dir"``,
+        ``rglob`` returns both, mtime sort can pick the file, the call
+        site's ``is_dir()`` is False, the HTML report is silently
+        skipped, and the operator sees no diagnostic. With ``kind="dir"``
+        the stale file is filtered out at the helper level and the real
+        directory always wins.
+        """
+        real_dir = tmp_path / "build" / "Debug" / "coverage-html-py"
+        real_dir.mkdir(parents=True)
+        (real_dir / "index.html").write_text("<html/>", encoding="utf-8")
+        stale_file = tmp_path / "cache" / "coverage-html-py"
+        stale_file.parent.mkdir(parents=True)
+        stale_file.write_text("stale", encoding="utf-8")
+        # Make the stale file the newer one — exactly the failure mode
+        # described in the review.
+        new_time = real_dir.stat().st_mtime + 100.0
+        os.utime(stale_file, (new_time, new_time))
+
+        result = _find_pytest_cov_artifact(tmp_path, "coverage-html-py", kind="dir")
+        assert result == real_dir
+        assert result.is_dir()
+
+    def test_kind_file_filters_out_directories_with_same_name(self, tmp_path):
+        """Symmetric guard: a directory must not shadow a same-named real file.
+
+        Less likely than the dir-vs-file failure mode but still possible
+        if someone manually created an empty directory whose name
+        collides with a pytest-cov artifact. ``kind="file"`` keeps the
+        helper symmetric.
+        """
+        real_file = tmp_path / "build" / "Debug" / "cov-py.xml"
+        real_file.parent.mkdir(parents=True)
+        real_file.write_text("<coverage/>", encoding="utf-8")
+        stale_dir = tmp_path / "cov-py.xml"
+        stale_dir.mkdir()
+        new_time = real_file.stat().st_mtime + 100.0
+        os.utime(stale_dir, (new_time, new_time))
+
+        result = _find_pytest_cov_artifact(tmp_path, "cov-py.xml", kind="file")
+        assert result == real_file
+        assert result.is_file()
+
+    def test_kind_invalid_value_raises(self, tmp_path):
+        """An invalid ``kind`` is a programming error, not a silent fall-through."""
+        with pytest.raises(ValueError, match="kind"):
+            _find_pytest_cov_artifact(tmp_path, "cov-py.xml", kind="bogus")
+
 
 class TestRunCoverageThresholdGating:
     """End-to-end gating logic with all subprocess calls mocked."""
