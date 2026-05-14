@@ -168,6 +168,35 @@ def _find_coverage_package(library_name: str, python_version: str) -> tuple[str,
 _RECIPE_SCOPED_FOLDERS = frozenset({"source", "export", "export_source"})
 
 
+def _find_pytest_cov_artifact(build_folder: Path, name: str):
+    """Locate a pytest-cov artifact (file or directory) inside the conan build folder.
+
+    The recipe's ``run_python_tests`` writes coverage artifacts into a
+    layout-specific subdirectory (e.g. ``<build_folder>/build/Debug/``),
+    not the conan-managed build root that ``conan cache path
+    --folder=build`` returns. Walking with ``rglob`` is robust against
+    recipe layout changes and multi-build-type folders (see issue #71).
+
+    Returns the matching path. ``None`` if the artifact isn't present
+    (legitimate when pytest-cov never ran — e.g., ``pybind=False``).
+
+    When more than one match exists (e.g. stale leftover from a prior
+    build type) the newest by ``st_mtime`` is returned and a warning is
+    logged so the operator can clean up.
+    """
+    matches = sorted(build_folder.rglob(name))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        LOGGER.warning(
+            "Multiple %s entries under %s; using newest by mtime: %s. All candidates: %s",
+            name, build_folder, matches[0],
+            [str(m) for m in matches],
+        )
+    return matches[0]
+
+
 def _conan_cache_path(ref_with_pid: str, folder: str) -> Path:
     """Resolve ``conan cache path <ref-or-ref:pid> --folder=<folder>``.
 
@@ -347,17 +376,20 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     cpp_summary = _run_gcovr(source_folder, build_folder, coverage_cfg, output_dir)
 
     # 5. Locate Python coverage artifacts produced inside the build folder by
-    #    run_python_tests, and copy the JSON summary up to the workspace root.
-    py_summary_src = build_folder / "cov-py-summary.json"
+    #    run_python_tests, and copy them up to the workspace root. The recipe
+    #    writes them into a layout-specific subdirectory (e.g.
+    #    ``<build_folder>/build/Debug/``), not the conan-managed build root,
+    #    so we walk to find them regardless of depth (see issue #71).
     py_summary = output_dir / "cov-py-summary.json"
-    if py_summary_src.exists():
+    py_summary_src = _find_pytest_cov_artifact(build_folder, "cov-py-summary.json")
+    if py_summary_src is not None:
         shutil.copy2(py_summary_src, py_summary)
-    py_xml_src = build_folder / "cov-py.xml"
-    if py_xml_src.exists():
+    py_xml_src = _find_pytest_cov_artifact(build_folder, "cov-py.xml")
+    if py_xml_src is not None:
         shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
-    py_html_src = build_folder / "coverage-html-py"
+    py_html_src = _find_pytest_cov_artifact(build_folder, "coverage-html-py")
     py_html_dst = output_dir / "coverage-html-py"
-    if py_html_src.is_dir():
+    if py_html_src is not None and py_html_src.is_dir():
         if py_html_dst.exists():
             shutil.rmtree(py_html_dst)
         shutil.copytree(py_html_src, py_html_dst)

@@ -12,6 +12,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _conan_cache_path,
     _cpp_percent_from_summary,
     _find_coverage_package,
+    _find_pytest_cov_artifact,
     _py_percent_from_summary,
     _resolve_coverage_python_version,
     run_coverage,
@@ -437,6 +438,73 @@ class TestConanCachePath:
         assert _conan_cache_path("xmscore/0.0.0:abc", "build") == Path("/trimmed/path")
 
 
+class TestFindPytestCovArtifact:
+    """Locate pytest-cov outputs anywhere under the conan build folder (issue #71).
+
+    ``conan cache path --folder=build`` returns the conan-managed build root
+    (e.g. ``/.conan2/p/b/xmsXXX/b``), but the recipe's ``run_python_tests``
+    writes the coverage artifacts into a *layout-specific* subdirectory
+    (e.g. ``<root>/build/Debug/``). The previous code looked at the root
+    only and silently fell through the ``if exists()`` guards, defaulting
+    ``py_raw`` to 0.0.
+
+    These tests pin the new ``_find_pytest_cov_artifact`` helper so the
+    tool tolerates whatever depth the recipe chose.
+    """
+
+    def test_finds_artifact_at_root(self, tmp_path):
+        """Artifact directly at build_folder/ is returned."""
+        artifact = tmp_path / "cov-py-summary.json"
+        artifact.write_text("{}", encoding="utf-8")
+        assert _find_pytest_cov_artifact(tmp_path, "cov-py-summary.json") == artifact
+
+    def test_finds_artifact_in_layout_subdir(self, tmp_path):
+        """Artifact at build_folder/build/Debug/ (the xmscore case) is returned."""
+        layout_subdir = tmp_path / "build" / "Debug"
+        layout_subdir.mkdir(parents=True)
+        artifact = layout_subdir / "cov-py-summary.json"
+        artifact.write_text("{}", encoding="utf-8")
+        assert _find_pytest_cov_artifact(tmp_path, "cov-py-summary.json") == artifact
+
+    def test_returns_none_when_absent(self, tmp_path):
+        """No matching file anywhere under build_folder → None (no exception).
+
+        This is the legitimate ``pybind=False`` case where pytest-cov
+        never ran, not an error.
+        """
+        assert _find_pytest_cov_artifact(tmp_path, "cov-py-summary.json") is None
+
+    def test_picks_newest_on_collision_and_warns(self, tmp_path, caplog):
+        """Multiple matches → newest by mtime wins, with a warning logged.
+
+        Multi-build-type folders (e.g. ``Debug`` and ``RelWithDebInfo`` both
+        present, perhaps from a stale cache) can each contain their own
+        pytest-cov artifacts. Pick the most recent and tell the operator,
+        rather than picking silently or raising.
+        """
+        old_dir = tmp_path / "build" / "Debug"
+        new_dir = tmp_path / "build" / "RelWithDebInfo"
+        old_dir.mkdir(parents=True)
+        new_dir.mkdir(parents=True)
+        old = old_dir / "cov-py.xml"
+        new = new_dir / "cov-py.xml"
+        old.write_text("<old/>", encoding="utf-8")
+        new.write_text("<new/>", encoding="utf-8")
+        # Force old to be older than new by a clear margin.
+        old_time = new.stat().st_mtime - 100.0
+        os.utime(old, (old_time, old_time))
+
+        with caplog.at_level("WARNING",
+                             logger="xmsconan.coverage_tools.coverage_generator"):
+            result = _find_pytest_cov_artifact(tmp_path, "cov-py.xml")
+
+        assert result == new
+        assert any("Multiple" in rec.message or "multiple" in rec.message.lower()
+                   for rec in caplog.records), (
+            "a warning naming the collision must be emitted so the operator can fix it"
+        )
+
+
 class TestRunCoverageThresholdGating:
     """End-to-end gating logic with all subprocess calls mocked."""
 
@@ -759,6 +827,77 @@ class TestRunCoverageThresholdGating:
         assert exit_code != 0, "Build failure must surface as non-zero exit"
         assert (tmp_path / "cov-cpp-summary.json").exists(), (
             "gcovr summary must be produced even when the build step failed"
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_finds_python_artifacts_in_layout_subdir(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """run_coverage locates pytest-cov outputs under build_folder/build/<type>/.
+
+        Production reality: the recipe's ``run_python_tests`` writes
+        ``cov-py-summary.json`` into ``<conan-build-root>/build/Debug/``,
+        not at the conan-build-root itself. The earlier code looked at the
+        root only, silently fell through ``if exists()``, and defaulted
+        ``py_raw`` to 0.0 (issue #71). This test pins the layout-subdir
+        path so the regression can't come back.
+        """
+        toml_file = tmp_path / "build.toml"
+        toml_file.write_text(
+            'library_name = "xmscore"\n'
+            'description = "desc"\n'
+            'python_namespaced_dir = "core"\n'
+            '\n'
+            '[coverage]\n'
+            'cpp_threshold = 0\n'
+            'python_threshold = 70\n',
+            encoding="utf-8",
+        )
+        build_folder = tmp_path / "fake-build"
+        source_folder = tmp_path / "fake-source"
+        # Layout-specific subdir, mirroring what the recipe does:
+        layout_subdir = build_folder / "build" / "Debug"
+        layout_subdir.mkdir(parents=True)
+        source_folder.mkdir()
+        # Stage pytest-cov artifacts at the *deep* path:
+        (layout_subdir / "cov-py-summary.json").write_text(
+            json.dumps({"totals": {"percent_covered": 82.5}})
+        )
+        (layout_subdir / "cov-py.xml").write_text("<coverage/>")
+        (layout_subdir / "coverage-html-py").mkdir()
+        (layout_subdir / "coverage-html-py" / "index.html").write_text(
+            "<html>py</html>",
+        )
+
+        def fake_run(cmd, env=None, cwd=None, **_kw):
+            if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
+                idx = cmd.index("--json-summary")
+                Path(cmd[idx + 1]).write_text(json.dumps({"line_percent": 99.0}))
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        # The summary, the xml, and the html dir must all have been hoisted
+        # up to the workspace root from their deep layout location.
+        assert (tmp_path / "cov-py-summary.json").exists(), (
+            "run_coverage must find cov-py-summary.json under build_folder/build/Debug/"
+        )
+        assert (tmp_path / "cov-py.xml").exists()
+        assert (tmp_path / "coverage-html-py" / "index.html").exists()
+        # And the percentage must reflect the real 82.5% from the staged file,
+        # not the silent 0.0 default that came back when the tool looked at
+        # the wrong depth.
+        assert exit_code == 0, (
+            "82.5% must satisfy the 70.0 python_threshold — getting non-zero "
+            "exit means the artifact wasn't found and py_raw fell back to 0.0"
         )
 
 
