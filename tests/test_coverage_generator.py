@@ -963,7 +963,7 @@ class TestRunCoverageThresholdGating:
     def test_gcovr_root_and_filter_anchor_against_build_folder(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """gcovr's --root and the doubled-filter anchor are the BUILD folder.
+        """Gcovr's --root and the doubled-filter anchor are the BUILD folder.
 
         ``cmake_layout()`` copies sources into the build folder before
         compilation, so ``.gcno`` files embed paths under
