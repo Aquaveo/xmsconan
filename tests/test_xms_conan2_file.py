@@ -459,6 +459,74 @@ class TestCoverageWiring:
         """
         assert not hasattr(XmsConan2File, "configure_options")
 
+    def _make_recipe_for_build(self):
+        """Build a stub XmsConan2File suitable for invoking ``build()`` under mocks."""
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.pybind = False
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.testing_framework = "cxxtest"
+        obj.python_binding_type = "pybind11"
+        obj.version = "0.0.0"
+        obj.run = MagicMock()
+        obj.output = MagicMock()
+        obj._save_test_artifacts = MagicMock()
+        obj._build_wheel = MagicMock()
+        obj.run_python_tests = MagicMock()
+        obj.run_cxx_tests = MagicMock()
+        return obj
+
+    @patch("xmsconan.xms_conan2_file.CMake")
+    def test_build_passes_xms_coverage_as_cmake_variable_when_env_set(self, mock_cmake_cls):
+        """``XMS_COVERAGE`` from the parent env must reach CMake as a ``-D`` variable.
+
+        Conan 2's ``cmake.configure()`` runs CMake as a subprocess and
+        does *not* inherit the recipe's parent-process env unless a
+        ``VirtualBuildEnv`` generator is declared in ``generate()`` —
+        which this recipe doesn't have. The recipe's Python ``configure()``
+        sees XMS_COVERAGE fine (same process as conan-create), but CMake
+        did not, so ``CMakeLists.txt.jinja``'s
+        ``if (DEFINED ENV{XMS_COVERAGE})`` block was silently false even
+        with XMS_COVERAGE in the profile's [buildenv]. Passing it as a
+        ``-D`` variable bypasses that whole layer of uncertainty.
+        """
+        recipe = self._make_recipe_for_build()
+        os.environ["XMS_COVERAGE"] = "1"
+        try:
+            recipe.build()
+        finally:
+            del os.environ["XMS_COVERAGE"]
+
+        configure_mock = mock_cmake_cls.return_value.configure
+        assert configure_mock.called, "cmake.configure must be invoked"
+        call_kwargs = configure_mock.call_args.kwargs
+        variables = call_kwargs.get("variables") or {}
+        assert variables.get("XMS_COVERAGE") == "1", (
+            "build() must pass XMS_COVERAGE=1 as a CMake -D variable when the "
+            f"parent env has it; got variables={variables!r}"
+        )
+
+    @patch("xmsconan.xms_conan2_file.CMake")
+    def test_build_omits_xms_coverage_when_env_unset(self, mock_cmake_cls):
+        """Production builds (no ``XMS_COVERAGE`` in env) must not get ``--coverage``.
+
+        A leaked ``-DXMS_COVERAGE=1`` would link gcov instrumentation
+        into the shipping wheel — bloated binary, slower runtime, and
+        a defeat of any optimization. The check on
+        ``os.environ.get("XMS_COVERAGE")`` must be the only gate.
+        """
+        recipe = self._make_recipe_for_build()
+        os.environ.pop("XMS_COVERAGE", None)
+        recipe.build()
+
+        configure_mock = mock_cmake_cls.return_value.configure
+        variables = configure_mock.call_args.kwargs.get("variables") or {}
+        assert "XMS_COVERAGE" not in variables, (
+            f"build() must not leak XMS_COVERAGE into production builds; "
+            f"got variables={variables!r}"
+        )
+
     def test_run_python_tests_uses_pytest_cov_when_env_set(self, tmp_path):
         """When XMS_COVERAGE=1, pytest is invoked with --cov flags."""
         obj = object.__new__(XmsConan2File)

@@ -178,6 +178,20 @@ class XmsConan2File(ConanFile):
         variables["XMS_VERSION"] = '{}'.format(self.version)
         variables["PYTHON_TARGET_VERSION"] = str(self.options.python_version)
 
+        # Propagate XMS_COVERAGE as an explicit CMake -D variable when the
+        # operator set it in the parent env (e.g., xmsconan_coverage). The
+        # recipe's `configure()` already sees XMS_COVERAGE via os.environ
+        # because it runs in the same process as conan-create, but CMake
+        # is a child subprocess. Conan 2's `cmake.configure()` only
+        # exports vars from the profile's [buildenv] when a
+        # `VirtualBuildEnv` generator was declared in `generate()`, which
+        # this recipe does not — so the env-based check in
+        # CMakeLists.txt.jinja was silently false even when XMS_COVERAGE
+        # was set in [buildenv]. Passing it as a -D var bypasses every
+        # layer of env-propagation uncertainty.
+        if os.environ.get("XMS_COVERAGE"):
+            variables["XMS_COVERAGE"] = "1"
+
         if self.options.pybind:
             variables.update(self._get_python_cmake_hints())
 
