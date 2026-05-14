@@ -455,7 +455,7 @@ class TestCoverageWiring:
         """The configure_options() method that del'd pybind on non-Release is gone.
 
         Pybind must be permitted with any build_type so the coverage workflow
-        can run testing=True, pybind=True, build_type=Debug in one shot.
+        can run pybind=True, build_type=Debug in one shot.
         """
         assert not hasattr(XmsConan2File, "configure_options")
 

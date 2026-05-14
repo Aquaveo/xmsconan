@@ -12,6 +12,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _cpp_percent_from_summary,
     _find_coverage_package,
     _py_percent_from_summary,
+    _resolve_coverage_python_version,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
@@ -125,7 +126,7 @@ class TestGithubStepSummary:
 
 
 class TestFindCoveragePackage:
-    """Conan cache parsing — picks the newest testing+pybind+Debug package."""
+    """Conan cache parsing — picks the newest pybind+Debug package pinned to one ABI."""
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_picks_newest_matching_package(self, mock_run):
@@ -140,7 +141,8 @@ class TestFindCoveragePackage:
                                 "packages": {
                                     "old_pid": {
                                         "info": {
-                                            "options": {"testing": "True", "pybind": "True"},
+                                            "options": {"pybind": "True",
+                                                        "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
                                     },
@@ -151,7 +153,8 @@ class TestFindCoveragePackage:
                                 "packages": {
                                     "new_pid": {
                                         "info": {
-                                            "options": {"testing": "True", "pybind": "True"},
+                                            "options": {"pybind": "True",
+                                                        "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
                                     },
@@ -163,7 +166,7 @@ class TestFindCoveragePackage:
             }),
             returncode=0,
         )
-        ref, pid = _find_coverage_package("xmscore")
+        ref, pid = _find_coverage_package("xmscore", "3.13")
         assert ref == "xmscore/1.0.0"
         assert pid == "new_pid"
 
@@ -173,8 +176,8 @@ class TestFindCoveragePackage:
         mock_run.return_value = MagicMock(
             stdout=json.dumps({"Local Cache": {}}), returncode=0,
         )
-        with pytest.raises(RuntimeError, match="No testing=True"):
-            _find_coverage_package("xmscore")
+        with pytest.raises(RuntimeError, match="pybind=True"):
+            _find_coverage_package("xmscore", "3.13")
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_accepts_bool_and_lowercase_truthy_options(self, mock_run):
@@ -190,7 +193,8 @@ class TestFindCoveragePackage:
                                     "pid": {
                                         "info": {
                                             # bool True (not the string "True")
-                                            "options": {"testing": True, "pybind": "true"},
+                                            "options": {"pybind": True,
+                                                        "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
                                     },
@@ -202,7 +206,7 @@ class TestFindCoveragePackage:
             }),
             returncode=0,
         )
-        ref, pid = _find_coverage_package("xmscore")
+        ref, pid = _find_coverage_package("xmscore", "3.13")
         assert ref == "xmscore/1.0.0"
         assert pid == "pid"
 
@@ -219,7 +223,8 @@ class TestFindCoveragePackage:
                                 "packages": {
                                     "release_pid": {
                                         "info": {
-                                            "options": {"testing": "True", "pybind": "True"},
+                                            "options": {"pybind": "True",
+                                                        "python_version": "3.13"},
                                             "settings": {"build_type": "Release"},
                                         }
                                     },
@@ -232,7 +237,126 @@ class TestFindCoveragePackage:
             returncode=0,
         )
         with pytest.raises(RuntimeError):
-            _find_coverage_package("xmscore")
+            _find_coverage_package("xmscore", "3.13")
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_matches_pybind_only_when_testing_false(self, mock_run):
+        """testing=True is *not* required (issue #64).
+
+        ``XmsConanPackager.generate_configurations`` never emits a config
+        with both ``testing=True`` and ``pybind=True`` — they are
+        mutually-exclusive derivatives of the same base list. Requiring
+        ``testing=True`` is what made the cache lookup match zero rows
+        even after #61/#62 were fixed.
+        """
+        mock_run.return_value = MagicMock(
+            stdout=json.dumps({
+                "Local Cache": {
+                    "xmscore/1.0.0": {
+                        "revisions": {
+                            "rev1": {
+                                "timestamp": 100,
+                                "packages": {
+                                    "pid": {
+                                        "info": {
+                                            "options": {
+                                                "pybind": "True",
+                                                "testing": "False",
+                                                "python_version": "3.13",
+                                            },
+                                            "settings": {"build_type": "Debug"},
+                                        }
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }),
+            returncode=0,
+        )
+        ref, pid = _find_coverage_package("xmscore", "3.13")
+        assert ref == "xmscore/1.0.0"
+        assert pid == "pid"
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_pins_to_requested_python_version(self, mock_run):
+        """Multi-ABI fan-out: cache has both 3.10 and 3.13, only the requested one wins.
+
+        Issue #65: the prior code returned newest-by-timestamp across all
+        pybind packages, so whichever Python build finished last drove
+        the Python coverage report (non-determinism).
+        """
+        mock_run.return_value = MagicMock(
+            stdout=json.dumps({
+                "Local Cache": {
+                    "xmscore/1.0.0": {
+                        "revisions": {
+                            "rev1": {
+                                "timestamp": 999,  # newer
+                                "packages": {
+                                    "pid_310": {
+                                        "info": {
+                                            "options": {"pybind": "True",
+                                                        "python_version": "3.10"},
+                                            "settings": {"build_type": "Debug"},
+                                        }
+                                    },
+                                },
+                            },
+                            "rev2": {
+                                "timestamp": 100,  # older
+                                "packages": {
+                                    "pid_313": {
+                                        "info": {
+                                            "options": {"pybind": "True",
+                                                        "python_version": "3.13"},
+                                            "settings": {"build_type": "Debug"},
+                                        }
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }),
+            returncode=0,
+        )
+        ref, pid = _find_coverage_package("xmscore", "3.13")
+        # Older-by-timestamp wins because it's the requested ABI; the
+        # newer 3.10 build must NOT be picked.
+        assert pid == "pid_313"
+
+
+class TestResolveCoveragePythonVersion:
+    """Picks the single python_version the coverage build pins to (issue #65)."""
+
+    def test_defaults_to_3_13_when_no_ci_python_versions(self):
+        """An empty toml falls back to the global default ABI."""
+        assert _resolve_coverage_python_version({}) == "3.13"
+
+    def test_uses_highest_ci_python_versions(self):
+        """Highest entry in [ci].python_versions wins by (major, minor)."""
+        toml_data = {"ci": {"python_versions": ["3.10", "3.13"]}}
+        assert _resolve_coverage_python_version(toml_data) == "3.13"
+
+    def test_handles_list_order_independence(self):
+        """Order in [ci].python_versions doesn't matter."""
+        toml_data = {"ci": {"python_versions": ["3.13", "3.10"]}}
+        assert _resolve_coverage_python_version(toml_data) == "3.13"
+
+    def test_explicit_coverage_python_version_overrides(self):
+        """[coverage].python_version overrides the [ci].python_versions default."""
+        toml_data = {
+            "ci": {"python_versions": ["3.13"]},
+            "coverage": {"python_version": "3.10"},
+        }
+        assert _resolve_coverage_python_version(toml_data) == "3.10"
+
+    def test_empty_ci_python_versions_falls_back(self):
+        """An empty list in [ci] is treated like the key was missing."""
+        toml_data = {"ci": {"python_versions": []}}
+        assert _resolve_coverage_python_version(toml_data) == "3.13"
 
 
 class TestRunCoverageThresholdGating:
@@ -385,12 +509,12 @@ class TestRunCoverageThresholdGating:
     def test_build_py_filter_uses_nested_options_shape(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """The --filter passed to build.py nests pybind/testing under "options".
+        """The --filter passed to build.py nests its option keys under "options".
 
-        XmsConanPackager.filter_configurations silently drops flat top-level
-        pybind/testing keys (the bug fixed in issue #62 by raising on unknown
-        keys, but this test pins the call site too so the regression cannot
-        come back via the coverage tool).
+        XmsConanPackager.filter_configurations silently dropped flat top-level
+        keys before issue #62 was fixed (the packager now raises on unknown
+        top-level keys, but this test pins the call site too so the
+        regression cannot come back via the coverage tool).
         """
         toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
             tmp_path, cpp_percent=80.0, py_percent=80.0,
@@ -418,12 +542,112 @@ class TestRunCoverageThresholdGating:
         filter_idx = cmd.index("--filter")
         filter_dict = json.loads(cmd[filter_idx + 1])
         assert filter_dict["build_type"] == "Debug"
-        assert filter_dict.get("options", {}).get("testing") is True
         assert filter_dict.get("options", {}).get("pybind") is True
-        # And the bug-triggering shape must NOT come back: testing/pybind
+        # And the bug-triggering shape must NOT come back: option keys
         # must live under "options", never at the top level.
-        assert "testing" not in filter_dict
         assert "pybind" not in filter_dict
+        assert "python_version" not in filter_dict
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_py_filter_omits_testing(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """The --filter must NOT request testing=True (issue #64).
+
+        The packager never produces a config that is both ``testing=True``
+        and ``pybind=True`` — they are mutually-exclusive derivatives of
+        the base combinations list. Asking for both matches zero configs
+        and silently widens or fails the coverage build.
+        """
+        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        )
+        captured_cmds = []
+
+        def capture(cmd, env=None, cwd=None, **kw):
+            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = capture
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        build_cmds = [
+            c for c in captured_cmds
+            if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
+        ]
+        cmd = build_cmds[0]
+        filter_idx = cmd.index("--filter")
+        filter_dict = json.loads(cmd[filter_idx + 1])
+        assert "testing" not in filter_dict.get("options", {}), (
+            "testing=True is mutually exclusive with pybind=True in the "
+            "packager (issue #64); filter must not request it."
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_py_filter_pins_python_version(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """The --filter pins a python_version derived from [ci].python_versions (issue #65)."""
+        toml_file = tmp_path / "build.toml"
+        toml_file.write_text(
+            'library_name = "xmscore"\n'
+            'description = "desc"\n'
+            'python_namespaced_dir = "core"\n'
+            '\n'
+            '[ci]\n'
+            'python_versions = ["3.10", "3.13"]\n'
+            '\n'
+            '[coverage]\n'
+            'cpp_threshold = 70\n'
+            'python_threshold = 70\n',
+            encoding="utf-8",
+        )
+        build_folder = tmp_path / "fake-build"
+        source_folder = tmp_path / "fake-source"
+        build_folder.mkdir()
+        source_folder.mkdir()
+        (build_folder / "cov-py-summary.json").write_text(
+            json.dumps({"totals": {"percent_covered": 80.0}})
+        )
+
+        captured_cmds = []
+
+        def fake_run(cmd, env=None, cwd=None, **kw):
+            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
+            if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
+                idx = cmd.index("--json-summary")
+                Path(cmd[idx + 1]).write_text(json.dumps({"line_percent": 80.0}))
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        mock_find.return_value = ("xmscore/0.0.0", "pid")
+        mock_path.side_effect = lambda _ref, kind: (
+            build_folder if kind == "build" else source_folder
+        )
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        build_cmds = [
+            c for c in captured_cmds
+            if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
+        ]
+        cmd = build_cmds[0]
+        filter_dict = json.loads(cmd[cmd.index("--filter") + 1])
+        # Highest of ["3.10", "3.13"] is 3.13.
+        assert filter_dict["options"]["python_version"] == "3.13"
+        # _find_coverage_package must be told to pin to the same ABI so
+        # the lookup matches what the build produced.
+        find_call = mock_find.call_args
+        assert find_call.args[1] == "3.13" or find_call.kwargs.get("python_version") == "3.13"
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
