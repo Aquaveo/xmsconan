@@ -607,7 +607,20 @@ def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
     assert cov.exists()
     content = cov.read_text(encoding="utf-8")
     assert "xmsconan_coverage" in content
-    assert "ghcr.io/aquaveo/conan-gcc13-py3.13" in content
+    # The default GitHub Coverage workflow now runs directly on
+    # ubuntu-latest — NOT inside the conan-gcc13-py3.13 docker image. That
+    # image used to bake xmsconan in, which silently shadowed any
+    # ``pip install xmsconan>=X.Y.Z`` in the workflow (the constraint was
+    # already satisfied so pip skipped the install), locking the canary
+    # to whatever version the image happened to carry. Containerless
+    # runs always pull the latest xmsconan from devpi, which is the
+    # contract a Coverage canary needs.
+    assert "container:" not in content, (
+        f"default Coverage workflow must not declare a container; got:\n{content}"
+    )
+    assert "ghcr.io/aquaveo/conan-gcc13-py3.13" not in content
+    assert "actions/setup-python" in content
+    assert 'pip install --upgrade "xmsconan>=' in content
 
 
 def test_github_coverage_yaml_omitted_when_coverage_false(ci_toml, tmp_path):
@@ -618,8 +631,14 @@ def test_github_coverage_yaml_omitted_when_coverage_false(ci_toml, tmp_path):
     assert not cov.exists()
 
 
-def test_github_coverage_uses_xvfb_image_when_requested(tmp_path):
-    """Coverage + xvfb selects the x11-gdal container image."""
+def test_github_coverage_apt_installs_xvfb_when_requested(tmp_path):
+    """Coverage + xvfb apt-installs xvfb on the containerless ubuntu-latest runner.
+
+    Previously this selected a docker container image with xvfb baked in;
+    that introduced the stale-in-image lock-in bug. The Coverage workflow
+    no longer uses a container, so xvfb support is provided by apt
+    install in a job step instead.
+    """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmsvtk"\n'
@@ -635,7 +654,8 @@ def test_github_coverage_uses_xvfb_image_when_requested(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
     content = cov.read_text(encoding="utf-8")
-    assert "ghcr.io/aquaveo/conan-gcc13-x11-gdal-py3.13" in content
+    assert "container:" not in content
+    assert "apt-get install -y xvfb" in content
 
 
 def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
