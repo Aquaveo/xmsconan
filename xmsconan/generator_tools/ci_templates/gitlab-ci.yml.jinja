@@ -277,7 +277,8 @@ Coverage:
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
 <% endif %>
   script:
-    - pip install conan "gcovr>=7,<9" xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install conan "gcovr>=7,<9"
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
