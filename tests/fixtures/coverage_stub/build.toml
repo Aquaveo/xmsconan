@@ -5,6 +5,10 @@ python_namespaced_dir = "stub"
 library_sources = ["stub/stub.cpp"]
 library_headers = ["stub/stub.h"]
 pybind_sources = ["stub/python/stub_py.cpp"]
+# CxxTest harness — under XMS_COVERAGE=1 the recipe is built with
+# testing=True alongside pybind=True so both run_cxx_tests and
+# run_python_tests contribute .gcda data to the same .gcno set.
+testing_headers = ["stub/stub.t.h"]
 
 # Both thresholds at 0 — the integration test asserts the report files
 # exist and have non-zero coverage values, not that a particular bar is

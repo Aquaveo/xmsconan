@@ -159,6 +159,56 @@ def test_pybind_debug_emitted_when_xms_coverage_env():
     assert debug_pybind
 
 
+@patch_env(clear=True)
+def test_coverage_pybind_variant_also_enables_testing():
+    """coverage=True must flip ``testing=True`` on the Debug+pybind variant.
+
+    Without ``testing=True`` the recipe's ``build()`` only runs
+    pytest-cov against the wheel; the CxxTest runner is never compiled
+    or executed, and gcovr only sees the C++ surface reachable through
+    pybind11 bindings. xmscore's first instrumented run reported 9.4%
+    C++ for exactly this reason. With both flags on, ``run_cxx_tests``
+    and ``run_python_tests`` share the same ``.gcno`` set and gcovr
+    collects the union.
+    """
+    p = XmsConanPackager("xmscore", coverage=True)
+    p.generate_configurations(system_platform="linux")
+
+    debug_pybind = [
+        c for c in p.configurations
+        if c["build_type"] == "Debug" and c["options"].get("pybind") is True
+    ]
+    assert debug_pybind, "coverage=True must emit a Debug+pybind config"
+    for cfg in debug_pybind:
+        assert cfg["options"].get("testing") is True, (
+            f"Debug+pybind config under coverage=True is missing testing=True: "
+            f"{cfg['options']!r}. Without it, run_cxx_tests does not run and "
+            f"gcovr only sees the pybind-reachable C++ surface."
+        )
+
+
+@patch_env(clear=True)
+def test_non_coverage_pybind_variant_does_not_enable_testing():
+    """The testing+pybind combination must NOT appear without coverage.
+
+    The packager's three derivative loops (wchar_t, pybind, testing)
+    deliberately do not cross-multiply — combining testing and pybind
+    on a release config would build a heavier binary than ships. The
+    coverage carve-out flips testing on the Debug+pybind variant only.
+    """
+    p = XmsConanPackager("xmscore", coverage=False)
+    p.generate_configurations(system_platform="linux")
+
+    combined = [
+        c for c in p.configurations
+        if c["options"].get("pybind") is True and c["options"].get("testing") is True
+    ]
+    assert not combined, (
+        f"pybind=True+testing=True must not be emitted when coverage=False, "
+        f"got {len(combined)} such configs"
+    )
+
+
 @patch_env({"XMS_COVERAGE": "1"}, clear=True)
 def test_explicit_coverage_false_overrides_env():
     """coverage=False wins over an XMS_COVERAGE=1 env (explicit beats implicit)."""
