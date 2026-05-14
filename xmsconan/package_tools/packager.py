@@ -292,10 +292,19 @@ class XmsConanPackager(object):
                     continue
                 for py_version in self._python_versions:
                     pybind_options = copy.deepcopy(combination)
-                    pybind_options['options'].update({
+                    options_update = {
                         'pybind': True,
                         'python_version': py_version,
-                    })
+                    }
+                    # Under XMS_COVERAGE the same Debug+pybind build also runs
+                    # CxxTest so gcovr sees the union of C++ exercised by the
+                    # cxx suite AND C++ exercised by pytest through the pybind
+                    # bindings. Without testing=True here, coverage measured
+                    # only the pybind-reachable surface — a small slice of
+                    # most xms libraries' actual C++.
+                    if self._coverage:
+                        options_update['testing'] = True
+                    pybind_options['options'].update(options_update)
                     pybind_options['buildenv']['PYTHON_TARGET_VERSION'] = py_version
                     pybind_updated_builds.append(pybind_options)
 

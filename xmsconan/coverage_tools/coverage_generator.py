@@ -115,17 +115,19 @@ def _run(cmd, env=None, cwd=None):
 
 
 def _find_coverage_package(library_name: str, python_version: str) -> tuple[str, str]:
-    """Locate the pybind+Debug package in the local Conan cache.
+    """Locate the pybind+testing+Debug package in the local Conan cache.
 
     Returns (exact_ref, package_id) for the newest matching revision.
 
-    The matcher requires ``pybind=True`` and ``build_type=Debug`` but does
-    *not* require ``testing=True`` — the packager never produces a config
-    with both ``testing=True`` and ``pybind=True`` (they are mutually
-    exclusive derivatives of the base combinations list, see issue #64),
-    and a pybind-only build is sufficient: ``pytest-cov`` exercises the
-    wheel's underlying C++ which is what produces the .gcda files gcovr
-    needs.
+    The matcher requires ``pybind=True``, ``testing=True``, and
+    ``build_type=Debug``. The packager carves out a combined
+    ``pybind=True+testing=True+Debug`` config exclusively for coverage
+    runs (see ``XmsConanPackager.generate_configurations``); requiring
+    ``testing=True`` here ensures we do not accidentally pick up a
+    plain ``pybind=True+Debug`` package that a developer built locally
+    for some other reason. Both CxxTest and ``pytest-cov`` run against
+    the same build, contributing ``.gcda`` data to the same ``.gcno``
+    set so gcovr collects the union of both layers' C++ exercise.
 
     ``python_version`` pins the result to a single Python ABI so multi-
     version fan-outs cannot non-deterministically pick whichever pybind
@@ -146,6 +148,8 @@ def _find_coverage_package(library_name: str, python_version: str) -> tuple[str,
                 settings = info.get("settings", {})
                 if not _opt_is_truthy(opts.get("pybind")):
                     continue
+                if not _opt_is_truthy(opts.get("testing")):
+                    continue
                 if settings.get("build_type") != "Debug":
                     continue
                 if opts.get("python_version") != python_version:
@@ -153,9 +157,9 @@ def _find_coverage_package(library_name: str, python_version: str) -> tuple[str,
                 candidates.append((ts, exact_ref, pid))
     if not candidates:
         raise RuntimeError(
-            f"No pybind=True, build_type=Debug, python_version={python_version} package "
-            f"found for {library_name} in the local Conan cache. Did the coverage build "
-            "complete?"
+            f"No pybind=True, testing=True, build_type=Debug, "
+            f"python_version={python_version} package found for {library_name} "
+            f"in the local Conan cache. Did the coverage build complete?"
         )
     candidates.sort(reverse=True)
     _, exact_ref, pid = candidates[0]
@@ -466,17 +470,21 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
         cwd=str(output_dir),
     )
 
-    # 2. Single instrumented build: pybind + Debug, pinned to one python
-    #    ABI. A test failure inside conan create's test phase must NOT abort
-    #    the rest of the run — the artifacts and step summary are most
-    #    valuable exactly when a test failed, so we record the failure and
-    #    press on.
+    # 2. Single instrumented build: pybind + testing + Debug, pinned to
+    #    one python ABI. A test failure inside conan create's test phase
+    #    must NOT abort the rest of the run — the artifacts and step
+    #    summary are most valuable exactly when a test failed, so we
+    #    record the failure and press on.
     #
     #    Notes:
-    #      * No ``testing=True`` — the packager never emits a config that
-    #        is both ``testing=True`` and ``pybind=True`` (see issue #64),
-    #        and pytest-cov against the wheel produces the .gcda files
-    #        gcovr needs without a CxxTest build.
+    #      * ``testing=True`` AND ``pybind=True`` — the packager carves
+    #        out a combined config exclusively under ``XMS_COVERAGE=1``
+    #        (see ``XmsConanPackager.generate_configurations``) so that
+    #        the recipe's ``build()`` runs both ``run_cxx_tests`` and
+    #        ``run_python_tests`` against the same instrumented binary.
+    #        Both runs contribute ``.gcda`` data to the same ``.gcno``
+    #        set; gcovr collects the union. Without ``testing=True``,
+    #        gcovr would only see C++ reachable through pybind bindings.
     #      * ``python_version`` is pinned so a multi-version fan-out
     #        cannot leave ``_find_coverage_package`` picking whichever
     #        pybind config finished last (issue #65).
@@ -487,7 +495,11 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     # (see issue #62), which would widen the build to every Debug config.
     filter_arg = json.dumps({
         "build_type": "Debug",
-        "options": {"pybind": True, "python_version": coverage_python_version},
+        "options": {
+            "pybind": True,
+            "testing": True,
+            "python_version": coverage_python_version,
+        },
     })
     tests_failed = False
     try:

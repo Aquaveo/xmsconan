@@ -131,7 +131,7 @@ class TestGithubStepSummary:
 
 
 class TestFindCoveragePackage:
-    """Conan cache parsing — picks the newest pybind+Debug package pinned to one ABI."""
+    """Conan cache parsing — picks the newest pybind+testing+Debug package pinned to one ABI."""
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_picks_newest_matching_package(self, mock_run):
@@ -147,6 +147,7 @@ class TestFindCoveragePackage:
                                     "old_pid": {
                                         "info": {
                                             "options": {"pybind": "True",
+                                                        "testing": "True",
                                                         "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
@@ -159,6 +160,7 @@ class TestFindCoveragePackage:
                                     "new_pid": {
                                         "info": {
                                             "options": {"pybind": "True",
+                                                        "testing": "True",
                                                         "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
@@ -199,6 +201,7 @@ class TestFindCoveragePackage:
                                         "info": {
                                             # bool True (not the string "True")
                                             "options": {"pybind": True,
+                                                        "testing": True,
                                                         "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
@@ -229,6 +232,7 @@ class TestFindCoveragePackage:
                                     "release_pid": {
                                         "info": {
                                             "options": {"pybind": "True",
+                                                        "testing": "True",
                                                         "python_version": "3.13"},
                                             "settings": {"build_type": "Release"},
                                         }
@@ -245,14 +249,17 @@ class TestFindCoveragePackage:
             _find_coverage_package("xmscore", "3.13")
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
-    def test_matches_pybind_only_when_testing_false(self, mock_run):
-        """testing=True is *not* required (issue #64).
+    def test_rejects_pybind_only_when_testing_false(self, mock_run):
+        """``testing=True`` is REQUIRED — pybind-only packages no longer match.
 
-        ``XmsConanPackager.generate_configurations`` never emits a config
-        with both ``testing=True`` and ``pybind=True`` — they are
-        mutually-exclusive derivatives of the same base list. Requiring
-        ``testing=True`` is what made the cache lookup match zero rows
-        even after #61/#62 were fixed.
+        The packager carves out a combined ``pybind=True+testing=True+Debug``
+        config exclusively for coverage runs (gated by ``self._coverage``).
+        A plain ``pybind=True+Debug`` package — which a developer might
+        build locally for some other purpose — must NOT be picked up,
+        because the coverage workflow expects ``run_cxx_tests`` to have
+        contributed ``.gcda`` data alongside ``pytest-cov``. Matching
+        a pybind-only package would silently regress the C++ percentage
+        to the pre-CxxTest measurement.
         """
         mock_run.return_value = MagicMock(
             stdout=json.dumps({
@@ -280,9 +287,8 @@ class TestFindCoveragePackage:
             }),
             returncode=0,
         )
-        ref, pid = _find_coverage_package("xmscore", "3.13")
-        assert ref == "xmscore/1.0.0"
-        assert pid == "pid"
+        with pytest.raises(RuntimeError, match="testing=True"):
+            _find_coverage_package("xmscore", "3.13")
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_pins_to_requested_python_version(self, mock_run):
@@ -303,6 +309,7 @@ class TestFindCoveragePackage:
                                     "pid_310": {
                                         "info": {
                                             "options": {"pybind": "True",
+                                                        "testing": "True",
                                                         "python_version": "3.10"},
                                             "settings": {"build_type": "Debug"},
                                         }
@@ -315,6 +322,7 @@ class TestFindCoveragePackage:
                                     "pid_313": {
                                         "info": {
                                             "options": {"pybind": "True",
+                                                        "testing": "True",
                                                         "python_version": "3.13"},
                                             "settings": {"build_type": "Debug"},
                                         }
@@ -918,15 +926,21 @@ class TestRunCoverageThresholdGating:
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
-    def test_build_py_filter_omits_testing(
+    def test_build_py_filter_requests_testing_true(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """The --filter must NOT request testing=True (issue #64).
+        """The --filter must request testing=True alongside pybind=True.
 
-        The packager never produces a config that is both ``testing=True``
-        and ``pybind=True`` — they are mutually-exclusive derivatives of
-        the base combinations list. Asking for both matches zero configs
-        and silently widens or fails the coverage build.
+        Under ``XMS_COVERAGE=1`` the packager carves out a combined
+        ``pybind=True+testing=True+Debug`` config so the recipe's
+        ``build()`` runs both ``run_cxx_tests`` (gated on ``testing``)
+        and ``run_python_tests`` (gated on ``pybind``) against the same
+        instrumented binary. Both runs contribute ``.gcda`` data to the
+        same ``.gcno`` set and gcovr collects the union. The filter
+        must pin to that combined config — without ``testing=True`` it
+        would match a plain ``pybind=True+Debug`` package (which is
+        also emitted under coverage, transitionally) and silently lose
+        the CxxTest contribution to C++ coverage.
         """
         toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
             tmp_path, cpp_percent=80.0, py_percent=80.0,
@@ -952,9 +966,10 @@ class TestRunCoverageThresholdGating:
         cmd = build_cmds[0]
         filter_idx = cmd.index("--filter")
         filter_dict = json.loads(cmd[filter_idx + 1])
-        assert "testing" not in filter_dict.get("options", {}), (
-            "testing=True is mutually exclusive with pybind=True in the "
-            "packager (issue #64); filter must not request it."
+        assert filter_dict.get("options", {}).get("testing") is True, (
+            "filter must request testing=True so the packager selects the "
+            "pybind=True+testing=True+Debug config that runs CxxTest + "
+            "pytest-cov against the same instrumented binary."
         )
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
