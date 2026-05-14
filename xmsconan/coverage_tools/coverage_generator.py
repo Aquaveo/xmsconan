@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+from typing import Optional
 
 # 2. Third party modules
 try:
@@ -168,7 +169,7 @@ def _find_coverage_package(library_name: str, python_version: str) -> tuple[str,
 _RECIPE_SCOPED_FOLDERS = frozenset({"source", "export", "export_source"})
 
 
-def _find_pytest_cov_artifact(build_folder: Path, name: str):
+def _find_pytest_cov_artifact(build_folder: Path, name: str, kind: Optional[str] = None):
     """Locate a pytest-cov artifact (file or directory) inside the conan build folder.
 
     The recipe's ``run_python_tests`` writes coverage artifacts into a
@@ -177,6 +178,14 @@ def _find_pytest_cov_artifact(build_folder: Path, name: str):
     --folder=build`` returns. Walking with ``rglob`` is robust against
     recipe layout changes and multi-build-type folders (see issue #71).
 
+    ``kind`` filters matches by filesystem type — ``"file"`` keeps only
+    regular files, ``"dir"`` keeps only directories, ``None`` (the
+    default) keeps both. This guards against a real
+    ``coverage-html-py/`` directory being shadowed by a same-named
+    stale *file* (which would silently fall through the call-site
+    ``is_dir()`` check), and vice versa. Without ``kind``, the helper
+    behaves exactly as a name-based ``rglob`` does.
+
     Returns the matching path. ``None`` if the artifact isn't present
     (legitimate when pytest-cov never ran — e.g., ``pybind=False``).
 
@@ -184,9 +193,18 @@ def _find_pytest_cov_artifact(build_folder: Path, name: str):
     build type) the newest by ``st_mtime`` is returned and a warning is
     logged so the operator can clean up.
     """
-    matches = sorted(build_folder.rglob(name))
+    matches = list(build_folder.rglob(name))
+    if kind == "file":
+        matches = [m for m in matches if m.is_file()]
+    elif kind == "dir":
+        matches = [m for m in matches if m.is_dir()]
+    elif kind is not None:
+        raise ValueError(
+            f"kind must be 'file', 'dir', or None; got {kind!r}"
+        )
     if not matches:
         return None
+    matches.sort()
     if len(matches) > 1:
         matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         LOGGER.warning(
@@ -381,15 +399,21 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     #    ``<build_folder>/build/Debug/``), not the conan-managed build root,
     #    so we walk to find them regardless of depth (see issue #71).
     py_summary = output_dir / "cov-py-summary.json"
-    py_summary_src = _find_pytest_cov_artifact(build_folder, "cov-py-summary.json")
+    py_summary_src = _find_pytest_cov_artifact(
+        build_folder, "cov-py-summary.json", kind="file",
+    )
     if py_summary_src is not None:
         shutil.copy2(py_summary_src, py_summary)
-    py_xml_src = _find_pytest_cov_artifact(build_folder, "cov-py.xml")
+    py_xml_src = _find_pytest_cov_artifact(build_folder, "cov-py.xml", kind="file")
     if py_xml_src is not None:
         shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
-    py_html_src = _find_pytest_cov_artifact(build_folder, "coverage-html-py")
+    # ``kind="dir"`` guards against a stale same-named *file* shadowing
+    # the real ``coverage-html-py/`` directory in mtime-collision order.
+    py_html_src = _find_pytest_cov_artifact(
+        build_folder, "coverage-html-py", kind="dir",
+    )
     py_html_dst = output_dir / "coverage-html-py"
-    if py_html_src is not None and py_html_src.is_dir():
+    if py_html_src is not None:
         if py_html_dst.exists():
             shutil.rmtree(py_html_dst)
         shutil.copytree(py_html_src, py_html_dst)
