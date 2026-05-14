@@ -251,6 +251,17 @@ class XmsConanPackager(object):
             if self._artifacts_dir:
                 combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
 
+            # XMS_COVERAGE has to ride into the profile's [buildenv] so the
+            # conan activation script exports it for the CMake child process.
+            # Without this, the recipe's Python-side `configure()` still sees
+            # XMS_COVERAGE (it inherits the parent env), but CMake's
+            # `if (DEFINED ENV{XMS_COVERAGE})` guard runs in an activated
+            # buildenv subshell that only sees [buildenv] vars — so
+            # `--coverage` is never added, no .gcno files are produced, and
+            # gcovr reports 0% (see issue #69).
+            if self._coverage:
+                combination['buildenv']['XMS_COVERAGE'] = '1'
+
             # Set macOS deployment target for consistent wheel builds
             if combination.get('os') == 'Macos':
                 combination['buildenv']['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
