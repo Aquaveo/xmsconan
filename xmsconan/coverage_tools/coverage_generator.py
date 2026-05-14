@@ -1,9 +1,11 @@
 """Unified coverage runner for xmsconan libraries.
 
-Runs a single instrumented build (testing=True, pybind=True, build_type=Debug)
-under XMS_COVERAGE=1, then produces C++ (gcovr) and Python (pytest-cov)
-coverage reports. Compares actuals to thresholds from build.toml and exits
-non-zero on regression.
+Runs a single instrumented build (pybind=True, build_type=Debug, pinned to one
+``python_version``) under XMS_COVERAGE=1, then produces C++ (gcovr) and Python
+(pytest-cov) coverage reports. ``pytest-cov`` exercises the wheel's underlying
+C++, which yields the .gcda files gcovr needs — no separate CxxTest build is
+required for coverage to be meaningful (see issue #64). Compares actuals to
+thresholds from build.toml and exits non-zero on regression.
 """
 # 1. Standard python modules
 import argparse
@@ -29,6 +31,26 @@ from xmsconan.generator_tools.ci_file_generator import _coverage_context
 LOGGER = logging.getLogger(__name__)
 
 _XVFB_REEXEC_FLAG = "XMSCONAN_COVERAGE_XVFB_REEXEC"
+
+_DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
+
+
+def _resolve_coverage_python_version(toml_data: dict) -> str:
+    """Pick the single python_version the coverage build should pin to.
+
+    Precedence: ``[coverage].python_version`` (explicit opt-in) >
+    highest entry in ``[ci].python_versions`` > the global default
+    (``"3.13"``). Coverage runs a single instrumented build, so we must
+    commit to one ABI up front rather than let ``_find_coverage_package``
+    return whichever pybind config happened to finish last (see issue
+    #65).
+    """
+    coverage_cfg = toml_data.get("coverage", {})
+    explicit = coverage_cfg.get("python_version")
+    if explicit:
+        return str(explicit)
+    ci_versions = toml_data.get("ci", {}).get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]
+    return max(ci_versions, key=lambda v: tuple(int(p) for p in str(v).split(".")))
 
 
 def _configure_logging(args):
@@ -90,10 +112,22 @@ def _run(cmd, env=None, cwd=None):
     subprocess.run(cmd, env=env, cwd=cwd, check=True)
 
 
-def _find_coverage_package(library_name: str) -> tuple[str, str]:
-    """Locate the testing+pybind+Debug package in the local Conan cache.
+def _find_coverage_package(library_name: str, python_version: str) -> tuple[str, str]:
+    """Locate the pybind+Debug package in the local Conan cache.
 
     Returns (exact_ref, package_id) for the newest matching revision.
+
+    The matcher requires ``pybind=True`` and ``build_type=Debug`` but does
+    *not* require ``testing=True`` — the packager never produces a config
+    with both ``testing=True`` and ``pybind=True`` (they are mutually
+    exclusive derivatives of the base combinations list, see issue #64),
+    and a pybind-only build is sufficient: ``pytest-cov`` exercises the
+    wheel's underlying C++ which is what produces the .gcda files gcovr
+    needs.
+
+    ``python_version`` pins the result to a single Python ABI so multi-
+    version fan-outs cannot non-deterministically pick whichever pybind
+    config finished last (see issue #65).
     """
     result = subprocess.run(
         ["conan", "list", f"{library_name}/*:*", "--format=json"],
@@ -108,17 +142,18 @@ def _find_coverage_package(library_name: str) -> tuple[str, str]:
                 info = pinfo.get("info", {})
                 opts = info.get("options", {})
                 settings = info.get("settings", {})
-                if not _opt_is_truthy(opts.get("testing")):
-                    continue
                 if not _opt_is_truthy(opts.get("pybind")):
                     continue
                 if settings.get("build_type") != "Debug":
                     continue
+                if opts.get("python_version") != python_version:
+                    continue
                 candidates.append((ts, exact_ref, pid))
     if not candidates:
         raise RuntimeError(
-            f"No testing=True, pybind=True, build_type=Debug package found for {library_name} "
-            "in the local Conan cache. Did the coverage build complete?"
+            f"No pybind=True, build_type=Debug, python_version={python_version} package "
+            f"found for {library_name} in the local Conan cache. Did the coverage build "
+            "complete?"
         )
     candidates.sort(reverse=True)
     _, exact_ref, pid = candidates[0]
@@ -231,6 +266,7 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     library_name = toml_data["library_name"]
     ci_config = toml_data.get("ci", {})
     coverage_cfg = _coverage_context(toml_data.get("coverage", {}), library_name)
+    coverage_python_version = _resolve_coverage_python_version(toml_data)
 
     if ci_config.get("xvfb"):
         _reexec_under_xvfb()
@@ -242,18 +278,28 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
         cwd=str(output_dir),
     )
 
-    # 2. Single instrumented build: testing + pybind + Debug. A test failure
-    #    inside conan create's test phase must NOT abort the rest of the run —
-    #    the artifacts and step summary are most valuable exactly when a test
-    #    failed, so we record the failure and press on.
+    # 2. Single instrumented build: pybind + Debug, pinned to one python
+    #    ABI. A test failure inside conan create's test phase must NOT abort
+    #    the rest of the run — the artifacts and step summary are most
+    #    valuable exactly when a test failed, so we record the failure and
+    #    press on.
+    #
+    #    Notes:
+    #      * No ``testing=True`` — the packager never emits a config that
+    #        is both ``testing=True`` and ``pybind=True`` (see issue #64),
+    #        and pytest-cov against the wheel produces the .gcda files
+    #        gcovr needs without a CxxTest build.
+    #      * ``python_version`` is pinned so a multi-version fan-out
+    #        cannot leave ``_find_coverage_package`` picking whichever
+    #        pybind config finished last (issue #65).
     env = os.environ.copy()
     env["XMS_COVERAGE"] = "1"
-    # XmsConanPackager.filter_configurations only honors pybind/testing when
-    # they are nested under "options" — a flat dict here silently drops them
+    # XmsConanPackager.filter_configurations only honors options when
+    # nested under "options" — a flat dict here silently drops them
     # (see issue #62), which would widen the build to every Debug config.
     filter_arg = json.dumps({
         "build_type": "Debug",
-        "options": {"testing": True, "pybind": True},
+        "options": {"pybind": True, "python_version": coverage_python_version},
     })
     tests_failed = False
     try:
@@ -271,7 +317,7 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
         )
 
     # 3. Find the build/source folder for the instrumented package.
-    exact_ref, pid = _find_coverage_package(library_name)
+    exact_ref, pid = _find_coverage_package(library_name, coverage_python_version)
     ref_with_pid = f"{exact_ref}:{pid}"
     build_folder = _conan_cache_path(ref_with_pid, "build")
     source_folder = _conan_cache_path(ref_with_pid, "source")
