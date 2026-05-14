@@ -9,6 +9,7 @@ import pytest
 
 from xmsconan.coverage_tools.coverage_generator import (
     _append_github_summary,
+    _conan_cache_path,
     _cpp_percent_from_summary,
     _find_coverage_package,
     _py_percent_from_summary,
@@ -357,6 +358,63 @@ class TestResolveCoveragePythonVersion:
         """An empty list in [ci] is treated like the key was missing."""
         toml_data = {"ci": {"python_versions": []}}
         assert _resolve_coverage_python_version(toml_data) == "3.13"
+
+
+class TestConanCachePath:
+    """`conan cache path --folder` reference-shape requirements (issue #66).
+
+    Conan 2 requires:
+      * a package reference (``ref:pid``) for per-package folders (``build``,
+        and the default unnamed package folder),
+      * a *recipe* reference (``ref`` only) for ``source``, ``export``, and
+        ``export_source`` — those folders are shared across all packages
+        built from the same recipe revision so a pid is meaningless and the
+        CLI rejects it with ``'--folder source' requires a recipe reference``.
+
+    The previous helper passed whatever shape the caller supplied straight
+    through, which broke ``run_coverage``'s ``source_folder`` lookup.
+    """
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_strips_pid_for_source_folder(self, mock_run):
+        """``--folder=source`` must receive the recipe ref only (no ``:pid``)."""
+        mock_run.return_value = MagicMock(stdout="/some/source/path\n")
+        _conan_cache_path("xmscore/0.0.0:abc123", "source")
+        cmd = mock_run.call_args[0][0]
+        assert "xmscore/0.0.0" in cmd
+        assert "xmscore/0.0.0:abc123" not in cmd, (
+            "source folder lookup must use the recipe reference, not the "
+            "package reference — conan rejects ref:pid for --folder=source"
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_strips_pid_for_export_folders(self, mock_run):
+        """``export`` and ``export_source`` are recipe-scoped too."""
+        mock_run.return_value = MagicMock(stdout="/p\n")
+        for folder in ("export", "export_source"):
+            _conan_cache_path("xmscore/0.0.0:abc123", folder)
+            cmd = mock_run.call_args[0][0]
+            assert "xmscore/0.0.0:abc123" not in cmd, (
+                f"--folder={folder} must use the recipe reference"
+            )
+            assert "xmscore/0.0.0" in cmd
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_keeps_pid_for_build_folder(self, mock_run):
+        """``--folder=build`` is per-package; the pid must remain."""
+        mock_run.return_value = MagicMock(stdout="/some/build/path\n")
+        _conan_cache_path("xmscore/0.0.0:abc123", "build")
+        cmd = mock_run.call_args[0][0]
+        assert "xmscore/0.0.0:abc123" in cmd, (
+            "build folder lookup must keep the package id — the build "
+            "folder is per-package"
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_returns_path_from_stdout(self, mock_run):
+        """The trimmed stdout becomes the returned Path."""
+        mock_run.return_value = MagicMock(stdout="  /trimmed/path  \n")
+        assert _conan_cache_path("xmscore/0.0.0:abc", "build") == Path("/trimmed/path")
 
 
 class TestRunCoverageThresholdGating:
