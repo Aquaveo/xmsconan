@@ -175,11 +175,12 @@ def test_pybind_and_testing_are_never_combined_in_one_config():
     for coverage_flag in (True, False):
         p = XmsConanPackager("xmscore", coverage=coverage_flag)
         p.generate_configurations(system_platform="linux")
-        combined = [
-            c for c in p.configurations
-            if c["options"].get("pybind") is True
-            and c["options"].get("testing") is True
-        ]
+        combined = []
+        for c in p.configurations:
+            pybind_on = c["options"].get("pybind") is True
+            testing_on = c["options"].get("testing") is True
+            if pybind_on and testing_on:
+                combined.append(c)
         assert not combined, (
             f"pybind=True+testing=True must never be emitted "
             f"(coverage={coverage_flag}); got {len(combined)} such configs: "

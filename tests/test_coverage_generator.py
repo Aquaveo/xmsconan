@@ -963,12 +963,14 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = capture
+
         # _find_coverage_package is called once per kind; route by kind.
         def find(library_name, *, kind, python_version=None):
             if kind == "testing":
                 return ("xmscore/0.0.0", "pid-cpp")
             return ("xmscore/0.0.0", "pid-py")
         mock_find.side_effect = find
+
         # _conan_cache_path returns the corresponding build folder per pid.
         def cache_path(ref_with_pid, folder):
             if "pid-cpp" in ref_with_pid:
@@ -1010,7 +1012,7 @@ class TestRunCoverageThresholdGating:
     def test_gcovr_runs_against_testing_build_folder_not_pybind(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """gcovr must read .gcda from the testing-only build folder.
+        """Run gcovr against the testing-only build folder, not pybind.
 
         The pybind-only build also has --coverage instrumentation, but the
         C++ coverage signal comes from the CxxTest runner, which only
@@ -1031,12 +1033,16 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = capture
+
         def find(library_name, *, kind, python_version=None):
             return ("xmscore/0.0.0",
                     "pid-cpp" if kind == "testing" else "pid-py")
         mock_find.side_effect = find
+
         def cache_path(ref_with_pid, folder):
-            return cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
+            if "pid-cpp" in ref_with_pid:
+                return cpp_build_folder
+            return py_build_folder
         mock_path.side_effect = cache_path
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
