@@ -1,11 +1,19 @@
 """Unified coverage runner for xmsconan libraries.
 
-Runs a single instrumented build (pybind=True, build_type=Debug, pinned to one
-``python_version``) under XMS_COVERAGE=1, then produces C++ (gcovr) and Python
-(pytest-cov) coverage reports. ``pytest-cov`` exercises the wheel's underlying
-C++, which yields the .gcda files gcovr needs — no separate CxxTest build is
-required for coverage to be meaningful (see issue #64). Compares actuals to
-thresholds from build.toml and exits non-zero on regression.
+Runs two independent instrumented builds under XMS_COVERAGE=1:
+
+  * ``testing=True, pybind=False, Debug`` — drives CxxTest. gcovr reads
+    the .gcda set from this build folder for C++ line coverage.
+  * ``pybind=True, testing=False, Debug`` (pinned ``python_version``) —
+    drives ``pytest-cov`` against the wheel. The pytest-cov JSON/XML/HTML
+    artifacts are copied up out of this build folder for Python coverage.
+
+Combining the two flags in one Conan config was a fragile carve-out that
+existed nowhere else in the matrix; this split lets the coverage configs
+match shapes the rest of CI already builds, so a regression in
+``testing_sources`` linkage or pybind ABI can no longer take Coverage
+offline. Compares actuals to ``[coverage]`` thresholds from build.toml and
+exits non-zero on regression.
 """
 # 1. Standard python modules
 import argparse
@@ -468,14 +476,24 @@ def _append_github_summary(rows: list[tuple[str, float, float, bool]]):
 
 
 def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
-    """Drive a single-build coverage run.
+    """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
-    Returns the process exit code (0 = pass, non-zero = threshold failure).
+    The packager emits a Debug+testing-only config and a Debug+pybind-only
+    config independently; this function builds each in sequence, runs
+    gcovr against the testing build folder, and copies pytest-cov
+    artifacts out of the pybind build folder. The two builds never
+    share a binary shape, so changes to CxxTest linkage or pybind
+    options cannot break the other layer.
+
+    Returns the process exit code (0 = pass, non-zero = threshold failure
+    or a build.py failure in either layer).
     """
     toml_file = Path(toml_file_path).resolve()
     output_dir = Path(output_dir).resolve()
     if not toml_file.exists():
-        raise FileNotFoundError(f"The specified TOML file does not exist: {toml_file_path}")
+        raise FileNotFoundError(
+            f"The specified TOML file does not exist: {toml_file_path}"
+        )
 
     toml_data = _load_toml(toml_file)
     library_name = toml_data["library_name"]
@@ -493,83 +511,85 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
         cwd=str(output_dir),
     )
 
-    # 2. Single instrumented build: pybind + testing + Debug, pinned to
-    #    one python ABI. A test failure inside conan create's test phase
-    #    must NOT abort the rest of the run — the artifacts and step
-    #    summary are most valuable exactly when a test failed, so we
-    #    record the failure and press on.
-    #
-    #    Notes:
-    #      * ``testing=True`` AND ``pybind=True`` — the packager carves
-    #        out a combined config exclusively under ``XMS_COVERAGE=1``
-    #        (see ``XmsConanPackager.generate_configurations``) so that
-    #        the recipe's ``build()`` runs both ``run_cxx_tests`` and
-    #        ``run_python_tests`` against the same instrumented binary.
-    #        Both runs contribute ``.gcda`` data to the same ``.gcno``
-    #        set; gcovr collects the union. Without ``testing=True``,
-    #        gcovr would only see C++ reachable through pybind bindings.
-    #      * ``python_version`` is pinned so a multi-version fan-out
-    #        cannot leave ``_find_coverage_package`` picking whichever
-    #        pybind config finished last (issue #65).
     env = os.environ.copy()
     env["XMS_COVERAGE"] = "1"
-    # XmsConanPackager.filter_configurations only honors options when
-    # nested under "options" — a flat dict here silently drops them
-    # (see issue #62), which would widen the build to every Debug config.
-    filter_arg = json.dumps({
-        "build_type": "Debug",
-        "options": {
-            "pybind": True,
-            "testing": True,
-            "python_version": coverage_python_version,
-        },
-    })
     tests_failed = False
+
+    # 2. C++ coverage build: testing=True, pybind=False, Debug. Drives
+    #    CxxTest under --coverage, producing the .gcda set gcovr reads.
+    cpp_filter = json.dumps({
+        "build_type": "Debug",
+        "options": {"testing": True, "pybind": False},
+    })
     try:
         _run(
-            [sys.executable, "build.py", "--version", version, "--filter", filter_arg],
+            [sys.executable, "build.py", "--version", version, "--filter", cpp_filter],
             env=env, cwd=str(output_dir),
         )
     except subprocess.CalledProcessError as exc:
         tests_failed = True
         LOGGER.error(
-            "build.py exited %s during the coverage build; continuing through "
-            "gcovr and artifact collection so partial coverage and the step "
-            "summary remain available.",
+            "build.py exited %s during the C++ coverage build; continuing "
+            "so partial artifacts and the Python build still happen.",
             exc.returncode,
         )
 
-    # 3. Find the build folder for the instrumented package. The conan
-    #    source folder is intentionally not looked up: ``cmake_layout()``
-    #    copies sources into the build folder before compilation, so
-    #    every ``.gcno`` path points under ``build_folder`` and the
-    #    recipe-scoped source folder is irrelevant to gcovr.
-    exact_ref, pid = _find_coverage_package(library_name, coverage_python_version)
-    ref_with_pid = f"{exact_ref}:{pid}"
-    build_folder = _conan_cache_path(ref_with_pid, "build")
-    LOGGER.info("Coverage build folder:  %s", build_folder)
+    # 3. Python coverage build: pybind=True, testing=False, Debug, pinned
+    #    to one Python ABI. Drives pytest-cov against the wheel inside the
+    #    recipe's run_python_tests.
+    py_filter = json.dumps({
+        "build_type": "Debug",
+        "options": {
+            "pybind": True,
+            "testing": False,
+            "python_version": coverage_python_version,
+        },
+    })
+    try:
+        _run(
+            [sys.executable, "build.py", "--version", version, "--filter", py_filter],
+            env=env, cwd=str(output_dir),
+        )
+    except subprocess.CalledProcessError as exc:
+        tests_failed = True
+        LOGGER.error(
+            "build.py exited %s during the Python coverage build; continuing "
+            "through gcovr and artifact collection so partial coverage "
+            "remains available.",
+            exc.returncode,
+        )
 
-    # 4. Generate C++ coverage report via gcovr.
-    cpp_summary = _run_gcovr(build_folder, coverage_cfg, output_dir)
+    # 4. Locate the two build folders. gcovr reads .gcda from the testing
+    #    folder; pytest-cov artifacts live under the pybind folder.
+    cpp_ref, cpp_pid = _find_coverage_package(library_name, kind="testing")
+    cpp_build_folder = _conan_cache_path(f"{cpp_ref}:{cpp_pid}", "build")
+    LOGGER.info("C++ coverage build folder:    %s", cpp_build_folder)
 
-    # 5. Locate Python coverage artifacts produced inside the build folder by
-    #    run_python_tests, and copy them up to the workspace root. The recipe
-    #    writes them into a layout-specific subdirectory (e.g.
-    #    ``<build_folder>/build/Debug/``), not the conan-managed build root,
-    #    so we walk to find them regardless of depth (see issue #71).
+    py_ref, py_pid = _find_coverage_package(
+        library_name, kind="pybind",
+        python_version=coverage_python_version,
+    )
+    py_build_folder = _conan_cache_path(f"{py_ref}:{py_pid}", "build")
+    LOGGER.info("Python coverage build folder: %s", py_build_folder)
+
+    # 5. Generate C++ coverage report via gcovr against the testing build.
+    cpp_summary = _run_gcovr(cpp_build_folder, coverage_cfg, output_dir)
+
+    # 6. Locate Python coverage artifacts produced inside the pybind build
+    #    folder by run_python_tests, and copy them up to the workspace root.
     py_summary = output_dir / "cov-py-summary.json"
     py_summary_src = _find_pytest_cov_artifact(
-        build_folder, "cov-py-summary.json", kind="file",
+        py_build_folder, "cov-py-summary.json", kind="file",
     )
     if py_summary_src is not None:
         shutil.copy2(py_summary_src, py_summary)
-    py_xml_src = _find_pytest_cov_artifact(build_folder, "cov-py.xml", kind="file")
+    py_xml_src = _find_pytest_cov_artifact(
+        py_build_folder, "cov-py.xml", kind="file",
+    )
     if py_xml_src is not None:
         shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
-    # ``kind="dir"`` guards against a stale same-named *file* shadowing
-    # the real ``coverage-html-py/`` directory in mtime-collision order.
     py_html_src = _find_pytest_cov_artifact(
-        build_folder, "coverage-html-py", kind="dir",
+        py_build_folder, "coverage-html-py", kind="dir",
     )
     py_html_dst = output_dir / "coverage-html-py"
     if py_html_src is not None:
@@ -577,9 +597,8 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             shutil.rmtree(py_html_dst)
         shutil.copytree(py_html_src, py_html_dst)
 
-    # 6. Threshold gating. Compare raw percentages so a 69.95% build does not
-    #    sneak past a 70.0 threshold via display rounding; round only when
-    #    formatting for the log line and the GitHub step summary table.
+    # 7. Threshold gating. Compare raw percentages so a 69.95% build does
+    #    not sneak past a 70.0 threshold via display rounding.
     cpp_raw = _cpp_percent_from_summary(cpp_summary)
     py_raw = _py_percent_from_summary(py_summary) if py_summary.exists() else 0.0
     cpp_threshold = coverage_cfg["cpp_threshold"]

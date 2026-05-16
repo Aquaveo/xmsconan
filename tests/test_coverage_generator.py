@@ -721,7 +721,14 @@ class TestRunCoverageThresholdGating:
     """End-to-end gating logic with all subprocess calls mocked."""
 
     def _setup_workspace(self, tmp_path, *, cpp_percent, py_percent):
-        """Create a workspace with build.toml and fake coverage outputs."""
+        """Create a workspace with build.toml and fake coverage outputs.
+
+        Two build folders are created — one mirrors the C++ coverage
+        build (testing=True, pybind=False) and the other the Python
+        coverage build (pybind=True, testing=False). pytest-cov
+        artifacts are staged inside the pybind folder because that's
+        where ``run_python_tests`` writes them under the two-build flow.
+        """
         toml_file = tmp_path / "build.toml"
         toml_file.write_text(
             'library_name = "xmscore"\n'
@@ -733,14 +740,15 @@ class TestRunCoverageThresholdGating:
             'python_threshold = 70\n',
             encoding="utf-8",
         )
-        build_folder = tmp_path / "fake-build"
-        source_folder = tmp_path / "fake-source"
-        build_folder.mkdir()
-        source_folder.mkdir()
-        (build_folder / "cov-py-summary.json").write_text(
+        cpp_build_folder = tmp_path / "fake-cpp-build"
+        py_build_folder = tmp_path / "fake-py-build"
+        cpp_build_folder.mkdir()
+        py_build_folder.mkdir()
+        # pytest-cov artifacts live under the pybind build folder.
+        (py_build_folder / "cov-py-summary.json").write_text(
             json.dumps({"totals": {"percent_covered": py_percent}})
         )
-        (build_folder / "cov-py.xml").write_text("<coverage/>")
+        (py_build_folder / "cov-py.xml").write_text("<coverage/>")
 
         # gcovr is mocked to write the summary into the workspace.
         def fake_run(cmd, env=None, cwd=None, **_kw):
@@ -751,7 +759,7 @@ class TestRunCoverageThresholdGating:
                 )
             return MagicMock(returncode=0)
 
-        return toml_file, build_folder, source_folder, fake_run
+        return toml_file, cpp_build_folder, py_build_folder, fake_run
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -760,13 +768,17 @@ class TestRunCoverageThresholdGating:
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """Exits 0 when C++ and Python percentages both clear their thresholds."""
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=72.5, py_percent=71.2,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=72.5, py_percent=71.2,
+            )
         )
         mock_run.side_effect = fake_run
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -779,13 +791,17 @@ class TestRunCoverageThresholdGating:
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """Exits 1 when C++ percentage is below cpp_threshold."""
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=65.0, py_percent=85.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=65.0, py_percent=85.0,
+            )
         )
         mock_run.side_effect = fake_run
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -798,13 +814,17 @@ class TestRunCoverageThresholdGating:
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """Exits 1 when Python percentage is below python_threshold."""
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=85.0, py_percent=50.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=85.0, py_percent=50.0,
+            )
         )
         mock_run.side_effect = fake_run
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -817,13 +837,17 @@ class TestRunCoverageThresholdGating:
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """A raw 69.95% must not pass a 70.0 threshold via display rounding."""
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=69.95, py_percent=99.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=69.95, py_percent=99.0,
+            )
         )
         mock_run.side_effect = fake_run
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -836,8 +860,10 @@ class TestRunCoverageThresholdGating:
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """run_coverage passes --output_dir to xmsconan_gen instead of relying on cwd."""
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=80.0, py_percent=80.0,
+            )
         )
         captured_cmds = []
 
@@ -846,9 +872,11 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = capture
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -872,10 +900,13 @@ class TestRunCoverageThresholdGating:
         XmsConanPackager.filter_configurations silently dropped flat top-level
         keys before issue #62 was fixed (the packager now raises on unknown
         top-level keys, but this test pins the call site too so the
-        regression cannot come back via the coverage tool).
+        regression cannot come back via the coverage tool). Checked on
+        BOTH build.py invocations (testing-only and pybind-only).
         """
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=80.0, py_percent=80.0,
+            )
         )
         captured_cmds = []
 
@@ -884,9 +915,11 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = capture
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -896,37 +929,32 @@ class TestRunCoverageThresholdGating:
             if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
         ]
         assert build_cmds, "build.py should have been invoked"
-        cmd = build_cmds[0]
-        filter_idx = cmd.index("--filter")
-        filter_dict = json.loads(cmd[filter_idx + 1])
-        assert filter_dict["build_type"] == "Debug"
-        assert filter_dict.get("options", {}).get("pybind") is True
-        # And the bug-triggering shape must NOT come back: option keys
-        # must live under "options", never at the top level.
-        assert "pybind" not in filter_dict
-        assert "python_version" not in filter_dict
+        for cmd in build_cmds:
+            filter_idx = cmd.index("--filter")
+            filter_dict = json.loads(cmd[filter_idx + 1])
+            assert filter_dict["build_type"] == "Debug"
+            # Options must live under "options", never at the top level.
+            assert "pybind" not in filter_dict
+            assert "testing" not in filter_dict
+            assert "python_version" not in filter_dict
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
-    def test_build_py_filter_requests_testing_true(
+    def test_build_py_invoked_twice_with_disjoint_filters(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """The --filter must request testing=True alongside pybind=True.
+        """run_coverage drives TWO build.py invocations: testing-only, then pybind-only.
 
-        Under ``XMS_COVERAGE=1`` the packager carves out a combined
-        ``pybind=True+testing=True+Debug`` config so the recipe's
-        ``build()`` runs both ``run_cxx_tests`` (gated on ``testing``)
-        and ``run_python_tests`` (gated on ``pybind``) against the same
-        instrumented binary. Both runs contribute ``.gcda`` data to the
-        same ``.gcno`` set and gcovr collects the union. The filter
-        must pin to that combined config — without ``testing=True`` it
-        would match a plain ``pybind=True+Debug`` package (which is
-        also emitted under coverage, transitionally) and silently lose
-        the CxxTest contribution to C++ coverage.
+        Both flags appearing in the same Conan config is what produced
+        the recurring pybind-dlopen / CxxTest-symbol regressions. The split
+        moves CxxTest into one Conan create and pytest-cov into a different
+        Conan create so the two binary shapes never collide.
         """
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=80.0, py_percent=80.0,
+            )
         )
         captured_cmds = []
 
@@ -935,10 +963,18 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = capture
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
-        )
+        # _find_coverage_package is called once per kind; route by kind.
+        def find(library_name, *, kind, python_version=None):
+            if kind == "testing":
+                return ("xmscore/0.0.0", "pid-cpp")
+            return ("xmscore/0.0.0", "pid-py")
+        mock_find.side_effect = find
+        # _conan_cache_path returns the corresponding build folder per pid.
+        def cache_path(ref_with_pid, folder):
+            if "pid-cpp" in ref_with_pid:
+                return cpp_build_folder
+            return py_build_folder
+        mock_path.side_effect = cache_path
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
 
@@ -946,13 +982,76 @@ class TestRunCoverageThresholdGating:
             c for c in captured_cmds
             if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
         ]
-        cmd = build_cmds[0]
-        filter_idx = cmd.index("--filter")
-        filter_dict = json.loads(cmd[filter_idx + 1])
-        assert filter_dict.get("options", {}).get("testing") is True, (
-            "filter must request testing=True so the packager selects the "
-            "pybind=True+testing=True+Debug config that runs CxxTest + "
-            "pytest-cov against the same instrumented binary."
+        assert len(build_cmds) == 2, (
+            f"run_coverage must invoke build.py exactly twice (testing-only, "
+            f"then pybind-only); got {len(build_cmds)} invocation(s)."
+        )
+
+        filter_dicts = []
+        for cmd in build_cmds:
+            filter_idx = cmd.index("--filter")
+            filter_dicts.append(json.loads(cmd[filter_idx + 1]))
+
+        # First build is the testing-only one (C++ coverage).
+        assert filter_dicts[0]["options"]["testing"] is True
+        assert filter_dicts[0]["options"]["pybind"] is False
+        assert filter_dicts[0]["build_type"] == "Debug"
+
+        # Second build is the pybind-only one (Python coverage), pinned to
+        # one Python ABI.
+        assert filter_dicts[1]["options"]["pybind"] is True
+        assert filter_dicts[1]["options"]["testing"] is False
+        assert filter_dicts[1]["build_type"] == "Debug"
+        assert "python_version" in filter_dicts[1]["options"]
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_gcovr_runs_against_testing_build_folder_not_pybind(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """gcovr must read .gcda from the testing-only build folder.
+
+        The pybind-only build also has --coverage instrumentation, but the
+        C++ coverage signal comes from the CxxTest runner, which only
+        exists in the testing-only build. Running gcovr against the pybind
+        folder would either find no .gcda (tests never ran there) or only
+        the pybind-reachable surface — the very situation the original
+        pre-#64 design produced.
+        """
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=80.0, py_percent=80.0,
+            )
+        )
+        captured_cmds = []
+
+        def capture(cmd, env=None, cwd=None, **kw):
+            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = capture
+        def find(library_name, *, kind, python_version=None):
+            return ("xmscore/0.0.0",
+                    "pid-cpp" if kind == "testing" else "pid-py")
+        mock_find.side_effect = find
+        def cache_path(ref_with_pid, folder):
+            return cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
+        mock_path.side_effect = cache_path
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        gcovr_cmds = [
+            c for c in captured_cmds
+            if isinstance(c, list) and c and c[0] == "gcovr"
+        ]
+        assert gcovr_cmds, "gcovr should have been invoked"
+        cmd = gcovr_cmds[0]
+        root_idx = cmd.index("--root")
+        assert cmd[root_idx + 1] == str(cpp_build_folder), (
+            f"gcovr --root must be the testing build folder ({cpp_build_folder}); "
+            f"got {cmd[root_idx + 1]!r}. The pybind folder does not contain "
+            "CxxTest .gcda data."
         )
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
@@ -972,8 +1071,10 @@ class TestRunCoverageThresholdGating:
         any real ``.gcno`` path and gcovr silently filtered every file
         out, even when ``.gcno``/``.gcda`` data was present.
         """
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=80.0, py_percent=80.0,
+            )
         )
         captured_cmds = []
 
@@ -982,8 +1083,12 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = capture
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: build_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
+        )
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
 
@@ -994,16 +1099,12 @@ class TestRunCoverageThresholdGating:
         assert gcovr_cmds, "gcovr should have been invoked"
         cmd = gcovr_cmds[0]
 
-        # 1. --root must be the build folder, not the source folder.
+        # 1. --root must be the C++ (testing) build folder.
         root_idx = cmd.index("--root")
-        assert cmd[root_idx + 1] == str(build_folder), (
-            f"--root must be {build_folder!s}, got {cmd[root_idx + 1]!r}. "
+        assert cmd[root_idx + 1] == str(cpp_build_folder), (
+            f"--root must be {cpp_build_folder!s}, got {cmd[root_idx + 1]!r}. "
             "Anchoring against the source folder filters out every file "
             "since .gcno paths live under build_folder."
-        )
-        assert str(source_folder) not in cmd, (
-            "source_folder must not appear anywhere in the gcovr command — "
-            "it is irrelevant to .gcno path resolution."
         )
 
         # 2. The doubled --filter form must anchor against the build folder.
@@ -1021,7 +1122,7 @@ class TestRunCoverageThresholdGating:
         # an escaped build_folder prefix.
         import re as _re
         for entry in anchored:
-            real_source = f"{build_folder.as_posix()}/xmscore/math/math.cpp"
+            real_source = f"{cpp_build_folder.as_posix()}/xmscore/math/math.cpp"
             assert _re.search(entry, real_source), (
                 f"anchored filter {entry!r} must match a real .gcno-style "
                 f"absolute path under the build folder; tested against "
@@ -1034,7 +1135,7 @@ class TestRunCoverageThresholdGating:
     def test_build_py_filter_pins_python_version(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """The --filter pins a python_version derived from [ci].python_versions (issue #65)."""
+        """The pybind --filter pins a python_version from [ci].python_versions (issue #65)."""
         toml_file = tmp_path / "build.toml"
         toml_file.write_text(
             'library_name = "xmscore"\n'
@@ -1049,11 +1150,11 @@ class TestRunCoverageThresholdGating:
             'python_threshold = 70\n',
             encoding="utf-8",
         )
-        build_folder = tmp_path / "fake-build"
-        source_folder = tmp_path / "fake-source"
-        build_folder.mkdir()
-        source_folder.mkdir()
-        (build_folder / "cov-py-summary.json").write_text(
+        cpp_build_folder = tmp_path / "fake-cpp-build"
+        py_build_folder = tmp_path / "fake-py-build"
+        cpp_build_folder.mkdir()
+        py_build_folder.mkdir()
+        (py_build_folder / "cov-py-summary.json").write_text(
             json.dumps({"totals": {"percent_covered": 80.0}})
         )
 
@@ -1067,9 +1168,11 @@ class TestRunCoverageThresholdGating:
             return MagicMock(returncode=0)
 
         mock_run.side_effect = fake_run
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -1078,14 +1181,19 @@ class TestRunCoverageThresholdGating:
             c for c in captured_cmds
             if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
         ]
-        cmd = build_cmds[0]
-        filter_dict = json.loads(cmd[cmd.index("--filter") + 1])
+        # The second build is the pybind-only one; it carries python_version.
+        assert len(build_cmds) == 2
+        py_filter = json.loads(build_cmds[1][build_cmds[1].index("--filter") + 1])
         # Highest of ["3.10", "3.13"] is 3.13.
-        assert filter_dict["options"]["python_version"] == "3.13"
-        # _find_coverage_package must be told to pin to the same ABI so
-        # the lookup matches what the build produced.
-        find_call = mock_find.call_args
-        assert find_call.args[1] == "3.13" or find_call.kwargs.get("python_version") == "3.13"
+        assert py_filter["options"]["python_version"] == "3.13"
+        # _find_coverage_package must be told to pin to the same ABI for the
+        # pybind kind so the lookup matches what the build produced.
+        pybind_calls = [
+            c for c in mock_find.call_args_list
+            if c.kwargs.get("kind") == "pybind"
+        ]
+        assert pybind_calls, "_find_coverage_package must be called with kind='pybind'"
+        assert pybind_calls[0].kwargs.get("python_version") == "3.13"
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1098,8 +1206,10 @@ class TestRunCoverageThresholdGating:
         Coverage artifacts and the step summary are most valuable when a test
         failed; the tool exits non-zero but only after producing them.
         """
-        toml_file, build_folder, source_folder, fake_run = self._setup_workspace(
-            tmp_path, cpp_percent=99.0, py_percent=99.0,
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=99.0, py_percent=99.0,
+            )
         )
 
         def run_with_build_failure(cmd, env=None, cwd=None, **kw):
@@ -1109,9 +1219,11 @@ class TestRunCoverageThresholdGating:
             return fake_run(cmd, env=env, cwd=cwd, **kw)
 
         mock_run.side_effect = run_with_build_failure
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
@@ -1147,12 +1259,13 @@ class TestRunCoverageThresholdGating:
             'python_threshold = 70\n',
             encoding="utf-8",
         )
-        build_folder = tmp_path / "fake-build"
-        source_folder = tmp_path / "fake-source"
-        # Layout-specific subdir, mirroring what the recipe does:
-        layout_subdir = build_folder / "build" / "Debug"
+        cpp_build_folder = tmp_path / "fake-cpp-build"
+        py_build_folder = tmp_path / "fake-py-build"
+        cpp_build_folder.mkdir()
+        # Layout-specific subdir under the *pybind* build folder: under the
+        # two-build flow, pytest-cov artifacts live in the pybind build.
+        layout_subdir = py_build_folder / "build" / "Debug"
         layout_subdir.mkdir(parents=True)
-        source_folder.mkdir()
         # Stage pytest-cov artifacts at the *deep* path:
         (layout_subdir / "cov-py-summary.json").write_text(
             json.dumps({"totals": {"percent_covered": 82.5}})
@@ -1170,9 +1283,11 @@ class TestRunCoverageThresholdGating:
             return MagicMock(returncode=0)
 
         mock_run.side_effect = fake_run
-        mock_find.return_value = ("xmscore/0.0.0", "pid")
-        mock_path.side_effect = lambda _ref, kind: (
-            build_folder if kind == "build" else source_folder
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
