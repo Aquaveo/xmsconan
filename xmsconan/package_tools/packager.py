@@ -95,9 +95,12 @@ class XmsConanPackager(object):
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
             coverage: If True, allow Debug+pybind combinations in
                 ``generate_configurations`` so ``xmsconan_coverage`` can
-                produce its single instrumented build. When None, defaults to
-                ``True`` iff ``XMS_COVERAGE=1`` is set in the environment
-                (the var ``xmsconan_coverage`` sets before invoking build.py).
+                instrument the pybind variant for Python coverage. Also
+                exports ``XMS_COVERAGE=1`` into each profile's ``[buildenv]``
+                so CMake adds ``--coverage``. The testing-only Debug variant
+                that drives C++ coverage is always emitted (it does not
+                require this flag). When None, defaults to ``True`` iff
+                ``XMS_COVERAGE=1`` is set in the environment.
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
@@ -282,9 +285,10 @@ class XmsConanPackager(object):
         pybind_updated_builds = []
         for combination in combinations:
             # Debug+pybind is normally redundant (the Release wheel is what
-            # ships), but xmsconan_coverage needs a single Debug+pybind+testing
-            # build to instrument both layers from the same .gcno set — so
-            # relax the Debug gate when coverage is enabled.
+            # ships), but xmsconan_coverage needs a Debug+pybind build to
+            # instrument the Python-reachable C++ surface — so relax the
+            # Debug gate when coverage is enabled. The companion testing-only
+            # Debug build (emitted unconditionally below) handles C++ coverage.
             allow_debug = combination['build_type'] != 'Debug' or self._coverage
             if allow_debug and \
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
@@ -292,19 +296,10 @@ class XmsConanPackager(object):
                     continue
                 for py_version in self._python_versions:
                     pybind_options = copy.deepcopy(combination)
-                    options_update = {
+                    pybind_options['options'].update({
                         'pybind': True,
                         'python_version': py_version,
-                    }
-                    # Under XMS_COVERAGE the same Debug+pybind build also runs
-                    # CxxTest so gcovr sees the union of C++ exercised by the
-                    # cxx suite AND C++ exercised by pytest through the pybind
-                    # bindings. Without testing=True here, coverage measured
-                    # only the pybind-reachable surface — a small slice of
-                    # most xms libraries' actual C++.
-                    if self._coverage:
-                        options_update['testing'] = True
-                    pybind_options['options'].update(options_update)
+                    })
                     pybind_options['buildenv']['PYTHON_TARGET_VERSION'] = py_version
                     pybind_updated_builds.append(pybind_options)
 
