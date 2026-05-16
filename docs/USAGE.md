@@ -347,7 +347,7 @@ The generated jobs follow the pattern:
 
 `xmsconan coverage` (also available as the legacy `xmsconan_coverage` script) runs two instrumented Conan builds and produces both C++ and Python coverage reports. Configured via the `[coverage]` table in `build.toml` (§5.7).
 
-```
+```bash
 xmsconan coverage --version 0.0.0 build.toml
 ```
 
