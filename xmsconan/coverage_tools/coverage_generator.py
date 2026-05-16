@@ -114,25 +114,43 @@ def _run(cmd, env=None, cwd=None):
     subprocess.run(cmd, env=env, cwd=cwd, check=True)
 
 
-def _find_coverage_package(library_name: str, python_version: str) -> tuple[str, str]:
-    """Locate the pybind+testing+Debug package in the local Conan cache.
+def _find_coverage_package(
+    library_name: str, *, kind: str, python_version: Optional[str] = None,
+) -> tuple[str, str]:
+    """Locate a coverage-build package in the local Conan cache.
+
+    ``xmsconan_coverage`` drives two builds and discovers each here:
+
+      * ``kind="testing"`` matches ``testing=True``, ``pybind=False``,
+        ``build_type=Debug``. ``python_version`` is irrelevant — the
+        testing build does not depend on a Python ABI — and is ignored
+        if passed.
+      * ``kind="pybind"`` matches ``testing=False``, ``pybind=True``,
+        ``build_type=Debug``, and the pinned ``python_version``. Passing
+        ``python_version=None`` for this kind is a programming error and
+        raises ``ValueError``; the multi-version fan-out would otherwise
+        non-deterministically pick whichever ABI finished last (#65).
 
     Returns (exact_ref, package_id) for the newest matching revision.
-
-    The matcher requires ``pybind=True``, ``testing=True``, and
-    ``build_type=Debug``. The packager carves out a combined
-    ``pybind=True+testing=True+Debug`` config exclusively for coverage
-    runs (see ``XmsConanPackager.generate_configurations``); requiring
-    ``testing=True`` here ensures we do not accidentally pick up a
-    plain ``pybind=True+Debug`` package that a developer built locally
-    for some other reason. Both CxxTest and ``pytest-cov`` run against
-    the same build, contributing ``.gcda`` data to the same ``.gcno``
-    set so gcovr collects the union of both layers' C++ exercise.
-
-    ``python_version`` pins the result to a single Python ABI so multi-
-    version fan-outs cannot non-deterministically pick whichever pybind
-    config finished last (see issue #65).
     """
+    if kind == "testing":
+        want_pybind = False
+        want_testing = True
+        match_python_version = None
+    elif kind == "pybind":
+        if python_version is None:
+            raise ValueError(
+                "kind='pybind' requires python_version; otherwise the matcher "
+                "would pick whichever ABI finished last (issue #65)."
+            )
+        want_pybind = True
+        want_testing = False
+        match_python_version = python_version
+    else:
+        raise ValueError(
+            f"kind must be 'testing' or 'pybind', got {kind!r}"
+        )
+
     result = subprocess.run(
         ["conan", "list", f"{library_name}/*:*", "--format=json"],
         capture_output=True, text=True, check=True,
@@ -146,20 +164,25 @@ def _find_coverage_package(library_name: str, python_version: str) -> tuple[str,
                 info = pinfo.get("info", {})
                 opts = info.get("options", {})
                 settings = info.get("settings", {})
-                if not _opt_is_truthy(opts.get("pybind")):
+                if _opt_is_truthy(opts.get("pybind")) != want_pybind:
                     continue
-                if not _opt_is_truthy(opts.get("testing")):
+                if _opt_is_truthy(opts.get("testing")) != want_testing:
                     continue
                 if settings.get("build_type") != "Debug":
                     continue
-                if opts.get("python_version") != python_version:
+                if match_python_version is not None and \
+                        opts.get("python_version") != match_python_version:
                     continue
                 candidates.append((ts, exact_ref, pid))
     if not candidates:
+        desc = (
+            "testing=True, pybind=False, Debug" if kind == "testing"
+            else f"pybind=True, testing=False, Debug, "
+                 f"python_version={match_python_version}"
+        )
         raise RuntimeError(
-            f"No pybind=True, testing=True, build_type=Debug, "
-            f"python_version={python_version} package found for {library_name} "
-            f"in the local Conan cache. Did the coverage build complete?"
+            f"No {desc} package found for {library_name} in the local Conan "
+            f"cache. Did the {kind} coverage build complete?"
         )
     candidates.sort(reverse=True)
     _, exact_ref, pid = candidates[0]
