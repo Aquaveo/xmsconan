@@ -160,53 +160,31 @@ def test_pybind_debug_emitted_when_xms_coverage_env():
 
 
 @patch_env(clear=True)
-def test_coverage_pybind_variant_also_enables_testing():
-    """coverage=True must flip ``testing=True`` on the Debug+pybind variant.
+def test_pybind_and_testing_are_never_combined_in_one_config():
+    """The pybind=True+testing=True combination must never be emitted.
 
-    Without ``testing=True`` the recipe's ``build()`` only runs
-    pytest-cov against the wheel; the CxxTest runner is never compiled
-    or executed, and gcovr only sees the C++ surface reachable through
-    pybind11 bindings. xmscore's first instrumented run reported 9.4%
-    C++ for exactly this reason. With both flags on, ``run_cxx_tests``
-    and ``run_python_tests`` share the same ``.gcno`` set and gcovr
-    collects the union.
+    The packager's three derivative loops (wchar_t, pybind, testing) are
+    independent fan-outs that deliberately do not cross-multiply. The
+    coverage runner (``xmsconan_coverage``) drives two separate builds —
+    one ``testing=True+pybind=False`` for CxxTest C++ coverage and one
+    ``testing=False+pybind=True`` for pytest-cov Python coverage — so it
+    no longer needs a combined config. A combined config also broke at
+    pybind ``dlopen`` time when ``testing_sources`` linkage shifted (the
+    pybind ``.so`` carried unresolved CxxTest symbols into the venv).
     """
-    p = XmsConanPackager("xmscore", coverage=True)
-    p.generate_configurations(system_platform="linux")
-
-    debug_pybind = [
-        c for c in p.configurations
-        if c["build_type"] == "Debug" and c["options"].get("pybind") is True
-    ]
-    assert debug_pybind, "coverage=True must emit a Debug+pybind config"
-    for cfg in debug_pybind:
-        assert cfg["options"].get("testing") is True, (
-            f"Debug+pybind config under coverage=True is missing testing=True: "
-            f"{cfg['options']!r}. Without it, run_cxx_tests does not run and "
-            f"gcovr only sees the pybind-reachable C++ surface."
+    for coverage_flag in (True, False):
+        p = XmsConanPackager("xmscore", coverage=coverage_flag)
+        p.generate_configurations(system_platform="linux")
+        combined = [
+            c for c in p.configurations
+            if c["options"].get("pybind") is True
+            and c["options"].get("testing") is True
+        ]
+        assert not combined, (
+            f"pybind=True+testing=True must never be emitted "
+            f"(coverage={coverage_flag}); got {len(combined)} such configs: "
+            f"{[c['options'] for c in combined]!r}"
         )
-
-
-@patch_env(clear=True)
-def test_non_coverage_pybind_variant_does_not_enable_testing():
-    """The testing+pybind combination must NOT appear without coverage.
-
-    The packager's three derivative loops (wchar_t, pybind, testing)
-    deliberately do not cross-multiply — combining testing and pybind
-    on a release config would build a heavier binary than ships. The
-    coverage carve-out flips testing on the Debug+pybind variant only.
-    """
-    p = XmsConanPackager("xmscore", coverage=False)
-    p.generate_configurations(system_platform="linux")
-
-    combined = [
-        c for c in p.configurations
-        if c["options"].get("pybind") is True and c["options"].get("testing") is True
-    ]
-    assert not combined, (
-        f"pybind=True+testing=True must not be emitted when coverage=False, "
-        f"got {len(combined)} such configs"
-    )
 
 
 @patch_env({"XMS_COVERAGE": "1"}, clear=True)
