@@ -373,6 +373,24 @@ endif ()
 {{ post_library_cmake_text }}
 {%- endif %}
 
+# Map source files to Visual Studio filter folders that mirror their on-disk
+# directory structure. Lists every variable any target consumes; unused ones
+# (e.g. the pybind variables in a non-pybind build) silently expand to empty
+# and CMake skips them. Calling once at directory scope works because
+# source_group is registered per-file regardless of which target uses the
+# file. Variables MUST be unquoted: a quoted "${var}" with empty var would
+# expand to a literal empty-string filename and fail the TREE-root check.
+# Has no effect on generators that don't support source groups.
+source_group(TREE {{ '${' }}CMAKE_CURRENT_SOURCE_DIR}
+    FILES
+        {{ '${' }}{{ library_name }}_sources}
+        {{ '${' }}{{ library_name }}_headers}
+        {{ '${' }}{{ library_name }}_py}
+        {{ '${' }}{{ library_name }}_py_headers}
+        ${test_cpp_sources}
+        ${test_headers}
+)
+
 # Install recipe
 install(
         TARGETS ${PROJECT_NAME}
