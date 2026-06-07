@@ -31,6 +31,7 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan gen` | Generate build files from templates |
 | `xmsconan ci` | Generate CI pipeline files (GitLab/GitHub) from templates |
 | `xmsconan coverage` | Run unified C++/Python coverage (see `docs/USAGE.md` §11) |
+| `xmsconan format` | Format C++ (clang-format) and Python (yapf) code (see `docs/USAGE.md` §20) |
 | `xmsconan build` | Build XMS libraries |
 | `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |
 | `xmsconan wheel-repair` | Repair Python wheels for the current platform (Linux/macOS/Windows) |
