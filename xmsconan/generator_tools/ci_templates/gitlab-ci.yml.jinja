@@ -55,7 +55,7 @@ Conan Build:
     - gcc --version
     - cmake --version
     - python --version
-    - pip install conan xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install "conan~=2.31.0" "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
@@ -158,8 +158,8 @@ Conan Build:
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - echo ${PACKAGE_VERSION}
     - python --version
-    - pip install conan toml packaging devpi-client
-    - python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install "conan~=2.31.0" toml packaging devpi-client
+    - python -m pip install --upgrade "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
     - python build.py --version ${PACKAGE_VERSION} --artifacts-dir test_artifacts
@@ -175,7 +175,7 @@ Lint:
   script:
     - pip install flake8 flake8-docstrings flake8-bugbear flake8-import-order pep8-naming flake8-colors flake8-tidy-imports
     - pip install -i https://aquapi.aquaveo.com/aquaveo/dev/+simple/ flake8-aquaveo
-    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install --upgrade "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_gen --version 0.0.0 build.toml
     - flake8 _package
 
@@ -191,7 +191,7 @@ Repair Wheel:
   dependencies:
     - Conan Build
   script:
-    - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - /opt/python/cp313-cp313/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
   artifacts:
     expire_in: '1d'
@@ -205,7 +205,7 @@ Repair Wheel:
   dependencies:
     - Repair Wheel
   script:
-    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install --upgrade "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_wheel_deploy --wheel-dir wheelhouse
   only:
     - tags
@@ -220,7 +220,7 @@ Repair Wheel:
     - apt-get install -y python3-pip python3-venv
     - python3 -m venv .venv
     - source .venv/bin/activate
-    - pip install conan xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install "conan~=2.31.0" "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-linux-${PACKAGE_VERSION}.tar.gz --upload
@@ -249,7 +249,7 @@ Repair Wheel:
       - conan_packages/
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
-    - pip install conan xmsconan>=<< xmsconan_version >> -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install "conan~=2.31.0" "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload
     - mkdir -p conan_packages
@@ -277,8 +277,8 @@ Coverage:
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py3.13
 <% endif %>
   script:
-    - pip install conan "gcovr>=7,<9"
-    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install "conan~=2.31.0" "gcovr>=7,<9"
+    - pip install --upgrade "xmsconan==<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}

@@ -194,10 +194,10 @@ def test_both_templates_reference_same_xmsconan_version(tmp_path):
     ).read_text(encoding="utf-8")
     gl_content = (gl_out / ".gitlab-ci.yml").read_text(encoding="utf-8")
 
-    # Extract all xmsconan>=X.Y.Z references
+    # Extract all xmsconan==X.Y.Z references
     import re
-    gh_versions = set(re.findall(r"xmsconan>=([\d.]+)", gh_content))
-    gl_versions = set(re.findall(r"xmsconan>=([\d.]+)", gl_content))
+    gh_versions = set(re.findall(r"xmsconan==([\d.]+)", gh_content))
+    gl_versions = set(re.findall(r"xmsconan==([\d.]+)", gl_content))
 
     assert len(gh_versions) == 1, f"GitHub has multiple versions: {gh_versions}"
     assert len(gl_versions) == 1, f"GitLab has multiple versions: {gl_versions}"

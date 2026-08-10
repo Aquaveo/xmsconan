@@ -315,13 +315,55 @@ def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
 
 
 def test_github_ci_version_bump(ci_toml, tmp_path):
-    """Rendered GitHub CI references the current xmsconan version."""
+    """Rendered GitHub CI pins the current xmsconan version.
+
+    Build and deploy jobs pin with ``==`` so an xmsconan release cannot change
+    the Conan profiles (and therefore every package_id) underneath a repo that
+    has not changed. The Coverage canary intentionally still floats on ``>=``.
+    """
     from xmsconan import __version__
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert f"xmsconan>={__version__}" in content
+    assert f"xmsconan=={__version__}" in content
+    assert "xmsconan>=" not in content
+
+
+def test_github_flake_job_uses_generated_flake8_config(ci_toml, tmp_path):
+    """The flake job lints with the generated .flake8, not inline duplicates.
+
+    Inlining the settings duplicated .flake8.jinja, and the two copies drifted:
+    CI used a different ignore list and a stale sphinx conf.py exclude, so a
+    clean local run did not imply a clean CI run.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+
+    assert "flake8 _package" in content
+    # --isolated makes flake8 ignore .flake8 entirely, which is what allowed
+    # the two configs to diverge unnoticed.
+    assert "--isolated" not in content
+    assert "--max-line-length" not in content
+    # The config has to exist before flake8 runs.
+    assert "xmsconan_gen build.toml" in content
+
+
+def test_ci_pins_conan_version(ci_toml, tmp_path):
+    """Conan is pinned to a patch series, not installed unpinned.
+
+    A conan minor bump can change package_id computation and silently detach
+    a build from binaries already published to the remote.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = ci_file.read_text(encoding="utf-8")
+
+    assert '"conan~=' in content
+    assert "pip install conan " not in content
 
 
 def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
