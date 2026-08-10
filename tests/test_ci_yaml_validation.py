@@ -169,6 +169,47 @@ def test_gitlab_ci_stages_match_jobs(options, tmp_path):
             )
 
 
+@pytest.mark.parametrize("options", _OPTION_COMBOS, ids=_combo_id)
+def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
+    """Every 'needs' entry names a defined job and uses no unexpanded variables.
+
+    GitLab does not expand variables inside needs:parallel:matrix.  A selector
+    such as "PYTHON_TARGET_VERSION: $PYTHON_TARGET_VERSION" is compared as a
+    literal, matches no job, and fails the entire pipeline at config time with
+    "undefined need" — producing zero jobs rather than a failing job.
+    """
+    toml_file = _write_toml(tmp_path, "gitlab", options)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    ci_file = output_dir / ".gitlab-ci.yml"
+    parsed = yaml.safe_load(ci_file.read_text(encoding="utf-8"))
+
+    non_job_keys = {"stages", "variables", "pages"}
+    job_names = {
+        key for key, value in parsed.items()
+        if key not in non_job_keys and isinstance(value, dict)
+    }
+
+    for key, value in parsed.items():
+        if key in non_job_keys or not isinstance(value, dict):
+            continue
+        for entry in value.get("needs", []):
+            needed = entry["job"] if isinstance(entry, dict) else entry
+            assert needed in job_names, (
+                f"Job '{key}' needs '{needed}', which is not a defined job"
+            )
+            if not isinstance(entry, dict):
+                continue
+            for selector in entry.get("parallel", {}).get("matrix", []):
+                for var, selected in selector.items():
+                    assert "$" not in str(selected), (
+                        f"Job '{key}' needs '{needed}' with an unexpanded "
+                        f"variable in its matrix selector: {var}={selected}. "
+                        f"GitLab compares these literally."
+                    )
+
+
 # ---------------------------------------------------------------------------
 # Cross-template consistency
 # ---------------------------------------------------------------------------
