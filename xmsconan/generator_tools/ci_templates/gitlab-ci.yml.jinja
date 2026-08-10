@@ -237,11 +237,15 @@ Repair Wheel:
       - PYTHON_TARGET_VERSION: '<< v >>'
         PY_TAG: 'py<< v | replace(".", "") >>'
 <% endfor %>
+  # Depend on the whole build job rather than selecting one parallel instance.
+  # GitLab does not expand variables inside needs:parallel:matrix, so a selector
+  # like "PYTHON_TARGET_VERSION: $PYTHON_TARGET_VERSION" is compared literally,
+  # matches no job, and fails the whole pipeline at config time with
+  # "undefined need". Listing the matrix values instead would make every deploy
+  # instance need every build instance anyway, so this is equivalent and cannot
+  # drift out of sync with the matrix above.
   needs:
     - job: "Conan Build - Windows"
-      parallel:
-        matrix:
-          - PYTHON_TARGET_VERSION: $PYTHON_TARGET_VERSION
       artifacts: true
   artifacts:
     expire_in: '1d'
