@@ -67,6 +67,7 @@ All commands live under the `xmsconan` umbrella:
 |---|---|
 | `xmsconan gen` | Render build files (`conanfile.py`, `build.py`, `CMakeLists.txt`, `_package/pyproject.toml`, …) from `build.toml`. |
 | `xmsconan ci` | Render `.github/workflows/<Lib>-CI.yaml` or `.gitlab-ci.yml`. |
+| `xmsconan format` | Format C++ (clang-format) and Python (yapf) source in the current repo (see §20). |
 | `xmsconan build` | Run `conan install` + `cmake configure` against a single profile. Used by the generated `build.py`; also useful for one-off configures. |
 | `xmsconan conan-setup` | Detect a Conan profile, add the aquaveo remote, optionally login. |
 | `xmsconan wheel-repair` | Run platform-appropriate wheel repair (auditwheel / delocate / delvewheel). |
@@ -584,3 +585,44 @@ Each suffix means:
 - `_DYNAMIC` (MSVC) — Dynamic CRT (`MD`/`MDd`) instead of static (`MT`/`MTd`)
 
 For a custom mix, write your own profile that `include()`s entries from `xmsconan/build_tools/profiles/base/` and pass it via `--profile /path/to/profile`.
+
+---
+
+## 20. Formatting code (`xmsconan format`)
+
+`xmsconan format` (also available as the legacy `xmsconan_format` script) formats
+a library's source in place: C++ with `clang-format` and Python with `yapf`.
+Both tools ship as xmsconan dependencies, so on platforms that have prebuilt
+`clang-format`/`yapf` wheels the command works immediately after
+`pip install xmsconan` — no separate install needed.
+
+> **Version note.** The `clang-format` and `yapf` dependencies are unpinned
+> (latest release), so formatter output can shift when a new version is
+> published. Pin them in your environment if you need byte-stable formatting
+> across machines and over time.
+
+```bash
+xmsconan format                 # format the current repo (cwd)
+xmsconan format src tools       # format only these paths
+xmsconan format --check         # report files needing formatting, exit non-zero, change nothing
+xmsconan format --cpp-only      # C++ only (or --py-only for Python only)
+xmsconan format --exclude vendor --exclude third_party
+```
+
+What it does:
+
+- **Discovery** — walks each given path (default `.`), collecting C++
+  (`.cpp .cxx .cc .h .hpp .hxx`) and Python (`.py`) files. Build, VCS, and cache
+  directories (`build`, `dist`, `.git`, `.venv`, `__pycache__`, `*.egg-info`,
+  `.tox`, `node_modules`, `_package`, …) and `tests/fixtures` are skipped. Add
+  more with repeatable `--exclude DIR`.
+- **C++ style** — uses the repository's own `.clang-format` (clang-format's
+  normal auto-discovery; LLVM defaults if none is present).
+- **Python style** — a fixed style, `{based_on_style: facebook, column_limit: 120}`,
+  applied with `--no-local-style` so repo-local yapf config
+  (`.style.yapf` / `setup.cfg` / `[tool.yapf]`) is intentionally ignored.
+- **`--check`** — runs `clang-format --dry-run -Werror` and `yapf --diff`,
+  prints what would change, and exits non-zero if anything needs formatting
+  without modifying files. Use it as a CI gate.
+
+Run `xmsconan format --help` for the full flag set.
