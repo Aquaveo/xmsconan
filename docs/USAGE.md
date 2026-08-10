@@ -333,6 +333,7 @@ The generated jobs follow the pattern:
 - **Windows** matrix: `build_type × compiler-version × python-version=ci_python_versions` — only this job expands when you opt in to 3.10.
 - Wheel artifacts: `wheel-${{ runner.os }}` for mac/linux/arm, `wheel-${{ runner.os }}-py${{ matrix.python-version }}` for Windows so the two Python ABIs don't collide.
 - Linux containers stay on `conan-gcc13-py3.13:latest`.
+- The `flake` job installs xmsconan, runs `xmsconan_gen build.toml` to render `.flake8`, then runs plain `flake8 _package`. It deliberately does **not** pass flake8 settings on the command line: that duplicates `.flake8.jinja`, and the two copies drift apart silently (CI once used a different `ignore` list and a stale `conf.py` exclude, so a clean local run did not imply a clean CI run). Change lint settings in `.flake8.jinja` only.
 
 ### 10.2 GitLab specifics
 
@@ -340,6 +341,22 @@ The generated jobs follow the pattern:
 - `Conan Build - Windows`, `Conan Deploy - Windows`: `parallel:matrix` over `PYTHON_TARGET_VERSION`. The matrix also sets `PY_TAG` (`py310` / `py313`) which selects the runner via `image: GLR-${PY_TAG}`.
 - Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
+
+### 10.3 Pinned tool versions
+
+Build and deploy jobs pin the toolchain rather than floating it:
+
+| Tool | Spec | Why |
+|---|---|---|
+| `xmsconan` | `==<version that generated the file>` | xmsconan owns the Conan profiles, so a new release can change `compiler.version` — and therefore **every package_id** — under a repo that has not changed a line. |
+| `conan` | `~=2.31.0` (patch series) | Conan computes package_ids and runs the compatibility plugin; a minor bump can silently detach a build from binaries already on the remote. |
+
+The GitHub `Coverage.yaml` workflow is the deliberate exception and still floats on `>=` — it is the canary that surfaces xmsconan regressions early (see §11.4).
+
+Two consequences worth knowing:
+
+- **Generate CI from a released xmsconan.** With `==`, a workflow generated from an unreleased working copy pins a version that is not on devpi (e.g. `2.15.3.dev2`) and CI will fail to install it.
+- **Upgrades are explicit.** Picking up a new xmsconan or Conan means re-running `xmsconan ci` (and bumping the `conan~=` value in the CI templates) and committing the result — a reviewable change instead of a silent one.
 
 ---
 

@@ -14,7 +14,6 @@ project({{ library_name }}lib C CXX)
 # Cache variables
 set(BUILD_TESTING NO CACHE BOOL "Enable/Disable testing")
 set(IS_CONDA_BUILD NO CACHE BOOL "Set this if you want to make a conda package.")
-set(IS_EMSCRIPTEN_BUILD NO CACHE BOOL "Set this to build with emscripten using cmake.")
 set(PYTHON_TARGET_VERSION 3.13 CACHE STRING "Version of python to link to for python wrapping.")
 set(CONDA_PREFIX "" CACHE PATH "Path to the conda environment used to build.")
 set(IS_PYTHON_BUILD NO CACHE BOOL "Set this if you want to build the python bindings.")
@@ -57,9 +56,7 @@ add_definitions(-DXMS_VERSION=\"${XMS_VERSION}\")
 
 if (IS_CONDA_BUILD)
     include(${CMAKE_CURRENT_LIST_DIR}/condabuildinfo.cmake)
-elseif (IS_EMSCRIPTEN_BUILD)
-    include(${CMAKE_CURRENT_LIST_DIR}/emscriptenbuildinfo.cmake)
-else () # If we are not using conda or emscripten, we are using conan
+else () # If we are not using conda, we are using conan
     # Conan 2 setup
     {%- for dependency in xms_dependencies -%}{{ '\n    ' }}find_package({{ dependency.name }} REQUIRED){% endfor %}
     find_package(Boost REQUIRED)
