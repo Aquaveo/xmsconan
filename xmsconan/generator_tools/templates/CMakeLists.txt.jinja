@@ -121,17 +121,28 @@ if (BUILD_TESTING)
          {%- for header in testing_headers -%}{{ '\n         ' }}{{ header }}{% endfor %}
     )
 
-    # testing_sources are deliberately NOT appended to {{ library_name }}_sources.
-    # They are compiled directly into the runner target below (per the documented
-    # contract: "testing_sources are compiled into the test runner only").
-    # Putting them in the main static library makes them leak into anything that
-    # links the library — including the pybind module under IS_PYTHON_BUILD —
-    # which produces undefined-symbol errors against cxxtest helpers like
-    # CxxTest::charToString (defined only in cxxtest/ValueTraits.cpp, which is
-    # not transitively pulled by ValueTraits.h).
     set({{ library_name }}_testing_sources
         {%- for source in testing_sources -%}{{ '\n        ' }}{{ source }}{% endfor %}
     )
+
+    # testing_sources are compiled into the main library so dependent libraries
+    # can link the testing helpers (xmscore's ttEqualPointsXYZ, ttTextFilesEqual,
+    # ...) out of the package they already consume.
+    #
+    # They are excluded under IS_PYTHON_BUILD. The pybind module links the main
+    # library, and these translation units reference cxxtest helpers such as
+    # CxxTest::charToString — declared in cxxtest/ValueTraits.h but defined only
+    # in cxxtest/ValueTraits.cpp, which is pulled in solely by the
+    # cxxtestgen-generated runner.cpp via Root.cpp. A pybind module carrying them
+    # fails dlopen with an undefined symbol.
+    #
+    # The packager never emits pybind=True+testing=True (asserted by
+    # test_pybind_and_testing_are_never_combined_in_one_config), so for generated
+    # configurations this guard is belt-and-braces; it protects hand-built and
+    # option-overridden builds.
+    if (NOT IS_PYTHON_BUILD)
+        list(APPEND {{ library_name }}_sources ${{ '{' }}{{ library_name }}_testing_sources})
+    endif ()
 {% if testing_framework == "gtest" %}
     # Google Test configuration
     # Tests are in *.cpp files guarded by #ifdef GTEST_ENABLED, with fixtures declared in *.t.h
@@ -168,8 +179,14 @@ if (BUILD_TESTING)
     add_executable(runner
         ${CMAKE_CURRENT_BINARY_DIR}/runner.cpp
         ${test_cpp_sources}
-        ${{ '{' }}{{ library_name }}_testing_sources}
     )
+    # Only under IS_PYTHON_BUILD are the testing sources absent from the library
+    # (see above), so only then must the runner compile them itself. Otherwise it
+    # picks them up by linking ${PROJECT_NAME}, and compiling them here as well
+    # would duplicate every translation unit.
+    if (IS_PYTHON_BUILD AND {{ library_name }}_testing_sources)
+        target_sources(runner PRIVATE ${{ '{' }}{{ library_name }}_testing_sources})
+    endif ()
     target_link_libraries(runner
         ${PROJECT_NAME}
         GTest::gtest
@@ -249,7 +266,11 @@ if (BUILD_TESTING)
         CXXTEST_ADD_TEST(
                 runner runner.cpp ${test_headers}
         )
-        if ({{ library_name }}_testing_sources)
+        # Only under IS_PYTHON_BUILD are the testing sources absent from the
+        # library (see above), so only then must the runner compile them itself.
+        # Otherwise it picks them up by linking ${PROJECT_NAME}, and compiling
+        # them here as well would duplicate every translation unit.
+        if (IS_PYTHON_BUILD AND {{ library_name }}_testing_sources)
             target_sources(runner PRIVATE ${{ '{' }}{{ library_name }}_testing_sources})
         endif ()
         target_link_libraries(runner ${PROJECT_NAME})

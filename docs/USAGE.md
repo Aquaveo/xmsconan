@@ -95,7 +95,7 @@ Run `xmsconan <cmd> --help` for the full flag set. The legacy underscored names 
 |---|---|---|
 | `library_sources` | `[]` | C++ implementation files (`.cpp`) for the static library. |
 | `library_headers` | `[]` | Public headers exported to consumers. |
-| `testing_sources` | `[]` | `.cpp` files compiled into the test runner only. |
+| `testing_sources` | `[]` | `.cpp` files compiled into the library when `testing=True`, so dependent libraries can link the testing helpers. Excluded from Python builds — see the note below. |
 | `testing_headers` | `[]` | Test fixture / helper headers (`*.t.h` for cxxtest). |
 | `python_library_sources` | `[]` | C++ files compiled only when `pybind=True`. |
 | `python_library_headers` | `[]` | Headers compiled only when `pybind=True`. |
@@ -103,6 +103,28 @@ Run `xmsconan <cmd> --help` for the full flag set. The legacy underscored names 
 | `pybind_headers` | `[]` | Pybind11 binding headers. |
 
 Paths are interpreted relative to the directory `build.toml` lives in.
+
+#### Where `testing_sources` end up
+
+Under `testing=True` they are compiled into the library itself, and the test
+runner picks them up by linking it. This is deliberate: xms libraries publish
+testing helpers (xmscore's `ttEqualPointsXYZ`, `ttTextFilesEqual`, ...) that
+downstream libraries link from the package they already consume, so the helpers
+have to live in the library that gets packaged.
+
+Under `pybind=True` they are excluded from the library and the runner compiles
+them directly instead. The pybind module links the main library, and these
+translation units reference cxxtest helpers such as `CxxTest::charToString` —
+declared in `cxxtest/ValueTraits.h` but defined only in
+`cxxtest/ValueTraits.cpp`, which is pulled in solely by the cxxtestgen-generated
+`runner.cpp`. A pybind module carrying them fails `dlopen` with an undefined
+symbol.
+
+The two options are never combined in a generated configuration (the packager
+fans out `wchar_t`, `pybind` and `testing` independently rather than
+cross-multiplying), so in practice `testing=True` always means the helpers are
+in the library. The `IS_PYTHON_BUILD` guard exists for hand-built and
+option-overridden configurations.
 
 ### 5.3 Dependencies
 

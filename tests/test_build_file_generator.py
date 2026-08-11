@@ -418,6 +418,64 @@ def test_cmake_template_emits_source_group_tree(tmp_path):
         assert f'"{var}"' not in content, f"{var} must not be quoted in source_group call"
 
 
+@pytest.mark.parametrize("framework", ["cxxtest", "gtest"])
+def test_testing_sources_are_compiled_into_the_library(framework, tmp_path):
+    """testing_sources go into the library, guarded against Python builds.
+
+    xms libraries publish testing helpers (xmscore's ``ttEqualPointsXYZ``,
+    ``ttTextFilesEqual``, ...) that dependent libraries link out of the package
+    they already consume, so the helpers must be in the packaged library rather
+    than only in the test runner.
+
+    The ``IS_PYTHON_BUILD`` guard keeps them out of the pybind module, whose
+    link closure contains no definition of cxxtest's ``CxxTest::charToString``
+    (defined only in ``cxxtest/ValueTraits.cpp``, pulled in solely by the
+    cxxtestgen-generated ``runner.cpp``).
+
+    Both directions are asserted, because losing either one is silent: the
+    library loses helpers downstream libraries link, or the pybind module
+    regains an undefined symbol that only shows up at dlopen time.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'python_namespaced_dir = "core"\n'
+        f'testing_framework = "{framework}"\n'
+        'library_sources = []\n'
+        'library_headers = []\n'
+        'testing_sources = ["xmscore/testing/TestTools.cpp"]\n'
+        'testing_headers = []\n'
+        'pybind_sources = []\n'
+        'pybind_headers = []\n',
+        encoding="utf-8",
+    )
+
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("CMakeLists.txt.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    content = (output_dir / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    # The library picks them up for non-Python builds.
+    assert "if (NOT IS_PYTHON_BUILD)" in content
+    assert "list(APPEND xmscore_sources ${xmscore_testing_sources})" in content
+
+    # The runner compiles them itself ONLY for Python builds, where the library
+    # does not carry them. Compiling them unconditionally would duplicate every
+    # translation unit against the library's copy.
+    assert "if (IS_PYTHON_BUILD AND xmscore_testing_sources)" in content
+    assert "target_sources(runner PRIVATE ${xmscore_testing_sources})" in content
+
+
 def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     """build.py is generated with --test-shards argument and auto mode logic."""
     tpl_dir = tmp_path / "tpl"
