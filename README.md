@@ -32,13 +32,14 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan ci` | Generate CI pipeline files (GitLab/GitHub) from templates |
 | `xmsconan coverage` | Run unified C++/Python coverage (see `docs/USAGE.md` §11) |
 | `xmsconan build` | Build XMS libraries |
+| `xmsconan vs2019` | Build/publish the manual VS2019 (msvc 192) matrix (see `docs/USAGE.md` §16) |
 | `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |
 | `xmsconan wheel-repair` | Repair Python wheels for the current platform (Linux/macOS/Windows) |
 | `xmsconan wheel-deploy` | Upload repaired wheels to a devpi index |
 | `xmsconan conan-deploy` | Save, restore, or upload Conan packages in CI |
 | `xmsconan publish` | Build, repair, and deploy a library |
 
-Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, `xmsconan_coverage`, etc.) remain available for backwards compatibility.
+Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, `xmsconan_coverage`, `xmsconan_vs2019`, etc.) remain available for backwards compatibility.
 
 ## build.toml Schema Reference
 
@@ -72,6 +73,7 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 | `xms_dependencies`       | array[object] | `[]`    | XMS library dependencies. Each object: `{name="xmscore", version="7.0.0", no_python=false}`. Set `no_python=true` to exclude from Python package dependencies.                                                                                                                                                                                                                     |
 | `extra_dependencies`     | array[string] | `[]`    | Additional Conan dependencies (format: `["package/version"]`)                                                                                                                                                                                                                                                                                                                      |
 | `xms_dependency_options` | object        | `{}`    | Per-dependency option overrides (format: `{"dep_name": {"pybind": false}}`). Applied in the generated conanfile's `configure()` method. Appears to be unreliable in some cases (at minimum, `profile_options` overrides it).                                                                                                                                                       |
+| `vs2019_dependency_overrides` | object   | `{}`    | Per-dependency *reference* overrides applied only on a Visual Studio 2019 (msvc 192) build (format: `{"xmscore": "xmscore/[>=6.0.1 <7.0.0]"}`). Matched on the package name before the first `/`; every other toolchain ignores it. For libraries whose sister dependencies are pinned to a different line in the legacy desktop products. See `docs/USAGE.md` §7.4.            |
 
 ### Build Configuration
 
@@ -299,6 +301,34 @@ Replace `--no-deploy` with no flag to also upload each package as it's built.
 | **Workspace mount** | `/workspace` | `/workspace` |
 
 On Windows, use `nextms-dev-x86` for x86_64 Linux builds. The commands are identical — just change the container name.
+
+## VS2019 (msvc 192) Packages
+
+GitHub retired the `windows-2019` runner image, so the msvc 192 binaries the Aquaveo desktop products (GMS/SMS/WMS) consume are built **manually, on a developer workstation with Visual Studio 2019 installed**, and published to a separate Conan remote, `aquaveo-vs2019`.
+
+**None of this runs in CI, by design.** CI is unchanged: it still builds gcc 13 / apple-clang 17 / msvc 194 and publishes to the `aquaveo` remote (the `aquaveo-stable` Artifactory repo). There is no Windows-2019 CI job to restore — the runner image is gone.
+
+```bash
+# One time: add + log in to the aquaveo-vs2019 remote, then check the machine
+xmsconan_vs2019 setup --password-file <path to your conan password file>
+
+# Preview the matrix (14 configurations per library) without building
+xmsconan_vs2019 build --root E:\code\xms\migration --preview
+
+# Build. Hours, not minutes — per-configuration logs go to the --log-dir
+xmsconan_vs2019 build --root E:\code\xms\migration --log-dir .\vs2019-logs --version 7.0.0
+
+# Review the summary table, then publish
+xmsconan_vs2019 upload --library xmscore --version 7.0.0
+```
+
+`build` never uploads as a side effect — publishing to a shared remote after a multi-hour local run is a decision a human makes, so it is a separate verb. Only `xmscore` is built today (the only library with a Conan 2 recipe); enabling another as it migrates is a one-line change in `xmsconan/build_tools/vs2019_build.py`.
+
+`setup` **appends** `aquaveo-vs2019` to your Conan remote list rather than putting it first, so it never becomes the first stop for your ordinary msvc 194 work, and it passes the password to Conan through the environment rather than on the command line (see `docs/USAGE.md` §16.2). `build` regenerates `conanfile.py` / `CMakeLists.txt` / `build.py` **in place** in each checkout, so an interrupted run leaves those files behind stamped with the VS2019 `--version` — check `git status` before committing.
+
+The recipe forks its third-party dependency *versions* automatically when it sees msvc 192 — the same packages as the modern stack, resolved to the legacy builds the `aquaveo-vs2019` remote publishes msvc 192 binaries for (boost `1.74.0.3`, zlib `1.2.11`). A library whose *sister* dependencies are pinned to a different line on VS2019 declares that itself with the `[vs2019_dependency_overrides]` table in `build.toml` — see `docs/USAGE.md` §7.4 for the recipe attributes and §16 for the full flag reference.
+
+`upload` publishes only `compiler.version=192` binaries and refuses any remote other than `aquaveo-vs2019` unless `--allow-other-remote` is passed, so a mixed local cache can't leak msvc 194 packages onto the legacy remote and a one-word typo can't push legacy packages into the CI remote. It exits nonzero when `conan upload` fails, so a failed publish is never reported as success. `build` exits `1` if a library failed, `2` for a bad request or a machine that can't build, and `3` when nothing was built at all (`docs/USAGE.md` §16.4).
 
 ## Development
 

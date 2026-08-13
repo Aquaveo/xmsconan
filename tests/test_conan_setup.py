@@ -1,15 +1,26 @@
 """Tests for ci_tools.conan_setup."""
 import subprocess
+import sys
 from unittest.mock import call, patch
 
 import pytest
 
-from xmsconan.ci_tools.conan_setup import conan_setup, DEFAULT_REMOTE_URL
+from xmsconan.ci_tools.conan_setup import conan_setup, DEFAULT_REMOTE_URL, main
+
+
+def _login_call(mock_run):
+    """Return the ``conan remote login`` call recorded on ``mock_run``."""
+    logins = [
+        c for c in mock_run.call_args_list
+        if c[0][0][:3] == ["conan", "remote", "login"]
+    ]
+    assert len(logins) == 1, f"expected one login call, got {logins}"
+    return logins[0]
 
 
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
 def test_default_setup(mock_run):
-    """Default invocation detects profile and adds aquaveo remote."""
+    """Default invocation detects profile and adds aquaveo remote at index 0."""
     conan_setup()
 
     assert mock_run.call_count == 2
@@ -37,12 +48,12 @@ def test_custom_remote_url(mock_run):
 @patch("xmsconan.ci_tools.conan_setup.load_conan_credentials", return_value={})
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
 def test_login_flag(mock_run, mock_creds):
-    """--login triggers conan remote login."""
+    """--login triggers conan remote login; no credentials means no env."""
     conan_setup(login=True)
 
     assert mock_run.call_count == 3
     mock_run.assert_any_call(
-        ["conan", "remote", "login", "aquaveo"], check=True,
+        ["conan", "remote", "login", "aquaveo"], check=True, env=None,
     )
 
 
@@ -77,7 +88,7 @@ def test_all_flags_together(mock_run, mock_creds):
     )
     # login last
     assert calls[3] == call(
-        ["conan", "remote", "login", "aquaveo"], check=True,
+        ["conan", "remote", "login", "aquaveo"], check=True, env=None,
     )
 
 
@@ -91,18 +102,56 @@ def test_propagates_called_process_error(mock_run):
         conan_setup()
 
 
+# --- remote list position ---
+
+
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_index_none_appends_the_remote(mock_run):
+    """index=None appends instead of making the remote the machine's first stop.
+
+    Conan resolves a version range across every remote in list order, so a
+    special-purpose remote inserted at index 0 would be consulted first by
+    every unrelated ``conan install`` on the developer's machine.
+    """
+    conan_setup(remote_url="https://example.com/x", remote_name="x", index=None)
+
+    add_call = mock_run.call_args_list[1][0][0]
+    assert add_call == ["conan", "remote", "add", "x", "https://example.com/x", "--force"]
+    assert "--index" not in add_call
+
+
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_explicit_index_is_stringified(mock_run):
+    """A non-default index reaches conan as a string argument."""
+    conan_setup(index=2)
+
+    assert mock_run.call_args_list[1][0][0][:5] == [
+        "conan", "remote", "add", "--index", "2",
+    ]
+
+
 # --- credential-based login ---
 
 
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
-def test_login_with_explicit_credentials(mock_run):
-    """Explicit username/password are passed to conan remote login."""
+def test_login_passes_credentials_through_the_environment(mock_run):
+    """The password reaches conan through env vars and never through argv.
+
+    Process-creation auditing (Windows Event 4688, Sysmon Event ID 1) copies
+    the full command line of every process into the event log, so a password
+    passed as ``-p mypass`` ends up in the SIEM in cleartext.
+    """
     conan_setup(login=True, username="myuser", password="mypass")
 
-    mock_run.assert_any_call(
-        ["conan", "remote", "login", "aquaveo", "myuser", "-p", "mypass"],
-        check=True,
-    )
+    login = _login_call(mock_run)
+    assert login[0][0] == ["conan", "remote", "login", "aquaveo"]
+    assert "mypass" not in " ".join(login[0][0])
+    assert "-p" not in login[0][0]
+    env = login[1]["env"]
+    assert env["CONAN_LOGIN_USERNAME_AQUAVEO"] == "myuser"
+    assert env["CONAN_PASSWORD_AQUAVEO"] == "mypass"
+    # the rest of the environment is inherited, not replaced
+    assert len(env) > 2
 
 
 @patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
@@ -113,10 +162,9 @@ def test_login_with_config_file(mock_run, mock_creds):
     conan_setup(login=True)
 
     mock_creds.assert_called_once()
-    mock_run.assert_any_call(
-        ["conan", "remote", "login", "aquaveo", "cfguser", "-p", "cfgpass"],
-        check=True,
-    )
+    env = _login_call(mock_run)[1]["env"]
+    assert env["CONAN_LOGIN_USERNAME_AQUAVEO"] == "cfguser"
+    assert env["CONAN_PASSWORD_AQUAVEO"] == "cfgpass"
 
 
 @patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
@@ -126,20 +174,74 @@ def test_login_explicit_overrides_config(mock_run, mock_creds):
     """Explicit args take precedence over config file."""
     conan_setup(login=True, username="explicit", password="secret")
 
-    mock_run.assert_any_call(
-        ["conan", "remote", "login", "aquaveo", "explicit", "-p", "secret"],
-        check=True,
-    )
+    env = _login_call(mock_run)[1]["env"]
+    assert env["CONAN_LOGIN_USERNAME_AQUAVEO"] == "explicit"
+    assert env["CONAN_PASSWORD_AQUAVEO"] == "secret"
 
 
-@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
-       return_value={})
+# --- remote name ---
+
+
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
-def test_login_falls_back_to_interactive(mock_run, mock_creds):
-    """Falls back to bare conan remote login when no credentials available."""
-    conan_setup(login=True)
+def test_custom_remote_name(mock_run):
+    """A custom remote name is used for `remote add`, `remote login`, and the env vars.
+
+    The manual VS2019 (msvc 192) matrix publishes to ``aquaveo-vs2019``
+    instead of the CI remote.  Conan derives its per-remote credential env
+    vars by uppercasing the remote name and replacing hyphens with
+    underscores, so the hyphen matters here.
+    """
+    conan_setup(
+        remote_url="https://example.com/aquaveo-vs2019",
+        login=True,
+        username="aquaveo",
+        password="secret",
+        remote_name="aquaveo-vs2019",
+        index=None,
+    )
 
     mock_run.assert_any_call(
-        ["conan", "remote", "login", "aquaveo"],
+        [
+            "conan", "remote", "add",
+            "aquaveo-vs2019", "https://example.com/aquaveo-vs2019", "--force",
+        ],
         check=True,
     )
+    login = _login_call(mock_run)
+    assert login[0][0] == ["conan", "remote", "login", "aquaveo-vs2019"]
+    assert "secret" not in " ".join(login[0][0])
+    assert login[1]["env"]["CONAN_PASSWORD_AQUAVEO_VS2019"] == "secret"
+
+
+# --- CLI entry point ---
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_passes_flags_through(mock_setup, monkeypatch):
+    """main() forwards every CLI flag to conan_setup()."""
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_setup", "--remote-url", "https://example.com/conan",
+        "--login", "--remove-conancenter", "--username", "u", "--password", "p",
+    ])
+
+    main()
+
+    mock_setup.assert_called_once_with(
+        remote_url="https://example.com/conan",
+        login=True,
+        remove_conancenter=True,
+        username="u",
+        password="p",
+    )
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup",
+       side_effect=subprocess.CalledProcessError(4, "conan"))
+def test_main_exits_with_conan_return_code(mock_setup, monkeypatch):
+    """A failing conan command sets the process exit code."""
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_setup"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 4

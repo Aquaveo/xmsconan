@@ -14,6 +14,7 @@ COMMANDS = {
     "ci": ("Generate CI pipeline files from templates", "xmsconan.generator_tools.ci_file_generator", "main"),
     "coverage": ("Run unified C++/Python coverage", "xmsconan.coverage_tools.coverage_generator", "main"),
     "build": ("Build XMS libraries", "xmsconan.build_tools.build_library", "main"),
+    "vs2019": ("Build/publish the manual VS2019 (msvc 192) matrix", "xmsconan.build_tools.vs2019_build", "main"),
     "conan-setup": ("Set up Conan profile and remotes", "xmsconan.ci_tools.conan_setup", "main"),
     "wheel-repair": ("Repair Python wheels for the current platform", "xmsconan.ci_tools.wheel_repair", "main"),
     "wheel-deploy": ("Upload repaired wheels to devpi", "xmsconan.ci_tools.wheel_deploy", "main"),

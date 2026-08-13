@@ -68,6 +68,8 @@ All commands live under the `xmsconan` umbrella:
 | `xmsconan gen` | Render build files (`conanfile.py`, `build.py`, `CMakeLists.txt`, `_package/pyproject.toml`, …) from `build.toml`. |
 | `xmsconan ci` | Render `.github/workflows/<Lib>-CI.yaml` or `.gitlab-ci.yml`. |
 | `xmsconan build` | Run `conan install` + `cmake configure` against a single profile. Used by the generated `build.py`; also useful for one-off configures. |
+| `xmsconan coverage` | Run the unified C++/Python coverage pipeline and enforce the `[coverage]` thresholds (see §11). |
+| `xmsconan vs2019` | Drive the manual Visual Studio 2019 (msvc 192) build and publish it to the `aquaveo-vs2019` remote (see §16). Never runs in CI. |
 | `xmsconan conan-setup` | Detect a Conan profile, add the aquaveo remote, optionally login. |
 | `xmsconan wheel-repair` | Run platform-appropriate wheel repair (auditwheel / delocate / delvewheel). |
 | `xmsconan wheel-deploy` | Upload repaired wheels to devpi. |
@@ -133,9 +135,10 @@ option-overridden configurations.
 | `xms_dependencies` | array[object] | `[]` | XMS sister libraries. Object shape: `{ name = "xmscore", version = "7.0.0", no_python = false }`. `no_python = true` excludes the dep from `_package/pyproject.toml`. |
 | `extra_dependencies` | array[string] | `[]` | Extra Conan deps in `"name/version"` form. |
 | `xms_dependency_options` | object | `{}` | Override an XMS dep's options. e.g. `{ "xmscore" = { "pybind" = false } }`. |
+| `vs2019_dependency_overrides` | object | `{}` | Replace an XMS dep's *reference* — but only on a Visual Studio 2019 (msvc 192) build. e.g. `{ "xmscore" = "xmscore/[>=6.0.1 <7.0.0]" }`. Matched on the package name before the first `/`; every other toolchain ignores it entirely. See §7.4. |
 | `conan_profile_options` | object | `{}` | Per-package options written into the `[options]` section of every generated profile. e.g. `{ "boost" = { "shared" = true } }`. The wildcard `"*"` is supported (e.g. `{ "*" = { "shared" = true } }`); a more specific entry overrides the wildcard. |
 
-Boost (`1.86.0`) and zlib (`1.3.1`) are added automatically by the recipe.
+Boost (`1.86.0`) and zlib (`1.3.1`) are added automatically by the recipe. On a Visual Studio 2019 (msvc 192) build the recipe swaps in the legacy stack instead — the same two packages at the versions the `aquaveo-vs2019` remote publishes msvc 192 binaries for: boost `1.74.0.3` and zlib `1.2.11`. See §7.4 and §16.
 
 ### 5.4 Build configuration
 
@@ -258,6 +261,49 @@ Standard Conan: `os`, `compiler`, `build_type`, `arch`.
 
 `PYTHON_TARGET_VERSION`, `IS_PYTHON_BUILD`, `BUILD_TESTING`, `XMS_TESTING_FRAMEWORK`, `XMS_VERSION`. The generated `CMakeLists.txt` already wires these up; only relevant if you write `extra_cmake_text`.
 
+### 7.4 Third-party requirements and the VS2019 fork
+
+The recipe resolves a different third-party stack when it detects Visual Studio 2019 — `compiler == msvc` **and** `compiler.version == 192`. **The third-party half of the fork is automatic**: there is nothing to add to `build.toml` for it, and the same `conanfile.py` builds both stacks. Three class attributes on `XmsConan2File` define the fork:
+
+| Attribute | Default | Set from `build.toml`? | What it controls |
+|---|---|---|---|
+| `default_requirements` | `["boost/1.86.0", "zlib/1.3.1"]` | no | Third-party (non-XMS) requirements for the modern toolchains: gcc 13, apple-clang 17, msvc 194. |
+| `vs2019_requirements` | `["boost/1.74.0.3", "zlib/1.2.11"]` | no | Third-party requirements used **instead** on msvc 192. Same package set as `default_requirements`, at the versions the `aquaveo-vs2019` remote publishes msvc 192 binaries for: the Aquaveo legacy boost the desktop products link against, and zlib `1.2.11` (`zlib/1.3.1` exists only on `aquaveo-stable`, msvc 194 only, so naming it here would force a from-source build or fail). zlib is not optional on either stack — the generated `CMakeLists.txt` calls `find_package(ZLIB REQUIRED)` and sources such as `daStreamIo.cpp` include `<zlib.h>`. |
+| `vs2019_dependency_overrides` | `{}` | **yes** — the `[vs2019_dependency_overrides]` table (§5.3) | Per-library replacement of `xms_dependencies` references on msvc 192, e.g. `{"xmscore": "xmscore/[>=6.0.1 <7.0.0]"}`. Matched on the package name before the first `/`. Legacy desktop products pin xmscore 6.x while the Conan 2 line is at 7.x. Every other toolchain ignores this dict entirely. |
+
+Shared by both stacks: `pybind11/3.0.1` when `pybind=True`, and the `testing_framework` requirement (`cxxtest/4.4` or `gtest/1.17.0`) when `testing=True`. pybind11 on VS2019 is intentionally `3.0.1` — an upgrade from the Conan-1-era `2.9.1`, not an oversight.
+
+The split in that third column is deliberate. `default_requirements` and `vs2019_requirements` describe the **shared third-party stack** — every XMS library resolves the same boost, so they live in xmsconan and are changed there. `vs2019_dependency_overrides` is a **per-library** statement about that library's own sister dependencies, so it is a `build.toml` key:
+
+```toml
+library_name = "xmsgrid"
+description = "Geometry library for XMS products"
+
+[[xms_dependencies]]
+name = "xmscore"
+version = "7.0.0"
+
+# On msvc 192 only, resolve xmscore from the 6.x line the desktop
+# products pin instead of the 7.0.0 above.
+[vs2019_dependency_overrides]
+xmscore = "xmscore/[>=6.0.1 <7.0.0]"
+```
+
+which `xmsconan gen` emits onto the generated recipe subclass:
+
+```python
+class XmsgridConanFile(XmsConan2File):
+    ...
+    vs2019_dependency_overrides = {'xmscore': 'xmscore/[>=6.0.1 <7.0.0]'}
+    xms_dependencies = [
+        "xmscore/7.0.0",
+    ]
+```
+
+Omit the table and the attribute is not emitted at all, so the recipe inherits the empty default. **Do not hand-edit the value into `conanfile.py` or `xms_conan2_file.py`** — `xmsconan gen` rewrites the first and re-copies the second on every run (§6), so only the `build.toml` key survives regeneration.
+
+One more msvc-192-only behavior, which needs no configuration: the recipe propagates its own `wchar_t` option into boost's (`self.options["boost"].wchar_t`). The legacy `boost/1.74.0.3` exposes that option and the Conan 1 recipe did the same; `boost/1.86.0` has none, which is why the assignment is VS2019-only and tolerant of a boost build that doesn't declare it.
+
 ---
 
 ## 8. Python version support (3.10 + 3.13)
@@ -317,13 +363,14 @@ xmsconan build \
     --generator vs2022
 ```
 
-Available profile names live under `xmsconan/build_tools/profiles/{debug,release}/`. Append `_d` for debug. Examples:
+Available profile names live under `xmsconan/build_tools/profiles/{debug,release}/`, and `--profile` matches the **exact filename** — a name that isn't a file there fails outright rather than falling back. Examples that exist today:
 
 - `GCC13`, `GCC13_TESTING`, `GCC13_PYBIND`, `GCC13_TESTING_D`
 - `CLANG17_PYBIND`, `CLANG16_TESTING_D`
-- `VS2022`, `VS2022_TESTING`, `VS2022_TESTING_DYNAMIC_D`
+- `VS2019`, `VS2019_TESTING`, `VS2019_TESTING_DYNAMIC`, `VS2019_TESTING_DYNAMIC_D`
+- `VS2022_TESTING`, `VS2022_TESTING_D`
 
-You can also pass any explicit profile path with `--profile /path/to/profile`.
+The full list is §20. You can also pass any explicit profile path with `--profile /path/to/profile`.
 
 ### 9.3 Useful build flags
 
@@ -519,7 +566,166 @@ What it runs (with `--no-deploy=false`):
 
 ---
 
-## 16. Credentials (`~/.xmsconan.toml`)
+## 16. VS2019 / msvc 192 packages (`xmsconan vs2019`)
+
+GitHub retired the `windows-2019` runner image, so the msvc 192 (Visual Studio 2019) binaries that the Aquaveo desktop products (GMS/SMS/WMS) consume can no longer be produced in CI. They are built **by hand, on a developer workstation that has VS2019 installed**, and published to a **separate Conan remote, `aquaveo-vs2019`**, so they never mix with the CI-published binaries.
+
+> **None of this runs in CI, and that is deliberate.** CI is untouched: it still builds gcc 13 / apple-clang 17 / msvc 194 and publishes to the `aquaveo` remote (the `aquaveo-stable` Artifactory repo). There is no Windows-2019 job to "restore" — the runner image is gone. If you are looking for the CI matrix, see §10.
+
+Available both as `xmsconan vs2019 <subcommand>` and as the console script `xmsconan_vs2019 <subcommand>`. Three subcommands: `setup`, `build`, `upload`.
+
+The recipe side of the fork — legacy boost, and the optional per-library `[vs2019_dependency_overrides]` table for libraries whose sister dependencies are pinned differently on VS2019 — is described in §7.4. Nothing below configures it; this section is only about driving the build.
+
+### 16.1 End to end
+
+```bash
+# 1. One time: add + log in to the aquaveo-vs2019 remote, then preflight the machine
+xmsconan_vs2019 setup --password-file <path to your conan password file>
+
+# 2. See what would be built — prints the matrix per library and exits
+xmsconan_vs2019 build --root E:\code\xms\migration --preview
+
+# 3. Build it. Hours, not minutes; per-configuration logs land in .\vs2019-logs\
+xmsconan_vs2019 build --root E:\code\xms\migration --log-dir .\vs2019-logs --version 7.0.0
+
+# 4. Read the summary table, then publish
+xmsconan_vs2019 upload --library xmscore --version 7.0.0
+```
+
+**`build` and `upload` are separate verbs on purpose: a build never uploads as a side effect.** The run takes hours and its output lands on a remote other people build against, so a human looks at the summary table before anything is published. There is no `--upload` flag on `build`.
+
+### 16.2 `setup`
+
+Adds the remote, logs in, then runs the preflight checks.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--password-file PATH` | — | File holding the remote password on its own. Trailing whitespace (the editor's newline) is stripped. |
+| `--username NAME` | resolved (see below) | Remote username. |
+| `--remote-url URL` | `https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-vs2019` | Artifactory URL backing the remote. |
+| `--remote-name NAME` | `aquaveo-vs2019` | Conan remote name to add. Pair it with `--remote-url` when pointing at a different Artifactory repo. |
+
+**Credential resolution order** (first non-empty wins), resolved together so `~/.xmsconan.toml` is read at most once:
+
+| | Username | Password |
+|---|---|---|
+| 1 | `--username` | `--password-file` — a path that doesn't exist is an error, not a fall-through to the next source. A typo must not silently log you in with a different password. |
+| 2 | `$CONAN_LOGIN_USERNAME` | `$CONAN_PASSWORD` |
+| 3 | `[conan] username` in `~/.xmsconan.toml` (§17) | `[conan] password` in the same file |
+| 4 | `aquaveo` | — Conan prompts interactively |
+
+Both halves fall back independently, so a personal Artifactory account configured in `~/.xmsconan.toml` is used as *your* username with *your* password. (The username used to be pinned to `aquaveo` before the config file was ever consulted, which meant a personal password was sent with the shared username and the login failed with no hint why.) If no source supplies a password, `setup` hands Conan nothing and Conan prompts for both username and password itself.
+
+**The password is never a command-line argument.** `setup` hands it to Conan in the child process's environment (`CONAN_LOGIN_USERNAME_AQUAVEO_VS2019` / `CONAN_PASSWORD_AQUAVEO_VS2019` — Conan derives those names by uppercasing the remote name and replacing hyphens with underscores) and runs a bare `conan remote login aquaveo-vs2019`. On a managed workstation, process-creation auditing (Windows Event 4688 with command-line capture, or Sysmon Event ID 1) copies the full argv of every process into the event log and ships it to the SIEM in cleartext, where it outlives and out-reads the NTFS ACLs on your password file.
+
+**Where the remote lands in the list.** `setup` **appends** `aquaveo-vs2019` after the remotes already configured — it does *not* insert it at index 0 the way `xmsconan conan-setup` does for the CI remote. Conan resolves a version range such as `xmscore/[>=7.0.0 <8.0.0]` across every remote in list order, so a VS2019 remote at the front would be the first stop for every `conan install` and `conan create --build=missing` on the machine, including ordinary msvc 194 work, and a version present only on the VS2019 remote would win. That is the exact mixing the separate remote exists to prevent. `setup` prints `(appended)` when it adds the remote; run `conan remote list` to see the resulting order, and `conan remote update aquaveo-vs2019 --index N` if you ever need to change it deliberately.
+
+`setup` exits 0 only when every preflight check (§16.3) also passed, so a fresh machine gets one pass/fail answer on whether it can build the matrix. A missing `--password-file` exits 2; `conan` not being on `PATH` exits 2; any other failing `conan` command propagates its own exit code.
+
+### 16.3 Preflight
+
+Run at the end of `setup`, and again at the start of every `build` — a failure there aborts the build with exit code 2 before anything is compiled.
+
+| Check | Passes when | Fix |
+|---|---|---|
+| Visual Studio 2019 | `vswhere.exe` finds a 16.x install **that carries the C++ toolset** (`-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64`) **and** has a `Microsoft.VCToolsVersion.default.txt`. Reports the install path and the default MSVC toolset version. | Install VS2019 with the *Desktop development with C++* workload. msvc 192 packages can only be built on a machine that has it. |
+| conan client | `conan --version` is on the pinned `~=2.31.0` series. | `pip install "conan~=2.31.0"` |
+| conan remote `aquaveo-vs2019` | The remote appears in `conan remote list` **and is enabled**. `conan remote list` keeps printing disabled remotes as `[… Enabled: False]`, so the name alone is not enough. | `xmsconan_vs2019 setup --password-file <path>`, or `conan remote enable aquaveo-vs2019` if it is merely disabled. |
+
+A conan version outside the pinned series is a **failure, not a warning**: a minor bump can change package_id computation and silently detach these hand-built packages from the binaries already on the remote. Same reasoning as the CI pin in §10.3.
+
+A VS2019 carrying only, say, the .NET workload used to pass this check and then die on the first `conan create`, hours into the run — hence both the `-requires` filter and the toolset-file check.
+
+### 16.4 `build`
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--root DIR` | `.` | Directory holding the library checkouts (one subdirectory per library). A `--root` that doesn't exist is an error (exit 2), not eight silent skips. |
+| `--only LIB` | — | Build only this library; repeatable. Overrides the `enabled` flag, so a mid-migration library can be exercised. |
+| `--from LIB` | — | Resume the stack at this library, skipping the ones before it. For picking up after a mid-stack failure. |
+| `--preview` | off | Print the configuration matrix per library and exit. Nothing is built; preflight is not run and `--root` is not checked, because the matrix is computed from the library list and doesn't read the checkouts. |
+| `--continue-on-error` | off | Attempt the next library after one fails. |
+| `--no-generate` | off | Skip the `xmsconan_gen` step and use the `conanfile.py` already in the checkout. |
+| `--log-dir DIR` | — | Redirect each configuration's `conan create` output to `<DIR>/<library>-<config label>.log` and print a one-line pointer instead. A wall of interleaved compiler output is unreadable on a 14-configuration run. The label carries the whole configuration, **runtime included** — `xmscore-Release-static-testing.log`, `xmscore-Debug-dynamic-wchar_typedef.log`, `xmscore-Release-dynamic-pybind-py3.13.log`. Without the runtime the 14 msvc configurations would collapse onto 8 filenames and each static build would overwrite the dynamic build's log. |
+| `--python-versions X.Y [X.Y …]` | `3.10 3.13` | Python versions the pybind variants fan out across. |
+| `--filter JSON` | — | Restrict the matrix, same shape as `build.py --filter`: `'{"build_type": "Release"}'`. |
+| `--version V` | — | Passed to `xmsconan_gen`, and exported as `XMS_VERSION` so it reaches each profile's `[buildenv]` the way CI supplies it. |
+
+Per library, in dependency order, `build`:
+
+1. Skips the library (not a failure) when `<root>/<library>` or its `build.toml` is missing, so a partially migrated stack still builds what it can. A library whose matrix is emptied by `--filter` is likewise reported as `skipped`, with `no configurations matched --filter` in the notes column.
+2. Runs `xmsconan_gen [--version V] build.toml` in the checkout, unless `--no-generate`.
+3. Generates the `windows_vs2019` matrix, applies `--filter`, and runs `conan create` per configuration.
+
+A single failing configuration does not stop the library — the packager runs the rest and reports the count. A failing *library* stops the run unless `--continue-on-error` is passed. Either way a summary table (attempted / succeeded / failed / elapsed per library) is printed at the end.
+
+**Re-running is safe for the logs.** A configuration's log always lands at the canonical `<library>-<label>.log`; if one is already there from an earlier run it is *renamed* to `<library>-<label>.<timestamp>.log` first (with a `.1`/`.2` counter if two runs collide inside the same second). Re-running a failed matrix preserves the previous evidence rather than truncating it.
+
+**`build` regenerates in place, and a partial run leaves that behind.** Step 2 runs `xmsconan_gen` inside your checkout, overwriting `conanfile.py`, `CMakeLists.txt`, and `build.py` and stamping them with the `--version` you passed. If the run fails, is interrupted, or you stop it after the summary, those regenerated files stay in the working tree — with the VS2019 version baked in. Check `git status` in each library before committing anything, or re-run `xmsconan_gen` with the version you actually want. `--no-generate` skips this step entirely and builds whatever `conanfile.py` is already there.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | At least one library built and none failed. |
+| `1` | A library failed. |
+| `2` | The request or the machine was wrong: an unknown `--only`/`--from` name, a `--filter` that isn't a JSON object, a `--python-versions` entry the packager rejects, a `--root` that doesn't exist, a selection that matches no library at all (`--only xmscore --from xmsgrid`, or a `--from` past the last enabled library), a failed preflight, or `conan` not on `PATH`. |
+| `3` | The run completed but **nothing was built** — every selected library was skipped (no checkout, no `build.toml`, or `--filter` matched nothing). Not success: a typo in `--root` used to print a table of skips and exit 0, which any `&&` chain or wrapper script read as "the stack is built". |
+
+### 16.5 The library list
+
+The driver holds the XMS stack in dependency order — each library builds against the packages produced by the ones before it — with an `enabled` flag per entry:
+
+```
+xmscore (enabled) → xmsgrid → xmsinterp → xmsmesher → xmsextractor
+→ xmsstamper → xmsconstraint → xmsgridtrace
+```
+
+**Only `xmscore` is enabled today**, because it is the only library with a Conan 2 recipe. As each of the others migrates, enabling it is a one-line change — flip `False` to `True` in the `LIBRARIES` tuple in `xmsconan/build_tools/vs2019_build.py`. Until then, `--only <lib>` builds a disabled library without touching the list.
+
+### 16.6 The matrix — 14 configurations per library
+
+With the default two Python versions, `windows_vs2019` (msvc 192, x86_64, cppstd 17) produces:
+
+| Group | Count | Shape |
+|---|---|---|
+| base | 4 | `Release`/`Debug` × `static`/`dynamic` runtime |
+| `wchar_t=typedef` | 4 | the same four, with the MSVC `/Zc:wchar_t-` toggle |
+| testing | 4 | the same four, with `testing=True` |
+| pybind | 2 | `Release` + `dynamic` runtime only, one per `--python-versions` entry |
+
+`windows_vs2019` is a normal platform key of `XmsConanPackager.generate_configurations()`, so it can be driven directly too (the valid keys are `darwin`, `linux`, `windows`, `windows_vs2019`; anything else raises `ValueError` naming the unknown key and listing the valid ones).
+
+Two things the platform key does *not* imply, which the driver passes explicitly:
+
+- `XmsConanPackager(..., apply_boost_defaults=False)` — the `boost/*:without_stacktrace` and `without_locale` profile defaults name conan-center boost 1.86 options, and Conan fails a build when a profile sets an option no involved recipe declares. The legacy `boost/1.74.0.3` may not declare them. Pass one of them through `profile_options` if you need it individually.
+- `upload(version, remote='aquaveo-vs2019', package_query='compiler.version=192')` — `XmsConanPackager.upload` still defaults to `aquaveo`, and without a `package_query` `conan upload` matches by *reference* only: every binary of that version sitting in the local cache is published. On a workstation that is both the VS2019 build box and a normal msvc 194 dev machine, that quietly pushes msvc 194 binaries onto the VS2019 remote and exits 0. `package_query` is passed through to `conan upload -p`.
+
+### 16.7 `upload`
+
+```bash
+xmsconan_vs2019 upload --library xmscore --version 7.0.0
+```
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--library NAME` | **required** | Library / Conan package name. |
+| `--version V` | **required** | Package version. Every `<library>/<version>*` package in the local cache **whose `compiler.version` is 192** is uploaded. |
+| `--remote NAME` | `aquaveo-vs2019` | Conan remote to upload to. Any other value is refused unless `--allow-other-remote` is also passed. |
+| `--allow-other-remote` | off | Permit a `--remote` other than `aquaveo-vs2019`. |
+
+Both `--library` and `--version` are required and there is deliberately **no `*` default** — a shared remote is the wrong place to discover that a wildcard matched more than you meant.
+
+**Two guards keep msvc 192 binaries off the CI remote**, because the failure mode is silent and the cleanup is somebody else's afternoon:
+
+- The upload is restricted to `compiler.version=192` (`conan upload -p`). Without it, `conan upload` matches by reference alone and takes the whole local cache — msvc 194 binaries included — along for the ride.
+- `--remote aquaveo` is one word away from `--remote aquaveo-vs2019` and is **refused** (exit 2) with a message naming the right remote. Pass `--allow-other-remote` if you genuinely mean a different remote, e.g. a scratch repo.
+
+**Exit code 0 means the packages actually landed.** A failing `conan upload` prints the reference, the remote, and conan's exit status, and the subcommand exits 1. `XmsConanPackager.upload()` returns `0`/`1` for this reason; the generated `build.py --upload` (§6) exits 1 on the same signal. `upload` runs no preflight, so `conan` missing from `PATH` surfaces here as exit 2 with a message rather than a traceback.
+
+---
+
+## 17. Credentials (`~/.xmsconan.toml`)
 
 Avoid passing credentials on every command:
 
@@ -534,11 +740,11 @@ username = "your_username"
 password = "your_password"
 ```
 
-Always overridden by CLI flags / env vars when present. **Don't commit this file.** It's read-only as far as xmsconan is concerned.
+Always overridden by CLI flags / env vars when present. The `[conan]` section is the last fallback for `xmsconan conan-setup --login` and for `xmsconan vs2019 setup` (§16.2). **Don't commit this file.** It's read-only as far as xmsconan is concerned.
 
 ---
 
-## 17. Consuming an XMS library from another project
+## 18. Consuming an XMS library from another project
 
 Once a release has been pushed to the Aquaveo Conan remote, downstream Conan consumers depend on it like any other Conan 2 package:
 
@@ -568,7 +774,7 @@ conan install . \
 
 The `xms_dependencies` field in *your* `build.toml` handles the same wiring automatically for sister XMS libraries.
 
-### 17.1 Consuming the wheel (Python-only)
+### 18.1 Consuming the wheel (Python-only)
 
 ```bash
 pip install xmscore -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
@@ -578,25 +784,35 @@ Wheels are tagged `cp310-cp310-...` or `cp313-cp313-...`; pip picks the right on
 
 ---
 
-## 18. Troubleshooting
+## 19. Troubleshooting
 
 - **`auditwheel`/`delocate`/`delvewheel` missing libraries.** Run `build.py --wheel-dir wheelhouse` before repair — that step populates `wheelhouse/libs/`. Repairing without it produces a wheel that loads fine on the build host and crashes everywhere else.
 - **`PYTHON_TARGET_VERSION` mismatch in CMake.** The recipe sets it from the `python_version` Conan option. If you're poking CMake directly, pass `-DPYTHON_TARGET_VERSION=3.13`.
 - **`No pybind package found to extract`.** Means `build.py` ran but no pybind config was built. Check `build.py --preview` to see the matrix; common causes are `--filter` excluding the pybind variant, or every pybind variant having failed.
 - **Dual wheel uploads colliding on devpi.** With `python_versions=["3.10","3.13"]`, wheels carry distinct `cp3XY` tags, so devpi treats them as separate uploads of the same release. No special config required.
 - **Generated CI references a runner that doesn't exist.** Opt-in only matrices Windows, so the only new runner you need is `GLR-py310` (GitLab). If it isn't available, set `python_versions = ["3.13"]` until it is. The Linux/Mac side keeps using the existing 3.13 images.
+- **`xmsconan vs2019 build` stops at preflight with "outside the pinned `~=2.31.0` series".** Intentional (§16.3). Install the pinned client — `pip install "conan~=2.31.0"` — rather than working around the check; a different minor can change package_ids and detach your build from what's already published.
+- **VS2019 build fails on a boost option Conan says no recipe defines.** The legacy `boost/1.74.0.3` doesn't declare the conan-center 1.86 options. The driver already passes `apply_boost_defaults=False`; if you're constructing `XmsConanPackager` yourself for msvc 192, pass it too (§16.6).
+- **VS2019 packages don't show up for consumers.** They go to `aquaveo-vs2019`, not `aquaveo` — the consuming machine needs that remote configured too. Note that `xmsconan_vs2019 setup` *appends* the remote rather than putting it first (§16.2), so it does not shadow `aquaveo` for your other work.
+- **`xmsconan vs2019 build` exits 3 with a table of `skipped` rows.** Nothing was built. Almost always a typo in `--root` (each library is looked for at `<root>/<library>`), a `--filter` that matches no configuration, or a library that has no `build.toml` yet. See the exit-code table in §16.4.
+- **`xmsconan vs2019 upload` refuses the remote.** `--remote` is restricted to `aquaveo-vs2019`; anything else needs `--allow-other-remote` (§16.7). This is deliberate — `--remote aquaveo` would publish msvc 192 binaries into the remote every CI consumer resolves against.
 
 ---
 
-## 19. Reference: shipped Conan profiles
+## 20. Reference: shipped Conan profiles
 
-Located under `xmsconan/build_tools/profiles/{debug,release}/`. Use the basename with `xmsconan build --profile`:
+Located under `xmsconan/build_tools/profiles/{debug,release}/`. Use the basename with `xmsconan build --profile`. The match is on the **exact filename**, so only the names that actually exist work — the combinations below are the complete list, not a pattern to extrapolate from:
 
-| Family | Examples |
-|---|---|
-| GCC | `GCC5`, `GCC7`, `GCC13`, plus `_TESTING`, `_PYBIND`, `_D` (debug) suffixes |
-| Clang | `CLANG9`, `CLANG16`, `CLANG17`, plus `_TESTING`, `_PYBIND`, `_D` |
-| MSVC | `VS2019`, `VS2022`, plus `_TESTING`, `_TESTING_DYNAMIC`, `_D` |
+| Family | Release | Debug |
+|---|---|---|
+| GCC | `GCC5`, `GCC6`, `GCC7`, `GCC13`, each also `_TESTING` and `_PYBIND` | `GCC5_D`, `GCC6_D`, `GCC7_D`, `GCC13_D`, each also `_TESTING_D` |
+| Clang | `CLANG9`, `CLANG9_TESTING`, `CLANG9_PYBIND`, `CLANG16_TESTING`, `CLANG16_PYBIND`, `CLANG17_PYBIND` | `CLANG9_D`, `CLANG9_TESTING_D`, `CLANG16_D`, `CLANG16_TESTING_D` |
+| MSVC 192 (VS2019) | `VS2019`, `VS2019_TESTING`, `VS2019_TESTING_DYNAMIC`, `VS2019_PYBIND` | `VS2019_D`, `VS2019_TESTING_D`, `VS2019_TESTING_DYNAMIC_D` |
+| MSVC 194 (VS2022) | `VS2022_TESTING` | `VS2022_TESTING_D` |
+
+There is no bare `VS2022` profile, and no `VS2022_TESTING_DYNAMIC` in either flavor. `xmsconan build --profile VS2022` fails with `A valid --profile is required. Available profiles: [...]` listing everything that does exist. (The full matrix builds — `build.py`, `xmsconan vs2019 build` — don't use these files at all: `XmsConanPackager` writes a temporary profile per configuration. These are for configuring a single build tree by hand, §9.2.)
+
+`profiles/base/` also sits on that walk, so its fragments (`vs_2019`, `release`, `x64`, `pybind`, …) are accepted as `--profile` values too. They are includes, not complete profiles; don't build with them directly.
 
 Each suffix means:
 

@@ -314,16 +314,10 @@ def test_conan_profile_options_reaches_template_context(tmp_path):
     assert (output_dir / "out.txt").read_text(encoding="utf-8") == "opts={'boost': {'wchar_t': 'builtin'}}\n"
 
 
-def test_generates_conanfile_with_profile_options(tmp_path):
-    """Generated conanfile.py defines CONAN_PROFILE_OPTIONS at module scope when set in TOML."""
+def _render_conanfile(toml_text, tmp_path):
+    """Render only conanfile.py.jinja from ``toml_text`` and return its content."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n'
-        'description = "desc"\n'
-        '[conan_profile_options.boost]\n'
-        'wchar_t = "builtin"\n',
-        encoding="utf-8",
-    )
+    toml_file.write_text(toml_text, encoding="utf-8")
 
     tpl_dir = tmp_path / "tpl"
     tpl_dir.mkdir()
@@ -336,33 +330,67 @@ def test_generates_conanfile_with_profile_options(tmp_path):
         template_dir=str(tpl_dir),
         output_dir=str(output_dir),
     )
+    return (output_dir / "conanfile.py").read_text(encoding="utf-8")
 
-    content = (output_dir / "conanfile.py").read_text(encoding="utf-8")
+
+def test_generates_conanfile_with_profile_options(tmp_path):
+    """Generated conanfile.py defines CONAN_PROFILE_OPTIONS at module scope when set in TOML."""
+    content = _render_conanfile(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[conan_profile_options.boost]\n'
+        'wchar_t = "builtin"\n',
+        tmp_path,
+    )
+
     assert "CONAN_PROFILE_OPTIONS = {'boost': {'wchar_t': 'builtin'}}" in content
 
 
 def test_generates_conanfile_without_profile_options(tmp_path):
     """Generated conanfile.py defines CONAN_PROFILE_OPTIONS = {} when TOML omits the key."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n',
-        encoding="utf-8",
+    content = _render_conanfile(
+        'library_name = "xmscore"\ndescription = "desc"\n', tmp_path
     )
 
-    tpl_dir = tmp_path / "tpl"
-    tpl_dir.mkdir()
-    _copy_template("conanfile.py.jinja", tpl_dir)
-
-    output_dir = tmp_path / "output"
-    render_template_with_toml(
-        toml_file_path=str(toml_file),
-        version="1.0.0",
-        template_dir=str(tpl_dir),
-        output_dir=str(output_dir),
-    )
-
-    content = (output_dir / "conanfile.py").read_text(encoding="utf-8")
     assert "CONAN_PROFILE_OPTIONS = {}" in content
+
+
+def test_generates_conanfile_with_vs2019_dependency_overrides(tmp_path):
+    """A [vs2019_dependency_overrides] table lands on the generated recipe subclass.
+
+    Without the build.toml key the attribute documented on XmsConan2File is
+    unreachable: `xmsconan gen` rewrites conanfile.py and re-copies
+    xms_conan2_file.py on every run, so a hand-edited value never survives
+    regeneration.
+    """
+    content = _render_conanfile(
+        'library_name = "xmsgrid"\n'
+        'description = "desc"\n'
+        '[vs2019_dependency_overrides]\n'
+        'xmscore = "xmscore/[>=6.0.1 <7.0.0]"\n',
+        tmp_path,
+    )
+
+    # Exact text: the value is a version range full of brackets and spaces,
+    # so a quoting slip here would produce a recipe that doesn't import.
+    assert (
+        "    vs2019_dependency_overrides = "
+        "{'xmscore': 'xmscore/[>=6.0.1 <7.0.0]'}\n" in content
+    )
+    compile(content, "conanfile.py", "exec")
+
+
+def test_generates_conanfile_without_vs2019_dependency_overrides(tmp_path):
+    """The attribute is omitted when build.toml has no table for it.
+
+    The recipe then inherits XmsConan2File's empty default rather than
+    carrying a redundant `= {}` line, matching xms_dependency_options.
+    """
+    content = _render_conanfile(
+        'library_name = "xmscore"\ndescription = "desc"\n', tmp_path
+    )
+
+    assert "vs2019_dependency_overrides" not in content
 
 
 def test_cmake_template_emits_source_group_tree(tmp_path):
@@ -496,6 +524,30 @@ def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     assert "--test-shards" in content
     assert "auto" in content
     assert "os.cpu_count()" in content
+
+
+def test_generated_build_py_exits_nonzero_on_upload_failure(build_toml, tmp_path):
+    """`build.py --upload` propagates packager.upload()'s nonzero exit code.
+
+    A failed publish to a shared remote used to exit 0 because upload()
+    swallowed the error and returned None.
+    """
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(build_toml),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    content = (output_dir / "build.py").read_text(encoding="utf-8")
+    assert "if builder.upload(version=args.version) != 0:" in content
+    assert "exit(1)" in content
+    compile(content, "build.py", "exec")
 
 
 def test_render_raises_clear_error_for_missing_toml_key(tmp_path):

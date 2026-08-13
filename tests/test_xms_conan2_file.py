@@ -662,6 +662,176 @@ class TestCoverageWiring:
             del os.environ["XMS_COVERAGE"]
 
 
+def _make_settings(compiler, compiler_version, os_name="Windows"):
+    """Build a mock ``settings`` object whose values stringify like Conan's."""
+    settings = MagicMock()
+    settings.os = MagicMock(__str__=lambda s: os_name)
+    settings.compiler = MagicMock(__str__=lambda s: compiler)
+    settings.compiler.version = MagicMock(
+        value=compiler_version, __str__=lambda s: compiler_version
+    )
+    return settings
+
+
+class TestIsVs2019:
+    """Verify _is_vs2019 identifies msvc 192 and nothing else.
+
+    VS2019 packages are built by hand and resolve the legacy third-party stack,
+    so this predicate gates every VS2019-only behavior in the recipe.
+    """
+
+    @pytest.mark.parametrize(
+        "compiler,version,expected",
+        [
+            ("msvc", "192", True),
+            ("msvc", "194", False),  # VS2022 — modern stack
+            ("gcc", "13", False),  # non-msvc short-circuits before the version check
+        ],
+    )
+    def test_detection(self, compiler, version, expected):
+        """Only msvc/192 is VS2019."""
+        obj = object.__new__(XmsConan2File)
+        obj.settings = _make_settings(compiler, version)
+        assert obj._is_vs2019() is expected
+
+
+class TestRequirements:
+    """Verify requirements() picks the right third-party stack and deps."""
+
+    def _make_obj(self, compiler="gcc", version="13", testing=False, pybind=False,
+                  testing_framework="cxxtest", python_binding_type="pybind11",
+                  xms_dependencies=(), extra_dependencies=(), overrides=None):
+        """Create a recipe stub that records every requires() call."""
+        obj = object.__new__(XmsConan2File)
+        obj.settings = _make_settings(compiler, version)
+        obj.options = MagicMock()
+        obj.options.testing = testing
+        obj.options.pybind = pybind
+        obj.testing_framework = testing_framework
+        obj.python_binding_type = python_binding_type
+        obj.xms_dependencies = list(xms_dependencies)
+        obj.extra_dependencies = list(extra_dependencies)
+        if overrides is not None:
+            obj.vs2019_dependency_overrides = overrides
+        obj.requires = MagicMock()
+        return obj
+
+    @staticmethod
+    def _required(obj):
+        """Return the list of references passed to requires()."""
+        return [call.args[0] for call in obj.requires.call_args_list]
+
+    def test_modern_toolchain_gets_default_requirements(self):
+        """Non-VS2019 builds get boost 1.86.0 + zlib and nothing legacy."""
+        obj = self._make_obj(compiler="msvc", version="194")
+        obj.requirements()
+        assert self._required(obj) == ["boost/1.86.0", "zlib/1.3.1"]
+
+    def test_vs2019_gets_legacy_requirements(self):
+        """VS2019 gets the same packages as the modern stack at legacy versions.
+
+        zlib is required on both stacks — the generated CMakeLists calls
+        find_package(ZLIB REQUIRED) — but msvc 192 binaries exist only for
+        1.2.11, so the version differs from default_requirements.
+        """
+        obj = self._make_obj(compiler="msvc", version="192")
+        obj.requirements()
+        assert self._required(obj) == ["boost/1.74.0.3", "zlib/1.2.11"]
+
+    @pytest.mark.parametrize(
+        "framework,expected",
+        [
+            ("cxxtest", ["cxxtest/4.4"]),
+            ("gtest", ["gtest/1.17.0"]),
+            ("unknown", []),  # unrecognized framework adds nothing
+        ],
+    )
+    def test_testing_framework_requirement(self, framework, expected):
+        """testing=True pulls the configured framework (and only that one)."""
+        obj = self._make_obj(testing=True, testing_framework=framework)
+        obj.requirements()
+        assert self._required(obj)[2:] == expected
+
+    @pytest.mark.parametrize("compiler,version", [("gcc", "13"), ("msvc", "192")])
+    def test_pybind11_is_shared_by_both_stacks(self, compiler, version):
+        """pybind11/3.0.1 is required on VS2019 too — not the Conan-1-era 2.9.1."""
+        obj = self._make_obj(compiler=compiler, version=version, pybind=True)
+        obj.requirements()
+        assert "pybind11/3.0.1" in self._required(obj)
+
+    def test_vtk_wrap_binding_skips_pybind11(self):
+        """A vtk_wrap binding build does not pull pybind11."""
+        obj = self._make_obj(pybind=True, python_binding_type="vtk_wrap")
+        obj.requirements()
+        assert not any(r.startswith("pybind11/") for r in self._required(obj))
+
+    def test_xms_and_extra_dependencies_pass_through(self):
+        """Off VS2019, xms_dependencies and extra_dependencies are used verbatim."""
+        obj = self._make_obj(
+            xms_dependencies=["xmscore/[>=7.0.0 <8.0.0]"],
+            extra_dependencies=["fmt/10.2.1"],
+            overrides={"xmscore": "xmscore/[>=6.0.1 <7.0.0]"},
+        )
+        obj.requirements()
+        required = self._required(obj)
+        assert "xmscore/[>=7.0.0 <8.0.0]" in required, "overrides must be VS2019-only"
+        assert "fmt/10.2.1" in required
+
+    def test_vs2019_dependency_override_replaces_matching_reference(self):
+        """On VS2019 an override replaces its dep, matched on the name before '/'."""
+        obj = self._make_obj(
+            compiler="msvc",
+            version="192",
+            xms_dependencies=["xmscore/[>=7.0.0 <8.0.0]", "xmsgrid/1.2.3"],
+            overrides={"xmscore": "xmscore/[>=6.0.1 <7.0.0]"},
+        )
+        obj.requirements()
+        required = self._required(obj)
+        assert "xmscore/[>=6.0.1 <7.0.0]" in required
+        assert "xmscore/[>=7.0.0 <8.0.0]" not in required
+        assert "xmsgrid/1.2.3" in required, "unlisted deps must be untouched"
+
+
+class TestVs2019BoostWcharT:
+    """Verify configure() forwards wchar_t to the legacy boost on VS2019 only.
+
+    There is deliberately no "boost doesn't declare wchar_t" test here.  The
+    assignment goes through Conan's consumer-side override proxy, which does
+    no validation and cannot raise; Conan 2.31 silently ignores an override for
+    an option the resolved recipe never declares.  A test double that raised on
+    assignment would prove nothing about the real client.
+    """
+
+    def _make_obj(self, compiler="msvc", version="192"):
+        """Create a recipe stub whose configure() reaches the boost propagation."""
+        obj = object.__new__(XmsConan2File)
+        obj.python_namespaced_dir = "core"
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        obj.settings = _make_settings(compiler, version)
+        obj.options = MagicMock()
+        obj.options.pybind = False
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.options.wchar_t = "typedef"
+        boost_opts = MagicMock()
+        obj.options.__getitem__.side_effect = lambda key: boost_opts
+        return obj, boost_opts
+
+    def test_propagates_wchar_t_on_vs2019(self):
+        """The legacy boost 1.74.0.3 exposes wchar_t; the recipe's value flows in."""
+        obj, boost_opts = self._make_obj()
+        obj.configure()
+        assert boost_opts.wchar_t == "typedef"
+
+    def test_no_propagation_off_vs2019(self):
+        """boost/1.86.0 has no wchar_t option, so modern builds never touch it."""
+        obj, boost_opts = self._make_obj(compiler="msvc", version="194")
+        obj.configure()
+        assert not boost_opts.method_calls
+        assert "wchar_t" not in boost_opts.__dict__
+
+
 class TestGetPythonCmakeHints:
     """Verify _get_python_cmake_hints returns correct FindPython3 hints."""
 

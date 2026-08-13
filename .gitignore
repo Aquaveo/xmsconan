@@ -56,3 +56,15 @@ Doxygen/html/*
 build/*
 pybuild/*
 build_py/*
+
+# Coverage artifacts (pytest-cov / coverage.py and gcovr output)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+cov-cpp.xml
+cov-py.xml
+cov-cpp-summary.json
+cov-py-summary.json
+coverage-html-cpp/
+coverage-html-py/
