@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -12,6 +13,21 @@ from .utils import patch_env
 
 
 MODULE = "xmsconan.build_tools.vs2019_build"
+
+#: The interpreter this suite is running under -- which, for a pybind build,
+#: is also the only Python version the recipe can target.
+RUNNING_PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+#: A Python version no test runner will ever be running, so a mismatch is
+#: guaranteed without patching the interpreter out from under the check.
+FOREIGN_PYTHON = "3.7"
+
+#: A passing interpreter check, for the CLI tests that are not about it.
+PYTHON_CHECK_OK = vs.CheckResult("python interpreter", True, "ok")
+
+#: The specs the loop in build() hands to build_library.
+XMSCORE = vs.LibrarySpec("xmscore", True)
+XMSGRID = vs.LibrarySpec("xmsgrid", False)
 
 
 def fake_packager(configurations=None, run_result=0):
@@ -393,6 +409,50 @@ def test_run_preflight_prints_each_check(capsys):
     assert "[FAIL] conan: too new" in out
 
 
+# --- the running interpreter vs. the pybind matrix ----------------------
+
+
+@pytest.mark.parametrize("python_versions,config_filter,ok,expected", [
+    ([FOREIGN_PYTHON], None, False, [
+        f"pybind configurations for Python {FOREIGN_PYTHON}",
+        f"running under Python {RUNNING_PYTHON}",
+        f"re-run from a Python {FOREIGN_PYTHON} environment",
+        f"--python-versions {RUNNING_PYTHON}",
+    ]),
+    ([RUNNING_PYTHON], None, True, [f"Python {RUNNING_PYTHON}, matching"]),
+    ([FOREIGN_PYTHON, RUNNING_PYTHON], None, False,
+     [f"Python {FOREIGN_PYTHON}, {RUNNING_PYTHON}"]),
+    ([FOREIGN_PYTHON], {"options": {"pybind": False}}, True,
+     ["no pybind configuration"]),
+], ids=[
+    "mismatched-interpreter", "matching-interpreter",
+    "one-version-of-the-fan-out-matches", "pybind-free-matrix",
+])
+def test_check_python_versions(python_versions, config_filter, ok, expected):
+    """Only a matrix that really builds pybind constrains the interpreter.
+
+    The recipe hands CMake ``sys.executable`` while the generated
+    CMakeLists.txt requires ``find_package(Python3 <version> EXACT)``, so the
+    interpreter running conan is the target Python whether the developer meant
+    it to be or not. CI never notices -- ``actions/setup-python`` installs the
+    matrix version and conan runs under it -- so the failure only ever shows
+    up on a workstation, hours in, at the first pybind configure.
+
+    Run against the real packager and the real filter, because the whole
+    question is what the *generated and filtered* matrix contains: 12 of the
+    14 configurations have ``pybind=False`` and are indifferent to the running
+    interpreter. And "some of the fan-out matches" is still a failure -- the
+    3.13 half of a default two-version run fails just as hard from a 3.10
+    venv.
+    """
+    check = vs.check_python_versions(
+        [XMSCORE], python_versions=python_versions, config_filter=config_filter,
+    )
+
+    assert check.ok is ok
+    assert all(text in check.detail for text in expected)
+
+
 # --- setup ---------------------------------------------------------------
 
 
@@ -497,11 +557,6 @@ def test_preview_applies_filter(capsys):
 # --- build_library -------------------------------------------------------
 
 
-#: The spec the loop in build() hands to build_library.
-XMSCORE = vs.LibrarySpec("xmscore", True)
-XMSGRID = vs.LibrarySpec("xmsgrid", False)
-
-
 def test_build_library_missing_checkout(tmp_path):
     """A missing library directory is skipped, not fatal."""
     result = vs.build_library(XMSGRID, str(tmp_path))
@@ -599,6 +654,121 @@ def test_build_library_filter_matches_nothing(mock_run, mock_packager_cls, libra
     packager.run.assert_not_called()
     assert result.status == "skipped"
     assert "no configurations matched" in result.message
+
+
+# --- wheels --------------------------------------------------------------
+
+
+#: What the packager hands back for a pybind and a non-pybind configuration.
+PYBIND_CONFIG = {"options": {"pybind": True, "python_version": "3.10"}}
+PLAIN_CONFIG = {"options": {"pybind": False}}
+
+
+@pytest.mark.parametrize("configurations,extracted,version,expected,calls", [
+    ([PLAIN_CONFIG], True, "7.0.0", False, 0),
+    ([PLAIN_CONFIG, PYBIND_CONFIG], False, None, False, 1),
+    ([PLAIN_CONFIG, PYBIND_CONFIG], True, "7.0.0", True, 1),
+], ids=["no-pybind-configuration", "incomplete-fan-out", "extracted"])
+def test_extract_wheels(configurations, extracted, version, expected, calls, capsys):
+    """A wheel is only claimed when this run built one for every version asked for.
+
+    Three things have to hold, and each one is a way to publish the wrong
+    thing to devpi:
+
+    * ``extract_wheel`` searches the whole local cache, so a matrix with no
+      pybind configuration must not call it at all -- it would find last
+      week's wheel and report success.
+    * Its False return covers a *partial* fan-out (wheels for some
+      ``--python-versions`` entries but not all), which this driver can cause
+      because it owns that flag, so the result is propagated rather than
+      reduced to "something was copied".
+    * ``collect_dependency_libs`` only runs once there is a wheel to repair,
+      and fills the ``libs`` directory that ``xmsconan_wheel_repair --platform
+      windows`` passes to ``delvewheel --add-path`` unconditionally.
+    """
+    packager = fake_packager()
+    packager.extract_wheel.return_value = extracted
+
+    assert vs.extract_wheels(packager, configurations, "wheelhouse", version) is expected
+
+    assert packager.extract_wheel.call_count == calls
+    if calls:
+        # a --version of None must not become the literal string "None"
+        assert packager.extract_wheel.call_args == mock.call(
+            "wheelhouse", version=version or "*",
+        )
+    else:
+        assert "no pybind configuration was built" in capsys.readouterr().out
+    if expected:
+        packager.collect_dependency_libs.assert_called_once_with(
+            os.path.join("wheelhouse", "libs")
+        )
+    else:
+        packager.collect_dependency_libs.assert_not_called()
+
+
+@pytest.mark.parametrize("wheel_dir,run_result,extracted,expected", [
+    ("wheelhouse", 0, True, True),
+    ("wheelhouse", 0, False, False),
+    (None, 0, True, None),
+    ("wheelhouse", 1, True, None),
+], ids=["extracted", "extraction-failed", "no-wheel-dir", "build-failed"])
+@mock.patch(f"{MODULE}.XmsConanPackager")
+@mock.patch(f"{MODULE}.subprocess.run")
+def test_build_library_extracts_wheels(mock_run, mock_packager_cls, wheel_dir,
+                                       run_result, extracted, expected, library_root):
+    """--wheel-dir extracts after a clean build, and only after a clean build.
+
+    A failed configuration leaves the extraction alone on purpose: the cache
+    may still hold a wheel from an earlier run, and staging *that* for
+    ``xmsconan_wheel_deploy`` is worse than staging nothing. The run already
+    exits 1 on the failure itself.
+    """
+    packager = fake_packager(configurations=[PYBIND_CONFIG], run_result=run_result)
+    mock_packager_cls.return_value = packager
+
+    with mock.patch(f"{MODULE}.extract_wheels", return_value=extracted) as extract:
+        result = vs.build_library(
+            XMSCORE, str(library_root), version="7.0.0", wheel_dir=wheel_dir,
+        )
+
+    assert result.wheels is expected
+    assert extract.called is (expected is not None)
+
+
+@pytest.mark.parametrize("wheels,expected_code,expected_out", [
+    (True, 0, ["==> Wheels: 1 in", "xmscore-7.0.0-cp310-cp310-win_amd64.whl",
+               "xmsconan_wheel_repair", "xmsconan_wheel_deploy"]),
+    (False, 1, ["==> Wheels: none in"]),
+], ids=["staged", "nothing-extracted"])
+def test_print_summary_reports_the_wheel_directory(wheels, expected_code, expected_out,
+                                                   tmp_path, capsys):
+    """A build asked for a wheel that produced none has not done what was asked.
+
+    That is a build failure (exit 1), not a new exit code: the run was asked
+    for an artifact, it ran, and the artifact is not there -- and the
+    ``xmsconan_wheel_repair`` the developer runs next would be handed an empty
+    directory. The listing covers the whole directory rather than just this
+    run's copies, because the whole directory is what repair and deploy act
+    on: a wheel left behind by an earlier run is about to be published too.
+    """
+    wheel_dir = tmp_path / "wheelhouse"
+    if wheels:
+        wheel_dir.mkdir()
+        (wheel_dir / "xmscore-7.0.0-cp310-cp310-win_amd64.whl").write_text("", encoding="utf-8")
+        # the staged dependency libraries are not wheels and must not be listed
+        (wheel_dir / "libs").mkdir()
+        (wheel_dir / "boost_thread.dll").write_text("", encoding="utf-8")
+
+    exit_code = vs.print_summary(
+        [vs.LibraryResult("xmscore", "ok", attempted=2, succeeded=2, wheels=wheels)],
+        wheel_dir=str(wheel_dir),
+    )
+
+    assert exit_code == expected_code
+    captured = capsys.readouterr()
+    assert all(text in captured.out for text in expected_out)
+    assert ("no complete set of wheels" in captured.err) is not wheels
 
 
 # --- build ---------------------------------------------------------------
@@ -847,9 +1017,10 @@ UPLOAD_ARGV = ["upload", "--library", "xmscore", "--version", "7.0.0"]
     "setup-conan-not-on-path", "setup-bad-password-file", "setup-conan-exit-code",
     "build-generator-not-on-path", "upload-conan-not-on-path", "upload-refused-remote",
 ])
+@mock.patch(f"{MODULE}.check_python_versions", return_value=PYTHON_CHECK_OK)
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
-def test_main_reports_a_failing_verb(mock_preflight, verb, exception, argv, exit_code,
-                                     message, capsys):
+def test_main_reports_a_failing_verb(mock_preflight, mock_python_check, verb, exception,
+                                     argv, exit_code, message, capsys):
     """Every subcommand turns a failure into a message on stderr, not a traceback.
 
     An executable that will not start and a bad request are both "exit 2" by
@@ -862,10 +1033,12 @@ def test_main_reports_a_failing_verb(mock_preflight, verb, exception, argv, exit
     assert message in capsys.readouterr().err
 
 
+@mock.patch(f"{MODULE}.check_python_versions", return_value=PYTHON_CHECK_OK)
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
 @mock.patch(f"{MODULE}.build",
             side_effect=PermissionError("[Errno 13] Permission denied: 'profile.txt'"))
-def test_main_build_reports_an_io_error_for_what_it_is(mock_build, mock_preflight, capsys):
+def test_main_build_reports_an_io_error_for_what_it_is(mock_build, mock_preflight,
+                                                       mock_python_check, capsys):
     """A disk or permission fault is reported verbatim, not blamed on PATH.
 
     Writing a build profile and reading the VS toolset marker both raise
@@ -925,15 +1098,18 @@ def test_main_build_preflight_failure(mock_preflight, capsys):
     assert "preflight failed" in capsys.readouterr().err
 
 
+@mock.patch(f"{MODULE}.check_python_versions", return_value=PYTHON_CHECK_OK)
 @mock.patch(f"{MODULE}.build",
             return_value=[vs.LibraryResult("xmscore", "ok", attempted=14, succeeded=14)])
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
-def test_main_build_passes_every_flag(mock_preflight, mock_build, tmp_path):
+def test_main_build_passes_every_flag(mock_preflight, mock_build, mock_python_check,
+                                      tmp_path, capsys):
     """Each build flag reaches build() and the summary sets the exit code."""
     exit_code = run_main([
         "build", "--root", str(tmp_path), "--only", "xmscore",
         "--continue-on-error", "--no-generate", "--log-dir", "logs",
         "--python-versions", "3.13", "--version", "7.0.0",
+        "--wheel-dir", str(tmp_path / "wheelhouse"),
     ])
 
     assert exit_code == 0
@@ -942,15 +1118,21 @@ def test_main_build_passes_every_flag(mock_preflight, mock_build, tmp_path):
     assert args[1] == str(tmp_path)
     assert kwargs == {
         "version": "7.0.0", "generate": False, "python_versions": ["3.13"],
-        "config_filter": None, "log_dir": "logs", "continue_on_error": True,
+        "config_filter": None, "log_dir": "logs",
+        "wheel_dir": str(tmp_path / "wheelhouse"), "continue_on_error": True,
     }
     mock_preflight.assert_called_once_with(remote=vs.VS2019_REMOTE_NAME)
+    # --wheel-dir has to reach the summary too, or a run that extracted
+    # nothing would still exit 0
+    assert "==> Wheels: none" in capsys.readouterr().out
 
 
+@mock.patch(f"{MODULE}.check_python_versions", return_value=PYTHON_CHECK_OK)
 @mock.patch(f"{MODULE}.build",
             return_value=[vs.LibraryResult("xmscore", "ok", attempted=14, succeeded=14)])
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
-def test_main_build_remote_name_reaches_preflight(mock_preflight, mock_build, tmp_path):
+def test_main_build_remote_name_reaches_preflight(mock_preflight, mock_build,
+                                                  mock_python_check, tmp_path):
     """--remote-name redirects the preflight check, matching setup's flag.
 
     ``setup --remote-name scratch`` is a supported way to point a machine at
@@ -964,12 +1146,43 @@ def test_main_build_remote_name_reaches_preflight(mock_preflight, mock_build, tm
     mock_preflight.assert_called_once_with(remote="scratch")
 
 
+@mock.patch(f"{MODULE}.check_python_versions", return_value=PYTHON_CHECK_OK)
 @mock.patch(f"{MODULE}.build",
             return_value=[vs.LibraryResult("xmscore", "failed", attempted=14, failed=1)])
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
-def test_main_build_failure_exit_code(mock_preflight, mock_build):
+def test_main_build_failure_exit_code(mock_preflight, mock_build, mock_python_check):
     """A failed configuration makes the whole run exit nonzero."""
     assert run_main(["build"]) == 1
+
+
+@pytest.mark.parametrize("extra_argv,exit_code,build_ran", [
+    ([], 2, False),
+    (["--filter", '{"options": {"pybind": false}}'], 0, True),
+], ids=["pybind-matrix-is-refused", "pybind-free-matrix-proceeds"])
+@mock.patch(f"{MODULE}.build",
+            return_value=[vs.LibraryResult("xmscore", "ok", attempted=12, succeeded=12)])
+@mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
+def test_main_build_checks_the_interpreter_against_the_real_matrix(
+        mock_preflight, mock_build, extra_argv, exit_code, build_ran, tmp_path, capsys):
+    """The interpreter check is scoped to matrices that actually build pybind.
+
+    Twelve of the fourteen configurations never touch Python, so a developer
+    building only those from whatever virtualenv they happen to be in has to
+    keep working -- which is why this runs against the *generated and
+    filtered* matrix rather than the flag values. Both directions are the
+    point: the same mismatched ``--python-versions`` fails a pybind matrix
+    before a single ``conan create`` and passes a pybind-free one.
+    """
+    assert run_main([
+        "build", "--root", str(tmp_path),
+        "--python-versions", FOREIGN_PYTHON,
+    ] + extra_argv) == exit_code
+
+    assert mock_build.called is build_ran
+    captured = capsys.readouterr()
+    if not build_ran:
+        assert f"conan is running under Python {RUNNING_PYTHON}" in captured.out
+        assert "preflight failed" in captured.err
 
 
 @mock.patch(f"{MODULE}.upload", return_value=0)
