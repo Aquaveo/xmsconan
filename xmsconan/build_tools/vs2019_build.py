@@ -16,11 +16,40 @@ Three subcommands::
 build must never push binaries to a shared remote as a side effect, so a
 human looks at the build result before running ``upload``.
 
+Python wheels follow the same split.  ``build --wheel-dir DIR`` copies each
+pybind package's ``.whl`` out of the Conan cache and stages the shared
+libraries the repair step needs; *repairing* and *publishing* stay separate
+commands, exactly as ``upload`` is separate from ``build`` and for the same
+reason::
+
+    # from a Python 3.10 virtual environment
+    xmsconan_vs2019 build --root E:\code\xms\migration --version 7.0.0 \
+        --python-versions 3.10 --filter '{"options": {"pybind": true}}' \
+        --wheel-dir wheelhouse
+    xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
+    xmsconan_wheel_deploy --wheel-dir wheelhouse
+
+**One run per Python version, from an interpreter of that version.**
+:class:`~xmsconan.xms_conan2_file.XmsConan2File` points CMake at
+``sys.executable`` -- the interpreter running conan -- while the generated
+``CMakeLists.txt`` requires ``find_package(Python3 ${PYTHON_TARGET_VERSION}
+EXACT REQUIRED)``.  CI satisfies that implicitly, because
+``actions/setup-python`` installs the matrix version and conan runs under it;
+a workstation does not, so a 3.12 virtualenv building
+``--python-versions 3.10`` fails every pybind configuration at configure
+time.  :func:`check_python_versions` catches that before anything is
+compiled, and only when the *filtered* matrix actually contains a pybind
+configuration -- the other twelve configurations do not care which
+interpreter is running.
+
 Process exit codes are the contract with whatever wrapper script drives
 this, so they are distinct:
 
 * ``0`` -- everything asked for happened.
-* ``1`` -- a library failed to build, or ``conan upload`` failed.
+* ``1`` -- a library failed to build, ``conan upload`` failed, or a
+  ``--wheel-dir`` run produced no wheel.  A missing wheel is a build failure
+  rather than a code of its own: the run was asked for an artifact, it ran,
+  and the artifact is not there.
 * ``2`` -- the request or the machine was wrong: a bad flag, a ``--root``
   that does not exist, a selection that matches no library, a failed
   preflight (from either ``setup`` or ``build`` -- the same condition gets
@@ -185,6 +214,13 @@ class LibraryResult:
         failed: Configurations that failed.
         elapsed: Wall-clock seconds spent on this library.
         message: Why it was skipped, or what went wrong.
+        wheels: True when ``--wheel-dir`` was given and a wheel was extracted
+            for every requested Python version, False when the extraction
+            produced nothing or only part of the fan-out, and None when no
+            wheel was asked for -- or when the library never got that far
+            (skipped, or a configuration failed).  None therefore never means
+            "a wheel is missing"; those runs already exit nonzero on their own
+            status.
     """
 
     name: str
@@ -194,6 +230,7 @@ class LibraryResult:
     failed: int = 0
     elapsed: float = 0.0
     message: str = ""
+    wheels: Optional[bool] = None
 
 
 # --- library selection ---------------------------------------------------
@@ -497,8 +534,27 @@ def check_remote_configured(remote=VS2019_REMOTE_NAME):
     return CheckResult(name, True, "configured")
 
 
+def print_check(check):
+    """Print one check result in the preflight's OK/FAIL format.
+
+    Args:
+        check: The :class:`CheckResult` to print.
+
+    Returns:
+        ``check``, so a caller can print and collect in one expression.
+    """
+    print(f"  [{'OK' if check.ok else 'FAIL'}] {check.name}: {check.detail}")
+    return check
+
+
 def run_preflight(remote=VS2019_REMOTE_NAME):
-    """Run every preflight check and print the results.
+    """Run every *machine* preflight check and print the results.
+
+    Only checks that need nothing but the machine live here, because this
+    runs from ``setup`` too, where there is no build request to check against.
+    The one check that does need the request -- the running interpreter versus
+    the pybind configurations, :func:`check_python_versions` -- is run by
+    ``build`` afterwards and printed into the same block.
 
     Args:
         remote: Remote name the build publishes to.
@@ -513,7 +569,7 @@ def run_preflight(remote=VS2019_REMOTE_NAME):
         check_remote_configured(remote),
     ]
     for check in checks:
-        print(f"  [{'OK' if check.ok else 'FAIL'}] {check.name}: {check.detail}")
+        print_check(check)
     return checks
 
 
@@ -612,6 +668,87 @@ def _configure(packager, config_filter):
     return packager.configurations
 
 
+def _pybind_python_versions(configurations):
+    """Return the ``python_version`` values of the pybind configurations.
+
+    Every pybind configuration carries a ``"X.Y"`` ``python_version`` -- the
+    packager sets it as it fans the variants out -- so the sort is numeric
+    rather than lexicographic; ``"3.7"`` sorts after ``"3.13"`` as a string.
+
+    Args:
+        configurations: A generated (and filtered) configuration list.
+
+    Returns:
+        Sorted list of ``"X.Y"`` strings; empty when nothing in
+        ``configurations`` builds pybind.
+    """
+    versions = {
+        configuration.get("options", {}).get("python_version")
+        for configuration in configurations
+        if configuration.get("options", {}).get("pybind")
+    }
+    return sorted(versions, key=lambda v: tuple(int(part) for part in v.split(".")))
+
+
+def check_python_versions(libraries, python_versions=None, config_filter=None):
+    """Check the interpreter running conan against the pybind configurations.
+
+    The recipe hands CMake ``Python3_EXECUTABLE = sys.executable`` while the
+    generated ``CMakeLists.txt`` requires ``find_package(Python3
+    ${PYTHON_TARGET_VERSION} EXACT REQUIRED)``, so the interpreter running
+    conan *is* the target Python.  CI gets that for free from
+    ``actions/setup-python``; on a workstation the developer supplies it, and
+    a mismatch fails every pybind configuration at configure time -- an hour
+    or two in, after the twelve configurations that do not care have built.
+
+    This is deliberately not one of the :func:`run_preflight` checks.  It has
+    to see the *generated and filtered* matrix: twelve of the fourteen
+    configurations have ``pybind=False`` and are indifferent to the running
+    interpreter, and ``--filter`` can remove the pybind pair outright, so
+    checking the flag values alone would fail builds that work today.  The
+    matrix is a function of the platform key, ``python_versions`` and
+    ``config_filter`` -- not of the library -- so generating it once for the
+    first selected library answers for the whole run.
+
+    Args:
+        libraries: :class:`LibrarySpec` list from :func:`select_libraries`;
+            must not be empty (the caller rejects an empty selection first).
+        python_versions: Python versions for the pybind variants.
+        config_filter: Filter dict for ``filter_configurations``, or None.
+
+    Returns:
+        A :class:`CheckResult`.  ``ok`` is True when the filtered matrix has
+        no pybind configuration at all, or when every pybind configuration
+        targets the running version.
+
+    Raises:
+        ValueError: When ``python_versions`` holds an entry the packager
+            rejects, or ``config_filter`` names an unknown key.
+    """
+    name = "python interpreter"
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    packager = _new_packager(libraries[0].name, ".", python_versions)
+    requested = _pybind_python_versions(_configure(packager, config_filter))
+    if not requested:
+        return CheckResult(
+            name, True, f"Python {running} (no pybind configuration in this matrix)",
+        )
+    if requested == [running]:
+        return CheckResult(name, True, f"Python {running}, matching the pybind matrix")
+    return CheckResult(
+        name, False,
+        f"this run would build pybind configurations for Python "
+        f"{', '.join(requested)}, but conan is running under Python {running} "
+        f"({sys.executable}). The recipe points CMake at the interpreter "
+        f"running conan and the generated CMakeLists.txt requires that exact "
+        f"version, so every pybind configuration would fail at configure time. "
+        f"Either re-run from a Python {requested[0]} environment (a virtualenv "
+        f"of that version with conan and xmsconan installed), or pass "
+        f"--python-versions {running} to build for the interpreter you are "
+        f"already running.",
+    )
+
+
 def preview(libraries, python_versions=None, config_filter=None):
     """Print the configuration matrix for each library without building.
 
@@ -631,8 +768,53 @@ def preview(libraries, python_versions=None, config_filter=None):
     return 0
 
 
+def extract_wheels(packager, configurations, wheel_dir, version=None):
+    """Copy the pybind wheels out of the Conan cache and stage the repair libs.
+
+    Both halves are what the generated ``build.py`` does in CI, in the same
+    order and for the same reasons:
+
+    * ``extract_wheel`` returns False on a *partial* fan-out -- wheels found
+      for some ``--python-versions`` entries but not all -- so its result is
+      propagated rather than reduced to "something was copied".  This driver
+      controls ``--python-versions``, so a partial result means the developer
+      asked for two wheels and is about to publish one.
+    * ``collect_dependency_libs`` fills ``<wheel_dir>/libs``, which is not
+      optional on Windows: ``xmsconan_wheel_repair --platform windows`` hands
+      ``delvewheel repair --add-path <wheel_dir>/libs`` unconditionally, and a
+      repair that finds nothing there produces a wheel that imports on the
+      build box and fails everywhere else.
+
+    An empty pybind set short-circuits: ``extract_wheel`` searches the whole
+    local cache, so on a machine that built a wheel last week it would happily
+    copy *that* wheel out and report success for a matrix that never built one.
+
+    Args:
+        packager: The :class:`~xmsconan.package_tools.packager.XmsConanPackager`
+            that just ran; it carries the ``python_versions`` the fan-out is
+            checked against.
+        configurations: The configurations that were built.
+        wheel_dir: Directory to copy the ``.whl`` files into.
+        version: Package version, or None to match any version in the cache.
+
+    Returns:
+        True when a wheel was extracted for every requested Python version.
+    """
+    if not _pybind_python_versions(configurations):
+        print(
+            f"==> no pybind configuration was built, so there is no wheel to "
+            f"extract into {wheel_dir}"
+        )
+        return False
+    if not packager.extract_wheel(wheel_dir, version=version or "*"):
+        return False
+    packager.collect_dependency_libs(os.path.join(wheel_dir, "libs"))
+    return True
+
+
 def build_library(library: LibrarySpec, root, version=None, generate=True,
-                  python_versions=None, config_filter=None, log_dir=None):
+                  python_versions=None, config_filter=None, log_dir=None,
+                  wheel_dir=None):
     """Generate build files for one library and build the VS2019 matrix.
 
     A missing checkout or ``build.toml`` is reported and skipped rather than
@@ -649,6 +831,11 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
         log_dir: Directory for per-configuration ``conan create`` logs.
+        wheel_dir: Directory to extract the pybind wheels into, or None to
+            skip wheel handling entirely.  Extraction is skipped when any
+            configuration failed: the cache may still hold a wheel from an
+            earlier run, and staging *that* for ``xmsconan_wheel_deploy`` is
+            worse than staging none.
 
     Returns:
         A :class:`LibraryResult`.
@@ -698,6 +885,9 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
         )
     print(f"==> {name}: building {attempted} configuration(s)")
     failed = packager.run(log_dir=log_dir)
+    wheels = None
+    if wheel_dir and not failed:
+        wheels = extract_wheels(packager, configurations, wheel_dir, version)
     return LibraryResult(
         name,
         "failed" if failed else "ok",
@@ -705,11 +895,13 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
         succeeded=attempted - failed,
         failed=failed,
         elapsed=time.monotonic() - start,
+        wheels=wheels,
     )
 
 
 def build(libraries, root, version=None, generate=True, python_versions=None,
-          config_filter=None, log_dir=None, continue_on_error=False):
+          config_filter=None, log_dir=None, wheel_dir=None,
+          continue_on_error=False):
     """Build every selected library in dependency order.
 
     ``packager.run()`` already continues past an individual failing
@@ -726,6 +918,7 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
         log_dir: Directory for per-configuration ``conan create`` logs.
+        wheel_dir: Directory to extract the pybind wheels into, or None.
         continue_on_error: Keep going to the next library after a failure.
 
     Returns:
@@ -738,7 +931,7 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
         results.append(build_library(
             library, root, version=version, generate=generate,
             python_versions=python_versions, config_filter=config_filter,
-            log_dir=log_dir,
+            log_dir=log_dir, wheel_dir=wheel_dir,
         ))
         if results[-1].status == "failed" and not continue_on_error:
             print(
@@ -749,18 +942,83 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
     return results
 
 
-def print_summary(results):
+def _wheel_files(wheel_dir):
+    """Return the sorted ``.whl`` filenames in ``wheel_dir``.
+
+    Args:
+        wheel_dir: Directory the wheels were extracted into.  A directory that
+            was never created is the ordinary "nothing was extracted" case, so
+            it yields an empty list rather than raising.
+
+    Returns:
+        Sorted list of filenames.
+    """
+    if not os.path.isdir(wheel_dir):
+        return []
+    return sorted(name for name in os.listdir(wheel_dir) if name.endswith(".whl"))
+
+
+def print_wheel_summary(results, wheel_dir):
+    """Print what is staged in ``wheel_dir`` and whether anything is missing.
+
+    Everything in the directory is listed, not just what this run copied in:
+    the whole directory is what ``xmsconan_wheel_repair`` and
+    ``xmsconan_wheel_deploy`` act on next, so a wheel left over from an
+    earlier run or a different version is about to be published too.
+
+    Args:
+        results: :class:`LibraryResult` list from :func:`build`.
+        wheel_dir: Directory the wheels were extracted into.
+
+    Returns:
+        True when every library that got as far as extraction produced a
+        wheel for every requested Python version.
+    """
+    wheels = _wheel_files(wheel_dir)
+    location = os.path.abspath(wheel_dir)
+    if wheels:
+        print(f"\n==> Wheels: {len(wheels)} in {location}: {', '.join(wheels)}")
+        print(
+            f"    Next: xmsconan_wheel_repair --wheel-dir {wheel_dir} "
+            f"--platform windows, then xmsconan_wheel_deploy --wheel-dir "
+            f"{wheel_dir}"
+        )
+    else:
+        print(f"\n==> Wheels: none in {location}")
+    missing = [result.name for result in results if result.wheels is False]
+    if missing:
+        print(
+            f"error: --wheel-dir was given but no complete set of wheels came "
+            f"out of {', '.join(missing)}. Either the matrix built no pybind "
+            f"configuration -- select it with --filter "
+            f"'{{\"options\": {{\"pybind\": true}}}}' -- or only part of the "
+            f"--python-versions fan-out produced one; pass exactly the version "
+            f"this interpreter is running.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def print_summary(results, wheel_dir=None):
     """Print the per-library summary table and return the exit code.
 
     Args:
         results: :class:`LibraryResult` list from :func:`build`.
+        wheel_dir: Directory wheels were extracted into, or None when
+            ``--wheel-dir`` was not passed.
 
     Returns:
         Process exit code: 1 when any library failed, 3 when the run finished
-        without a single library reaching ``'ok'``, 0 otherwise.  "Nothing
-        happened" is not success -- a typo'd ``--root`` skips every library,
-        and an ``&&`` chain or wrapper script reading exit 0 would go on to
-        upload or tag a release that was never built.
+        without a single library reaching ``'ok'``, 1 again when a wheel was
+        asked for and none was produced, 0 otherwise.  "Nothing happened" is
+        not success -- a typo'd ``--root`` skips every library, and an ``&&``
+        chain or wrapper script reading exit 0 would go on to upload or tag a
+        release that was never built.  A missing wheel is the same kind of
+        event as a failed configuration -- the run was asked for an artifact
+        and did not produce it -- so it reuses code 1 rather than inventing a
+        fourth; the following ``xmsconan_wheel_repair`` would otherwise be
+        handed an empty directory.
     """
     rows = [
         [r.name, r.status, r.attempted, r.succeeded, r.failed,
@@ -774,6 +1032,7 @@ def print_summary(results):
                  "elapsed", "notes"],
         tablefmt="psql",
     ))
+    wheels_ok = print_wheel_summary(results, wheel_dir) if wheel_dir else True
     if any(r.status == "failed" for r in results):
         return 1
     if not any(r.status == "ok" for r in results):
@@ -783,7 +1042,7 @@ def print_summary(results):
             file=sys.stderr,
         )
         return EXIT_NOTHING_BUILT
-    return 0
+    return 0 if wheels_ok else 1
 
 
 # --- upload --------------------------------------------------------------
@@ -945,7 +1204,17 @@ def _add_build_parser(subparsers):
         "--python-versions", nargs="+", metavar="X.Y",
         default=DEFAULT_PYTHON_VERSIONS,
         help=f"Python versions for the pybind variants (default: "
-             f"{' '.join(DEFAULT_PYTHON_VERSIONS)}).",
+             f"{' '.join(DEFAULT_PYTHON_VERSIONS)}). A pybind build only works "
+             f"when this matches the Python running conan, so build wheels one "
+             f"version per run, from a virtual environment of that version.",
+    )
+    build_parser.add_argument(
+        "--wheel-dir", default=None, metavar="DIR",
+        help="After the build, copy each pybind package's .whl into DIR and "
+             "fill DIR/libs with the shared libraries the repair step needs. "
+             "Repairing and publishing stay separate commands: "
+             "xmsconan_wheel_repair --wheel-dir DIR --platform windows, then "
+             "xmsconan_wheel_deploy --wheel-dir DIR.",
     )
     build_parser.add_argument(
         "--filter", default=None, dest="config_filter",
@@ -1088,7 +1357,16 @@ def _run_build(args):
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        if not all(check.ok for check in run_preflight(remote=args.remote_name)):
+        # The interpreter check runs after the matrix exists and --filter has
+        # been applied -- the answer depends on what is actually going to be
+        # built, not on the flag values -- and prints into the same block.
+        checks = run_preflight(remote=args.remote_name) + [print_check(
+            check_python_versions(
+                libraries, python_versions=args.python_versions,
+                config_filter=config_filter,
+            )
+        )]
+        if not all(check.ok for check in checks):
             print(
                 "error: preflight failed; fix the items above and re-run.",
                 file=sys.stderr,
@@ -1098,9 +1376,9 @@ def _run_build(args):
             libraries, args.root, version=args.version,
             generate=not args.no_generate, python_versions=args.python_versions,
             config_filter=config_filter, log_dir=args.log_dir,
-            continue_on_error=args.continue_on_error,
+            wheel_dir=args.wheel_dir, continue_on_error=args.continue_on_error,
         )
-        return print_summary(results)
+        return print_summary(results, wheel_dir=args.wheel_dir)
     except ValueError as exc:
         # Bad --only / --from / --filter, or a malformed --python-versions
         # entry rejected by the packager.
