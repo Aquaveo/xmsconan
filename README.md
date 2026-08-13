@@ -328,7 +328,23 @@ xmsconan_vs2019 upload --library xmscore --version 7.0.0
 
 The recipe forks its third-party dependency *versions* automatically when it sees msvc 192 — the same packages as the modern stack, resolved to the legacy builds the `aquaveo-vs2019` remote publishes msvc 192 binaries for (boost `1.74.0.3`, zlib `1.2.11`). A library whose *sister* dependencies are pinned to a different line on VS2019 declares that itself with the `[vs2019_dependency_overrides]` table in `build.toml` — see `docs/USAGE.md` §7.4 for the recipe attributes and §16 for the full flag reference.
 
-`upload` publishes only `compiler.version=192` binaries and refuses any remote other than `aquaveo-vs2019` unless `--allow-other-remote` is passed, so a mixed local cache can't leak msvc 194 packages onto the legacy remote and a one-word typo can't push legacy packages into the CI remote. It exits nonzero when `conan upload` fails, so a failed publish is never reported as success. `build` exits `1` if a library failed, `2` for a bad request or a machine that can't build, and `3` when nothing was built at all (`docs/USAGE.md` §16.4).
+`upload` publishes only `compiler.version=192` binaries and refuses any remote other than `aquaveo-vs2019` unless `--allow-other-remote` is passed, so a mixed local cache can't leak msvc 194 packages onto the legacy remote and a one-word typo can't push legacy packages into the CI remote. It exits nonzero when `conan upload` fails, so a failed publish is never reported as success. `build` exits `1` if a library failed or a requested wheel never appeared, `2` for a bad request or a machine that can't build, and `3` when nothing was built at all (`docs/USAGE.md` §16.4).
+
+### VS2019 Python wheels — one run per Python version
+
+`build --wheel-dir DIR` copies each pybind package's `.whl` out of the Conan cache and fills `DIR/libs` with the libraries the repair step needs. Repairing and publishing stay separate commands, the same way `build` and `upload` are:
+
+```bash
+# from a Python 3.10 virtual environment with conan + xmsconan installed
+xmsconan vs2019 build --root <root> --version 7.0.0 --python-versions 3.10 \
+    --filter '{"options": {"pybind": true}}' --wheel-dir wheelhouse
+xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
+xmsconan_wheel_deploy --wheel-dir wheelhouse
+```
+
+Run those from **Git Bash** — PowerShell strips the inner quotes out of `--filter`. Repeat from a 3.13 virtual environment, into a different `--wheel-dir`, for the 3.13 wheel.
+
+**The Python running conan is the target Python.** The recipe hands CMake `Python3_EXECUTABLE = sys.executable` while the generated `CMakeLists.txt` requires `find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED)`. In CI `actions/setup-python` installs the matrix version and conan runs under it; on a workstation you supply it, so a 3.12 venv building `--python-versions 3.10` fails every pybind configuration at CMake configure. `build` checks this against the *filtered* matrix before compiling anything and exits 2 — the other twelve configurations don't care which interpreter is running, so a non-pybind build from any environment still works. Full workflow in `docs/USAGE.md` §16.8.
 
 ## Development
 
