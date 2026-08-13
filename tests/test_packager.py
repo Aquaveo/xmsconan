@@ -74,17 +74,16 @@ def test_generate_configurations_windows_matrix(platform_key, expected_msvc_vers
     + 4 testing variants (one per base)
     = 14
 
-    The pybind count is the interesting one for VS2019: the generator skips
-    pybind for ``int(compiler.version) <= 12``, and ``int("192") > 12``, so
-    msvc 192 fans out exactly like msvc 194.
+    The pybind count is the interesting one for VS2019: nothing in the fan-out
+    keys off the msvc version, so msvc 192 produces exactly the same shape as
+    msvc 194.
     """
     p = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
     configs = p.generate_configurations(system_platform=platform_key)
 
-    for cfg in configs:
-        assert cfg["os"] == "Windows"
-        assert cfg["compiler"] == "msvc"
-        assert cfg["compiler.version"] == expected_msvc_version
+    assert {c["os"] for c in configs} == {"Windows"}
+    assert {c["compiler"] for c in configs} == {"msvc"}
+    assert {c["compiler.version"] for c in configs} == {expected_msvc_version}
 
     def select(**opts):
         return [c for c in configs if all(c["options"].get(k) == v for k, v in opts.items())]
@@ -789,20 +788,31 @@ def test_run_log_dir_archives_previous_runs_log(mock_run, tmp_path):
     assert previous.is_file() and previous.read_text() == ""  # current run's log
 
 
-def test_archive_existing_log_disambiguates_same_second(tmp_path):
-    """A second archive with the same mtime second gets a counter suffix."""
-    p = XmsConanPackager("xmscore")
-    log_path = tmp_path / "xmscore-Release.log"
-    log_path.write_text("current")
-    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(os.path.getmtime(log_path)))
-    already_archived = tmp_path / f"xmscore-Release.{stamp}.log"
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_log_dir_archive_disambiguates_same_second(mock_run, tmp_path):
+    """A second archive with the same mtime second gets a counter suffix.
+
+    Two runs of a configuration that fails immediately share an mtime second,
+    so the timestamp alone is not a unique archive name.
+    """
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    previous = log_dir / "xmscore-Release-testing.log"
+    previous.write_text("current")
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(os.path.getmtime(previous)))
+    already_archived = log_dir / f"xmscore-Release-testing.{stamp}.log"
     already_archived.write_text("older")
 
-    p._archive_existing_log(str(log_path))
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
 
-    assert not log_path.exists()
+    p.run(log_dir=str(log_dir))
+
     assert already_archived.read_text() == "older"
-    assert (tmp_path / f"xmscore-Release.{stamp}.1.log").read_text() == "current"
+    assert (log_dir / f"xmscore-Release-testing.{stamp}.1.log").read_text() == "current"
+    assert previous.read_text() == ""  # current run's log
 
 
 @patch_env(clear=True)
@@ -826,12 +836,33 @@ def test_run_survives_unusable_log_dir(mock_makedirs, mock_run, tmp_path, capsys
 
 @patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
-def test_conan_create_survives_unwritable_log_file(mock_run, tmp_path, capsys):
-    """A log file that can't be opened warns and runs on the console instead."""
-    p = XmsConanPackager("xmscore")
+def test_run_survives_unwritable_log_file(mock_run, tmp_path, capsys):
+    """A log file that can't be opened warns and builds on the console instead.
 
-    # A directory that doesn't exist: open() raises FileNotFoundError (OSError).
-    p._conan_create(["conan", "create", "."], None, "Release", str(tmp_path / "gone"))
+    Distinct from the unusable-log-directory case above: there ``os.makedirs``
+    fails and ``run()`` drops logging for the whole matrix; here the directory
+    is fine and only the per-configuration log file cannot be opened, which
+    ``_conan_create`` has to absorb by itself. An OSError escaping either
+    handler would take down a multi-hour matrix over a logging problem.
+
+    ``open`` is patched (rather than the file being made unopenable on disk)
+    because no cross-platform on-disk state produces this failure: an
+    unwritable path is renamed out of the way by the archive step first, and
+    Windows ignores the read-only bit on directories.
+    """
+    real_open = open
+
+    def open_failing_for_logs(file, *args, **kwargs):
+        if str(file).endswith(".log"):
+            raise OSError("no space left on device")
+        return real_open(file, *args, **kwargs)
+
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    with patch("builtins.open", side_effect=open_failing_for_logs):
+        assert p.run(log_dir=str(tmp_path / "logs")) == 0
 
     assert "stdout" not in mock_run.call_args.kwargs
     out = capsys.readouterr().out

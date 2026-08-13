@@ -98,14 +98,16 @@ class XmsConan2File(ConanFile):
     # Generated recipes populate it from the ``[vs2019_dependency_overrides]``
     # table in ``build.toml``; hand-written recipes can set it directly.
     #
-    # CONSTRAINT: an override may change only the VERSION or version range —
-    # the package name on both sides of the entry must be identical.
-    # ``configure()`` and ``run_python_tests()`` iterate the UNRESOLVED
-    # ``xms_dependencies``, so a rename would set options on, and pip-install
-    # from, a package that is no longer in the graph, and would also orphan any
-    # matching ``xms_dependency_options`` key.  Replace the whole dict in a
-    # subclass rather than mutating this one in place (it is shared by every
-    # recipe in the process, exactly like the two lists above).
+    # CONSTRAINT (ENFORCED, see ``_validate_vs2019_dependency_overrides``): an
+    # override may change only the VERSION or version range — the package name
+    # on both sides of the entry must be identical — and its key must match a
+    # declared ``xms_dependencies`` entry.  ``configure()`` and
+    # ``run_python_tests()`` iterate the UNRESOLVED ``xms_dependencies``, so a
+    # rename would set options on, and pip-install from, a package that is no
+    # longer in the graph, and would also orphan any matching
+    # ``xms_dependency_options`` key.  Replace the whole dict in a subclass
+    # rather than mutating this one in place (it is shared by every recipe in
+    # the process, exactly like the two lists above).
     vs2019_dependency_overrides = {}
 
     default_options = {
@@ -134,6 +136,49 @@ class XmsConan2File(ConanFile):
         compiler = str(self.settings.compiler)
         return compiler == "msvc" and str(self.settings.compiler.version) == "192"
 
+    def _validate_vs2019_dependency_overrides(self):
+        """Reject ``vs2019_dependency_overrides`` entries that cannot do what they say.
+
+        Both checks enforce the constraints documented on the attribute, and
+        both run only on msvc 192 — every other toolchain ignores the dict, so
+        an unused override is not an error there:
+
+        * An entry may change the VERSION or version range only; the package
+          name on both sides must be identical.  ``configure()`` and
+          ``run_python_tests()`` iterate the UNRESOLVED ``xms_dependencies``
+          and key ``xms_dependency_options`` by the original package name, so
+          a rename would silently drop that dependency's per-dependency
+          options and pip-install from a package that is no longer in the
+          graph.
+        * An entry's key must match a declared ``xms_dependencies`` package
+          name.  Ignoring a key that matches nothing turns a typo in
+          ``build.toml``'s ``[vs2019_dependency_overrides]`` table into a
+          VS2019 build that quietly resolves the very versions the override
+          was written to replace.
+
+        Raises:
+            ConanException: When an entry renames its package, or names a
+                package this recipe does not declare as an xms_dependency.
+        """
+        for name, reference in self.vs2019_dependency_overrides.items():
+            override_name = reference.split('/')[0]
+            if override_name != name:
+                raise ConanException(
+                    f"vs2019_dependency_overrides entry '{name}' -> '{reference}' renames the "
+                    f"package ('{name}' -> '{override_name}'). An override may change only the "
+                    f"version or version range: configure() and run_python_tests() key off the "
+                    f"unresolved xms_dependencies, so a rename would silently drop "
+                    f"'{name}' option propagation and pip-install."
+                )
+        declared = {dependency.split('/')[0] for dependency in self.xms_dependencies}
+        unmatched = sorted(set(self.vs2019_dependency_overrides) - declared)
+        if unmatched:
+            raise ConanException(
+                f"vs2019_dependency_overrides names {', '.join(unmatched)}, which is not "
+                f"declared in xms_dependencies. Declared xms_dependencies: "
+                f"{', '.join(sorted(declared)) or '(none)'}."
+            )
+
     def _resolved_xms_dependencies(self):
         """Return ``xms_dependencies`` with the VS2019 overrides applied.
 
@@ -141,9 +186,15 @@ class XmsConan2File(ConanFile):
         key matches a dependency's package name (the text before the first
         ``/``) replaces that dependency's full reference.  On every other
         toolchain the list is returned unchanged.
+
+        Raises:
+            ConanException: On msvc 192, when an override renames its package
+                or matches no declared dependency (see
+                ``_validate_vs2019_dependency_overrides``).
         """
         if not self._is_vs2019():
             return list(self.xms_dependencies)
+        self._validate_vs2019_dependency_overrides()
         return [
             self.vs2019_dependency_overrides.get(dependency.split('/')[0], dependency)
             for dependency in self.xms_dependencies
@@ -184,7 +235,16 @@ class XmsConan2File(ConanFile):
                 "recipe so pytest-cov measures only this library's namespace."
             )
 
-        # Raise ConanExceptions for Unsupported Versions
+        self._validate_settings()
+        self._propagate_dependency_options()
+
+    def _validate_settings(self):
+        """Reject compiler / OS combinations this recipe does not support.
+
+        Raises:
+            ConanException: For apple-clang on Linux, gcc older than 5.0, and
+                apple-clang older than 9.0 on macOS.
+        """
         s_os = self.settings.os
         s_compiler = self.settings.compiler
         s_compiler_version = self.settings.compiler.version
@@ -198,6 +258,14 @@ class XmsConan2File(ConanFile):
         if s_compiler == "apple-clang" and s_os == 'Macos' and float(s_compiler_version.value) < 9.0:
             raise ConanException("Clang > 9.0 is required for Mac.")
 
+    def _propagate_dependency_options(self):
+        """Push this recipe's options down onto the packages it consumes.
+
+        Covers the VS2019-only boost ``wchar_t`` forward and the per-library
+        ``pybind`` / ``testing`` / ``python_version`` propagation into every
+        ``xms_dependencies`` entry (with ``xms_dependency_options`` overriding
+        the top-level value per dependency).
+        """
         if self._is_vs2019():
             # The Conan 1 recipe propagated the recipe's own wchar_t setting
             # into the legacy Aquaveo boost; boost/1.86.0 has no such option,

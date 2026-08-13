@@ -44,10 +44,16 @@ def vswhere_installed(tmp_path, monkeypatch):
 # --- library table / selection ------------------------------------------
 
 
-def test_only_xmscore_is_enabled():
-    """Xmscore is the only library on today; the rest await Conan 2."""
-    enabled = [library.name for library in vs.LIBRARIES if library.enabled]
-    assert enabled == ["xmscore"]
+def test_library_table_is_in_dependency_order():
+    """The stack is listed in dependency order and every entry explains itself.
+
+    Deliberately *not* asserting which libraries are enabled. The flag is the
+    one thing that moves as each library migrates to Conan 2, and both the
+    module comment and README promise that enabling one is a single-flag
+    change -- a test pinning today's flags would quietly make it two places.
+    What must not drift is the *order*, because each library builds against
+    the packages produced by the ones before it.
+    """
     assert [library.name for library in vs.LIBRARIES] == [
         "xmscore", "xmsgrid", "xmsinterp", "xmsmesher",
         "xmsextractor", "xmsstamper", "xmsconstraint", "xmsgridtrace",
@@ -56,8 +62,18 @@ def test_only_xmscore_is_enabled():
 
 
 def test_select_libraries_defaults_to_enabled():
-    """No flags selects only the enabled libraries."""
-    assert [library.name for library in vs.select_libraries()] == ["xmscore"]
+    """No flags selects the enabled libraries, in table order.
+
+    Run against a synthetic table for the same reason: the behavior under
+    test is the filtering, not which libraries happen to be on today.
+    """
+    table = (
+        vs.LibrarySpec("first", True),
+        vs.LibrarySpec("second", False),
+        vs.LibrarySpec("third", True),
+    )
+    with mock.patch(f"{MODULE}.LIBRARIES", table):
+        assert [library.name for library in vs.select_libraries()] == ["first", "third"]
 
 
 def test_select_libraries_only_overrides_enabled_flag():
@@ -97,10 +113,42 @@ def test_resolve_credentials_password_file_wins(mock_creds, tmp_path):
         assert vs.resolve_credentials(str(password_file)) == ("toml-user", "s3cret")
 
 
-def test_resolve_credentials_missing_file(tmp_path):
-    """A missing password file errors instead of falling through."""
-    with pytest.raises(ValueError, match="password file not found"):
-        vs.resolve_credentials(str(tmp_path / "absent.txt"))
+@pytest.mark.parametrize("contents,message", [
+    (None, "password file not found"),
+    ("", "password file is empty"),
+    ("   \n", "password file is empty"),
+])
+def test_resolve_credentials_rejects_an_unusable_password_file(contents, message, tmp_path):
+    """An explicitly named password file never falls through to another source.
+
+    Both halves matter. A typo'd path must not silently log you in with the
+    password from ``~/.xmsconan.toml``, and neither must a file that exists
+    but holds nothing -- the secret failed to land in it, and stripping the
+    editor's newline leaves ``""``, which is falsy at exactly the two places
+    the fallback is decided.
+    """
+    password_file = tmp_path / "p.txt"
+    if contents is not None:
+        password_file.write_text(contents, encoding="utf-8")
+    with patch_env({"CONAN_PASSWORD": "from-env"}, clear=True), \
+            mock.patch(f"{MODULE}.load_conan_credentials") as mock_creds, \
+            pytest.raises(ValueError, match=message):
+        vs.resolve_credentials(str(password_file))
+    mock_creds.assert_not_called()
+
+
+def test_resolve_credentials_unreadable_password_file(tmp_path):
+    """A password file that cannot be read is a usage error, not an OSError.
+
+    Escaping as an OSError would reach the CLI's launch-failure arm and be
+    reported as ``conan`` missing from PATH, which is the wrong machine to go
+    looking at.
+    """
+    password_file = tmp_path / "p.txt"
+    password_file.write_text("s3cret\n", encoding="utf-8")
+    with mock.patch("pathlib.Path.read_text", side_effect=PermissionError("denied")), \
+            pytest.raises(ValueError, match="could not read password file"):
+        vs.resolve_credentials(str(password_file))
 
 
 def test_resolve_credentials_from_env():
@@ -112,33 +160,30 @@ def test_resolve_credentials_from_env():
     mock_creds.assert_not_called()
 
 
-@mock.patch(f"{MODULE}.load_conan_credentials",
-            return_value={"username": "toml-user", "password": "from-toml"})
-def test_resolve_credentials_from_config(mock_creds):
+@pytest.mark.parametrize("config,env,kwargs,expected", [
+    ({"username": "toml-user", "password": "from-toml"}, {}, {}, ("toml-user", "from-toml")),
+    ({}, {}, {}, ("aquaveo", None)),
+    ({"password": "from-toml"}, {"CONAN_LOGIN_USERNAME": "env-user"}, {"username": "me"},
+     ("me", "from-toml")),
+], ids=["config-file-supplies-both", "no-source-supplies-anything", "explicit-username-wins"])
+def test_resolve_credentials_falls_back_to_the_config_file(config, env, kwargs, expected):
     """~/.xmsconan.toml is the last resort, and it is read exactly once.
 
     The username used to be resolved separately in ci_tools.conan_setup, which
     both re-opened the file and -- because the caller always passed a truthy
     default -- meant a developer with a personal Artifactory account logged in
-    as ``aquaveo`` with their own password.
+    as ``aquaveo`` with their own password. So each half falls back on its own:
+    an explicit ``--username`` still leaves the file to supply the password,
+    and a file supplying neither yields the shared username with no password
+    at all, which is how conan is asked to prompt.
     """
-    with patch_env(clear=True):
-        assert vs.resolve_credentials() == ("toml-user", "from-toml")
+    with patch_env(env, clear=True), \
+            mock.patch(f"{MODULE}.load_conan_credentials", return_value=config) as mock_creds:
+        credentials = vs.resolve_credentials(**kwargs)
+
+    assert credentials == expected
+    assert (credentials.username, credentials.password) == expected
     mock_creds.assert_called_once()
-
-
-@mock.patch(f"{MODULE}.load_conan_credentials", return_value={})
-def test_resolve_credentials_none_available(mock_creds):
-    """No source supplies a password -> None (conan prompts) and the shared user."""
-    with patch_env(clear=True):
-        assert vs.resolve_credentials() == ("aquaveo", None)
-
-
-@mock.patch(f"{MODULE}.load_conan_credentials", return_value={"password": "from-toml"})
-def test_resolve_credentials_explicit_username_wins(mock_creds):
-    """An explicit --username beats every fallback."""
-    with patch_env({"CONAN_LOGIN_USERNAME": "env-user"}, clear=True):
-        assert vs.resolve_credentials(username="me") == ("me", "from-toml")
 
 
 # --- preflight: visual studio -------------------------------------------
@@ -232,6 +277,30 @@ def test_check_visual_studio_toolset_file_missing(mock_run, vswhere_installed, t
     assert "Desktop development with C++" in check.detail
 
 
+@mock.patch(f"{MODULE}.subprocess.run")
+def test_check_visual_studio_toolset_file_unreadable(mock_run, vswhere_installed, tmp_path):
+    """A marker file that exists but cannot be read names *that* fault.
+
+    It is neither a missing C++ workload nor -- once the OSError escapes into
+    the CLI's launch-failure arm -- ``conan`` missing from PATH. Reporting it
+    as a normal failed check also keeps the remaining preflight checks running.
+    """
+    install_path = tmp_path / "VS2019"
+    build_dir = install_path / "VC" / "Auxiliary" / "Build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "Microsoft.VCToolsVersion.default.txt").write_text("14.29", encoding="utf-8")
+    mock_run.return_value = mock.Mock(stdout=json.dumps([
+        {"installationPath": str(install_path)},
+    ]))
+
+    with mock.patch("builtins.open", side_effect=PermissionError("denied")):
+        check = vs.check_visual_studio_2019()
+
+    assert not check.ok
+    assert "could not read" in check.detail
+    assert "Desktop development with C++" not in check.detail
+
+
 # --- preflight: conan version / remote ----------------------------------
 
 
@@ -244,32 +313,25 @@ def test_check_conan_version_not_runnable(mock_run):
     assert 'pip install "conan~=2.31.0"' in check.detail
 
 
+@pytest.mark.parametrize("stdout,ok,expected", [
+    ("Conan version unknown", False, ["could not parse a version"]),
+    ("Conan version 2.32.0", False, ["outside the pinned ~=2.31.0 series", "package_id"]),
+    ("Conan version 2.31.2\n", True, ["2.31.2"]),
+], ids=["unparseable", "outside-pinned-series", "patch-within-series"])
 @mock.patch(f"{MODULE}.subprocess.run")
-def test_check_conan_version_unparseable(mock_run):
-    """Output without a version number is reported."""
-    mock_run.return_value = mock.Mock(stdout="Conan version unknown")
+def test_check_conan_version(mock_run, stdout, ok, expected):
+    """Only a 2.31.x patch level passes; anything else is reported, not raised.
+
+    A minor bump is a failure rather than a warning because it can change
+    package_id computation and silently detach these hand-built packages from
+    the binaries already on the remote.
+    """
+    mock_run.return_value = mock.Mock(stdout=stdout)
+
     check = vs.check_conan_version()
-    assert not check.ok
-    assert "could not parse a version" in check.detail
 
-
-@mock.patch(f"{MODULE}.subprocess.run")
-def test_check_conan_version_outside_pinned_series(mock_run):
-    """A minor bump fails: it can change package_id computation."""
-    mock_run.return_value = mock.Mock(stdout="Conan version 2.32.0")
-    check = vs.check_conan_version()
-    assert not check.ok
-    assert "outside the pinned ~=2.31.0 series" in check.detail
-    assert "package_id" in check.detail
-
-
-@mock.patch(f"{MODULE}.subprocess.run")
-def test_check_conan_version_patch_within_series_passes(mock_run):
-    """Any 2.31.x patch level is accepted."""
-    mock_run.return_value = mock.Mock(stdout="Conan version 2.31.2\n")
-    check = vs.check_conan_version()
-    assert check.ok
-    assert "2.31.2" in check.detail
+    assert check.ok is ok
+    assert all(text in check.detail for text in expected)
 
 
 @mock.patch(f"{MODULE}.subprocess.run", side_effect=OSError("no conan"))
@@ -358,6 +420,7 @@ def test_setup_appends_vs2019_remote(mock_conan_setup, mock_preflight, tmp_path,
         password="s3cret",
         remote_name="aquaveo-vs2019",
         index=None,
+        use_config_file=False,
     )
     mock_preflight.assert_called_once_with(remote="aquaveo-vs2019")
     assert "s3cret" not in capsys.readouterr().out
@@ -365,43 +428,83 @@ def test_setup_appends_vs2019_remote(mock_conan_setup, mock_preflight, tmp_path,
 
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("x", False, "")])
 @mock.patch(f"{MODULE}.conan_setup")
-def test_setup_returns_one_on_preflight_failure(mock_conan_setup, mock_preflight):
-    """Setup exits nonzero when the machine fails preflight."""
+def test_setup_returns_exit_usage_on_preflight_failure(mock_conan_setup, mock_preflight):
+    """A failed preflight is "the machine was wrong", which is exit 2.
+
+    ``build`` returns EXIT_USAGE for the identical condition, and the module
+    docstring assigns it 2; ``setup`` returning 1 made the same failure mean
+    "a library failed to build" to any wrapper script reading the code.
+    """
     with patch_env(clear=True), \
             mock.patch(f"{MODULE}.load_conan_credentials", return_value={}):
-        assert vs.setup() == 1
+        assert vs.setup() == vs.EXIT_USAGE
+
+
+@mock.patch(f"{MODULE}.run_preflight")
+@mock.patch(f"{MODULE}.conan_setup", side_effect=FileNotFoundError("conan"))
+def test_setup_reports_a_conan_that_will_not_start(mock_conan_setup, mock_preflight):
+    """A conan that will not launch is a ToolNotFoundError naming PATH."""
+    with patch_env(clear=True), \
+            mock.patch(f"{MODULE}.load_conan_credentials", return_value={}), \
+            pytest.raises(vs.ToolNotFoundError, match=r"could not run conan .*Is it on PATH\?"):
+        vs.setup()
+
+    mock_preflight.assert_not_called()
 
 
 # --- preview -------------------------------------------------------------
+
+
+def _table_rows(out):
+    """Return the data rows of the printed configuration table."""
+    return [
+        line for line in out.splitlines()
+        if line.startswith("|") and "compiler.version" not in line
+    ]
 
 
 @patch_env(clear=True)
 def test_preview_generates_the_verified_matrix(capsys):
     """The VS2019 matrix is 14 configs: 4 base + 4 wchar_t + 4 testing + 2 pybind."""
     exit_code = vs.preview(
-        vs.select_libraries(), python_versions=vs.DEFAULT_PYTHON_VERSIONS,
+        [vs.LibrarySpec("xmscore", True)], python_versions=vs.DEFAULT_PYTHON_VERSIONS,
     )
 
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "==> xmscore: 14 configuration(s)" in out
-    # every row is msvc 192, and the table is really printed
-    assert "192" in out
+    # compiler.version is a per-row column, so the claim being made is that
+    # *every* row is msvc 192 -- not that the digits appear somewhere.
+    rows = _table_rows(out)
+    assert len(rows) == 14
+    assert all("192" in row for row in rows)
 
 
 @patch_env(clear=True)
 def test_preview_applies_filter(capsys):
-    """--filter narrows the previewed matrix."""
-    vs.preview(vs.select_libraries(), config_filter={"build_type": "Debug"})
-    assert "==> xmscore: 6 configuration(s)" in capsys.readouterr().out
+    """--filter narrows the previewed matrix.
+
+    Debug keeps half of each non-pybind group and drops pybind entirely
+    (it is Release-only): 2 base + 2 wchar_t + 2 testing + 0 pybind = 6.
+    """
+    vs.preview([vs.LibrarySpec("xmscore", True)], config_filter={"build_type": "Debug"})
+
+    out = capsys.readouterr().out
+    assert "==> xmscore: 6 configuration(s)" in out
+    assert len(_table_rows(out)) == 6
 
 
 # --- build_library -------------------------------------------------------
 
 
+#: The spec the loop in build() hands to build_library.
+XMSCORE = vs.LibrarySpec("xmscore", True)
+XMSGRID = vs.LibrarySpec("xmsgrid", False)
+
+
 def test_build_library_missing_checkout(tmp_path):
     """A missing library directory is skipped, not fatal."""
-    result = vs.build_library("xmsgrid", str(tmp_path))
+    result = vs.build_library(XMSGRID, str(tmp_path))
     assert result.status == "skipped"
     assert "no checkout at" in result.message
 
@@ -409,7 +512,7 @@ def test_build_library_missing_checkout(tmp_path):
 def test_build_library_missing_build_toml(tmp_path):
     """A checkout without build.toml is skipped, not fatal."""
     (tmp_path / "xmsgrid").mkdir()
-    result = vs.build_library("xmsgrid", str(tmp_path))
+    result = vs.build_library(XMSGRID, str(tmp_path))
     assert result.status == "skipped"
     assert "no build.toml" in result.message
 
@@ -418,9 +521,21 @@ def test_build_library_missing_build_toml(tmp_path):
             side_effect=subprocess.CalledProcessError(1, "xmsconan_gen"))
 def test_build_library_generator_failure(mock_run, library_root):
     """A failing xmsconan_gen fails the library without building."""
-    result = vs.build_library("xmscore", str(library_root))
+    result = vs.build_library(XMSCORE, str(library_root))
     assert result.status == "failed"
     assert "xmsconan_gen failed" in result.message
+
+
+@mock.patch(f"{MODULE}.subprocess.run", side_effect=FileNotFoundError("xmsconan_gen"))
+def test_build_library_generator_missing(mock_run, library_root):
+    """An xmsconan_gen that will not start aborts the run instead of failing one library.
+
+    It would fail identically for every remaining library, so it is the
+    machine being wrong (exit 2), not a build failure (exit 1) -- and the
+    message has to name the tool that is actually missing.
+    """
+    with pytest.raises(vs.ToolNotFoundError, match=r"could not run xmsconan_gen .*PATH"):
+        vs.build_library(XMSCORE, str(library_root))
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
@@ -431,7 +546,7 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
     mock_packager_cls.return_value = packager
 
     result = vs.build_library(
-        "xmscore", str(library_root), version="7.0.0",
+        XMSCORE, str(library_root), version="7.0.0",
         python_versions=["3.10", "3.13"], log_dir="logs",
     )
 
@@ -452,7 +567,6 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
     packager.run.assert_called_once_with(log_dir="logs")
     assert (result.status, result.attempted, result.succeeded, result.failed) == \
         ("ok", 14, 14, 0)
-    assert result.elapsed >= 0
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
@@ -463,7 +577,7 @@ def test_build_library_no_generate_and_filter(mock_run, mock_packager_cls, libra
     mock_packager_cls.return_value = packager
 
     result = vs.build_library(
-        "xmscore", str(library_root), generate=False,
+        XMSCORE, str(library_root), generate=False,
         config_filter={"build_type": "Release"},
     )
 
@@ -480,7 +594,7 @@ def test_build_library_filter_matches_nothing(mock_run, mock_packager_cls, libra
     packager = fake_packager(configurations=[])
     mock_packager_cls.return_value = packager
 
-    result = vs.build_library("xmscore", str(library_root))
+    result = vs.build_library(XMSCORE, str(library_root))
 
     packager.run.assert_not_called()
     assert result.status == "skipped"
@@ -498,28 +612,36 @@ def test_build_stops_after_a_failure(capsys):
     ]
     with patch_env(clear=True), \
             mock.patch(f"{MODULE}.build_library", side_effect=results) as build_library:
-        built = vs.build(vs.select_libraries(only=["xmscore", "xmsgrid"]), "root")
+        built = vs.build([XMSCORE, XMSGRID], "root")
 
     assert build_library.call_count == 1
+    # the whole spec is handed down, not just the name: build_library reads
+    # LibrarySpec.name itself now
+    assert build_library.call_args[0][0] is XMSCORE
     assert [r.name for r in built] == ["xmscore"]
     assert "Stopping after xmscore failed" in capsys.readouterr().out
 
 
-def test_build_continue_on_error_and_xms_version():
-    """--continue-on-error moves to the next library; --version sets XMS_VERSION."""
+def test_build_continue_on_error():
+    """--continue-on-error moves on to the next library after one fails."""
     results = [
         vs.LibraryResult("xmscore", "failed"),
         vs.LibraryResult("xmsgrid", "ok"),
     ]
     with patch_env(clear=True), \
             mock.patch(f"{MODULE}.build_library", side_effect=results):
-        built = vs.build(
-            vs.select_libraries(only=["xmscore", "xmsgrid"]), "root",
-            version="7.0.0", continue_on_error=True,
-        )
-        assert os.environ["XMS_VERSION"] == "7.0.0"
+        built = vs.build([XMSCORE, XMSGRID], "root", continue_on_error=True)
 
     assert [r.name for r in built] == ["xmscore", "xmsgrid"]
+
+
+def test_build_exports_xms_version():
+    """--version is exported as XMS_VERSION so it reaches each profile's [buildenv]."""
+    with patch_env(clear=True), \
+            mock.patch(f"{MODULE}.build_library",
+                       return_value=vs.LibraryResult("xmscore", "ok")):
+        vs.build([XMSCORE], "root", version="7.0.0")
+        assert os.environ["XMS_VERSION"] == "7.0.0"
 
 
 # --- summary -------------------------------------------------------------
@@ -598,6 +720,20 @@ def test_upload_allows_a_foreign_remote_when_asked(mock_packager_cls):
     assert packager.upload.call_args.kwargs["remote"] == "scratch"
 
 
+@mock.patch(f"{MODULE}.XmsConanPackager")
+def test_upload_reports_a_conan_that_will_not_start(mock_packager_cls):
+    """A conan that will not launch is a ToolNotFoundError naming PATH.
+
+    Upload runs no preflight, so this is the first thing that touches conan.
+    """
+    packager = fake_packager()
+    packager.upload.side_effect = FileNotFoundError("conan")
+    mock_packager_cls.return_value = packager
+
+    with pytest.raises(vs.ToolNotFoundError, match=r"could not run conan .*Is it on PATH\?"):
+        vs.upload("xmscore", "7.0.0")
+
+
 # --- filter parsing ------------------------------------------------------
 
 
@@ -631,15 +767,16 @@ def run_main(argv):
     return exc_info.value.code
 
 
-def _all_help_strings():
-    """Return the help text of every flag on the parser and its subparsers."""
-    parser = vs._build_parser()
-    actions = []
-    for action in parser._actions:
-        actions.append(action)
-        for subparser in (getattr(action, "choices", None) or {}).values():
-            actions.extend(subparser._actions)
-    return [action.help for action in actions if action.help]
+def _rendered_help(argv, capsys):
+    """Return the rendered ``--help`` output for ``argv``.
+
+    ``COLUMNS`` is forced wide because argparse line-wraps help text to the
+    terminal width, and a wrapped example path would break in the middle and
+    read as an absent placeholder to any assertion below.
+    """
+    with patch_env({"COLUMNS": "200"}):
+        run_main(argv + ["--help"])
+    return capsys.readouterr().out
 
 
 #: Absolute paths rooted in somebody's home directory: C:\Users\<name>\...,
@@ -648,25 +785,25 @@ def _all_help_strings():
 _HOME_PATH_RE = re.compile(r"[A-Za-z]:[\\/]Users[\\/]|/home/|/Users/", re.IGNORECASE)
 
 
-def test_help_carries_no_developer_specific_paths():
+def test_help_carries_no_developer_specific_paths(capsys):
     r"""Every flag's help text uses placeholders, not one machine's real paths.
 
     The published ``--help`` is read by everyone who runs the tool, so an
     example naming a real credential location on one workstation is both
-    noise and a bad hint. Asserted on the raw ``help`` strings rather than
-    on rendered output, which argparse line-wraps to the terminal width.
+    noise and a bad hint.
 
     Asserting the general shape rather than one past offender's name: a
     literal ``"Claude" not in text`` check passes cleanly for a help string
     reading ``C:\\Users\\someone\\secrets\\conan.txt``.
     """
-    help_strings = _all_help_strings()
+    text = "\n".join(
+        _rendered_help(argv, capsys)
+        for argv in ([], ["setup"], ["build"], ["upload"])
+    )
 
-    password_help = [text for text in help_strings if "password" in text]
-    assert password_help, "the --password-file flag lost its help text"
-    assert any(r"C:\path\to\conan-password.txt" in text for text in password_help)
-    offenders = [text for text in help_strings if _HOME_PATH_RE.search(text)]
-    assert not offenders, f"help text names a real home directory: {offenders}"
+    assert r"C:\path\to\conan-password.txt" in text, \
+        "the --password-file example is missing (or was wrapped)"
+    assert not _HOME_PATH_RE.search(text), "help text names a real home directory"
 
 
 @mock.patch(f"{MODULE}.setup", return_value=0)
@@ -690,26 +827,56 @@ def test_main_setup_remote_name_is_reachable(mock_setup):
     assert mock_setup.call_args.kwargs["username"] == "me"
 
 
-@mock.patch(f"{MODULE}.setup", side_effect=FileNotFoundError("conan"))
-def test_main_setup_conan_not_on_path(mock_setup, capsys):
-    """A missing conan executable is a message, not a traceback."""
-    assert run_main(["setup"]) == 2
-    assert "Is it on PATH?" in capsys.readouterr().err
+#: A complete `upload` invocation; both flags are required, never defaulted.
+UPLOAD_ARGV = ["upload", "--library", "xmscore", "--version", "7.0.0"]
 
 
-@mock.patch(f"{MODULE}.setup", side_effect=ValueError("password file not found: p"))
-def test_main_setup_bad_password_file(mock_setup, capsys):
-    """A missing password file exits 2 with the reason on stderr."""
-    assert run_main(["setup", "--password-file", "p"]) == 2
-    assert "password file not found" in capsys.readouterr().err
+@pytest.mark.parametrize("verb,exception,argv,exit_code,message", [
+    ("setup", vs.ToolNotFoundError("could not run conan (x). Is it on PATH?"),
+     ["setup"], 2, "Is it on PATH?"),
+    ("setup", ValueError("password file not found: p"),
+     ["setup", "--password-file", "p"], 2, "password file not found"),
+    ("setup", subprocess.CalledProcessError(3, "conan"), ["setup"], 3, "conan setup failed"),
+    ("build", vs.ToolNotFoundError("could not run xmsconan_gen (x). Is it on PATH?"),
+     ["build", "--root", "."], 2, "Is it on PATH?"),
+    ("upload", vs.ToolNotFoundError("could not run conan (x). Is it on PATH?"),
+     UPLOAD_ARGV, 2, "Is it on PATH?"),
+    ("upload", ValueError("refusing to upload"),
+     UPLOAD_ARGV + ["--remote", "aquaveo"], 2, "refusing to upload"),
+], ids=[
+    "setup-conan-not-on-path", "setup-bad-password-file", "setup-conan-exit-code",
+    "build-generator-not-on-path", "upload-conan-not-on-path", "upload-refused-remote",
+])
+@mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
+def test_main_reports_a_failing_verb(mock_preflight, verb, exception, argv, exit_code,
+                                     message, capsys):
+    """Every subcommand turns a failure into a message on stderr, not a traceback.
+
+    An executable that will not start and a bad request are both "exit 2" by
+    the module's exit-code contract; a conan command that ran and failed
+    propagates its own code instead.
+    """
+    with mock.patch(f"{MODULE}.{verb}", side_effect=exception):
+        assert run_main(argv) == exit_code
+
+    assert message in capsys.readouterr().err
 
 
-@mock.patch(f"{MODULE}.setup",
-            side_effect=subprocess.CalledProcessError(3, "conan"))
-def test_main_setup_conan_failure(mock_setup, capsys):
-    """A failing conan command propagates its exit code."""
-    assert run_main(["setup"]) == 3
-    assert "conan setup failed" in capsys.readouterr().err
+@mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
+@mock.patch(f"{MODULE}.build",
+            side_effect=PermissionError("[Errno 13] Permission denied: 'profile.txt'"))
+def test_main_build_reports_an_io_error_for_what_it_is(mock_build, mock_preflight, capsys):
+    """A disk or permission fault is reported verbatim, not blamed on PATH.
+
+    Writing a build profile and reading the VS toolset marker both raise
+    OSError from inside the same try, so a single "could not run conan -- is
+    it on PATH?" arm sent the reader to check an installation that was fine.
+    """
+    assert run_main(["build", "--root", "."]) == 2
+
+    err = capsys.readouterr().err
+    assert "Permission denied" in err
+    assert "Is it on PATH?" not in err
 
 
 @mock.patch(f"{MODULE}.preview", return_value=0)
@@ -718,7 +885,8 @@ def test_main_build_preview(mock_preview):
     assert run_main(["build", "--preview", "--filter", '{"build_type": "Debug"}']) == 0
     mock_preview.assert_called_once()
     assert mock_preview.call_args.kwargs["config_filter"] == {"build_type": "Debug"}
-    assert mock_preview.call_args.kwargs["python_versions"] == ["3.10", "3.13"]
+    # the argparse default is the module tuple itself, handed through as-is
+    assert mock_preview.call_args.kwargs["python_versions"] == ("3.10", "3.13")
 
 
 def test_main_build_unknown_library(capsys):
@@ -749,14 +917,6 @@ def test_main_build_missing_root(capsys, tmp_path):
     assert "--root directory not found" in capsys.readouterr().err
 
 
-@mock.patch(f"{MODULE}.build", side_effect=FileNotFoundError("conan"))
-@mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
-def test_main_build_conan_not_on_path(mock_preflight, mock_build, capsys, tmp_path):
-    """A missing conan executable is a message, not a traceback."""
-    assert run_main(["build", "--root", str(tmp_path)]) == 2
-    assert "Is it on PATH?" in capsys.readouterr().err
-
-
 @mock.patch(f"{MODULE}.run_preflight",
             return_value=[vs.CheckResult("vs", False, "missing")])
 def test_main_build_preflight_failure(mock_preflight, capsys):
@@ -784,6 +944,24 @@ def test_main_build_passes_every_flag(mock_preflight, mock_build, tmp_path):
         "version": "7.0.0", "generate": False, "python_versions": ["3.13"],
         "config_filter": None, "log_dir": "logs", "continue_on_error": True,
     }
+    mock_preflight.assert_called_once_with(remote=vs.VS2019_REMOTE_NAME)
+
+
+@mock.patch(f"{MODULE}.build",
+            return_value=[vs.LibraryResult("xmscore", "ok", attempted=14, succeeded=14)])
+@mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
+def test_main_build_remote_name_reaches_preflight(mock_preflight, mock_build, tmp_path):
+    """--remote-name redirects the preflight check, matching setup's flag.
+
+    ``setup --remote-name scratch`` is a supported way to point a machine at
+    a different Artifactory repo, but preflight required the hard-coded
+    aquaveo-vs2019 remote, so every such machine failed at exit 2 with no way
+    to say what it had actually been set up with.
+    """
+    assert run_main([
+        "build", "--root", str(tmp_path), "--remote-name", "scratch",
+    ]) == 0
+    mock_preflight.assert_called_once_with(remote="scratch")
 
 
 @mock.patch(f"{MODULE}.build",
@@ -797,27 +975,10 @@ def test_main_build_failure_exit_code(mock_preflight, mock_build):
 @mock.patch(f"{MODULE}.upload", return_value=0)
 def test_main_upload(mock_upload):
     """Upload requires --library and --version explicitly."""
-    assert run_main(["upload", "--library", "xmscore", "--version", "7.0.0"]) == 0
+    assert run_main(UPLOAD_ARGV) == 0
     mock_upload.assert_called_once_with(
         "xmscore", "7.0.0", remote="aquaveo-vs2019", allow_other_remote=False,
     )
-
-
-@mock.patch(f"{MODULE}.upload", side_effect=ValueError("refusing to upload"))
-def test_main_upload_refused_remote(mock_upload, capsys):
-    """A refused remote exits 2 with the reason, not a traceback."""
-    argv = ["upload", "--library", "xmscore", "--version", "7.0.0",
-            "--remote", "aquaveo"]
-    assert run_main(argv) == 2
-    assert "refusing to upload" in capsys.readouterr().err
-
-
-@mock.patch(f"{MODULE}.upload", side_effect=FileNotFoundError("conan"))
-def test_main_upload_conan_not_on_path(mock_upload, capsys):
-    """Upload runs no preflight, so a missing conan surfaces here as exit 2."""
-    argv = ["upload", "--library", "xmscore", "--version", "7.0.0"]
-    assert run_main(argv) == 2
-    assert "Is it on PATH?" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("argv", [
