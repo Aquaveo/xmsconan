@@ -1,4 +1,5 @@
 """Tests for package_tools.packager."""
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -867,3 +868,60 @@ def test_run_sharded_tests_handles_timeout(mock_run, tmp_path):
 
     result = p.run()
     assert result > 0  # one shard failed
+
+
+# --- collect_dependency_libs ---
+
+
+# 1980-01-01 UTC; ZIP timestamps cannot go earlier.
+ZIP_EPOCH = 315532800
+
+
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_collect_dependency_libs_rewrites_pre_1980_mtimes(mock_run, tmp_path):
+    """Verify staged libraries get a ZIP-representable mtime.
+
+    Conan zeroes mtimes in package tarballs, so libraries restored from a
+    remote are dated 1970. Copying that mtime through to the staging dir
+    makes the wheel repair tools fail with "ZIP does not support
+    timestamps before 1980".
+    """
+    conan_home = tmp_path / "conan_home"
+    pkg_dir = conan_home / "p" / "somepkg" / "p" / "bin"
+    pkg_dir.mkdir(parents=True)
+    for name in ("msvcp140.dll", "libfoo.dylib", "libbar.so"):
+        lib = pkg_dir / name
+        lib.write_bytes(b"MZ")
+        os.utime(lib, (0, 0))
+
+    mock_run.return_value = subprocess.CompletedProcess(
+        [], 0, stdout=f"{conan_home}\n"
+    )
+
+    output_dir = tmp_path / "libs"
+    XmsConanPackager("xmsvtk").collect_dependency_libs(str(output_dir))
+
+    staged = sorted(p.name for p in output_dir.iterdir())
+    assert staged == ["libbar.so", "libfoo.dylib", "msvcp140.dll"]
+    for lib in output_dir.iterdir():
+        assert lib.stat().st_mtime >= ZIP_EPOCH, f"{lib.name} is not ZIP-representable"
+
+
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_collect_dependency_libs_skips_non_libraries(mock_run, tmp_path):
+    """Verify only shared libraries are staged."""
+    conan_home = tmp_path / "conan_home"
+    pkg_dir = conan_home / "p" / "somepkg" / "p" / "bin"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "libbaz.so.1.2").write_bytes(b"\x7fELF")
+    (pkg_dir / "readme.txt").write_text("not a library")
+    (pkg_dir / "tool.exe").write_bytes(b"MZ")
+
+    mock_run.return_value = subprocess.CompletedProcess(
+        [], 0, stdout=f"{conan_home}\n"
+    )
+
+    output_dir = tmp_path / "libs"
+    XmsConanPackager("xmsvtk").collect_dependency_libs(str(output_dir))
+
+    assert sorted(p.name for p in output_dir.iterdir()) == ["libbaz.so.1.2"]

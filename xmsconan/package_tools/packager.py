@@ -574,6 +574,12 @@ class XmsConanPackager(object):
         Scans all packages in the Conan cache and copies shared libraries
         (.so, .dylib, .dll) into output_dir so repair tools can find them.
 
+        Copied libraries have their modification time reset to now. Conan
+        zeroes mtimes in package tarballs, so libraries restored from a
+        remote land in the cache dated 1970. The repair tools (delvewheel,
+        auditwheel, delocate) write these libraries into the wheel's ZIP
+        archive, and ZIP cannot represent timestamps before 1980.
+
         Args:
             output_dir: Directory to copy shared libraries into.
         """
@@ -596,6 +602,7 @@ class XmsConanPackager(object):
                     dst = os.path.join(output_dir, fname)
                     if not os.path.exists(dst):
                         shutil.copy2(os.path.join(root, fname), dst)
+                        os.utime(dst, None)
                         count += 1
         self.printer.print_message(f'Collected {count} shared libraries to {output_dir}')
 
