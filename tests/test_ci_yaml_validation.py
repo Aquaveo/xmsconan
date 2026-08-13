@@ -235,13 +235,51 @@ def test_both_templates_reference_same_xmsconan_version(tmp_path):
     ).read_text(encoding="utf-8")
     gl_content = (gl_out / ".gitlab-ci.yml").read_text(encoding="utf-8")
 
-    # Extract all xmsconan==X.Y.Z references
+    # Extract all xmsconan>=X.Y.Z references
     import re
-    gh_versions = set(re.findall(r"xmsconan==([\d.]+)", gh_content))
-    gl_versions = set(re.findall(r"xmsconan==([\d.]+)", gl_content))
+    gh_versions = set(re.findall(r"xmsconan>=([\d.]+)", gh_content))
+    gl_versions = set(re.findall(r"xmsconan>=([\d.]+)", gl_content))
 
     assert len(gh_versions) == 1, f"GitHub has multiple versions: {gh_versions}"
     assert len(gl_versions) == 1, f"GitLab has multiple versions: {gl_versions}"
     assert gh_versions == gl_versions, (
         f"Version mismatch: GitHub={gh_versions}, GitLab={gl_versions}"
     )
+
+
+@pytest.mark.parametrize("ci_type", ["github", "gitlab"])
+@pytest.mark.parametrize("options", _OPTION_COMBOS, ids=_combo_id)
+def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
+    """Every generated xmsconan install floors with >= and passes --upgrade.
+
+    The two halves are one contract. ``>=`` is what lets a repo pick up an
+    xmsconan release without regenerating its CI, but pip treats an
+    already-satisfied constraint as a no-op, so on a runner image with
+    xmsconan baked in the floor alone installs nothing. That is how the
+    2.15.1 fix never reached xmscore CI (see ad248ed): the image carried a
+    version that already satisfied the floor, so pip skipped the install on
+    every run. ``--upgrade`` is what makes the floor actually resolve to the
+    newest release on devpi.
+    """
+    toml_file = _write_toml(tmp_path, ci_type, options)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    install_lines = [
+        stripped
+        for path in sorted(output_dir.rglob("*")) if path.is_file()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        # Comments describing the pin are not commands; only executed
+        # install steps carry the contract.
+        if (stripped := line.strip()) and not stripped.startswith("#")
+        if "pip install" in stripped and "xmsconan" in stripped
+    ]
+    assert install_lines, f"no xmsconan install rendered for {ci_type} {options}"
+
+    for line in install_lines:
+        assert "xmsconan==" not in line, f"pinned rather than floored: {line}"
+        assert "xmsconan>=" in line, f"no version floor: {line}"
+        assert "--upgrade" in line, (
+            f"floor without --upgrade is a no-op when the runner image "
+            f"already carries a satisfying xmsconan: {line}"
+        )

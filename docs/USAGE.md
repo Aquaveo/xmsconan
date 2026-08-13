@@ -364,21 +364,21 @@ The generated jobs follow the pattern:
 - Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
 
-### 10.3 Pinned tool versions
+### 10.3 Toolchain versions
 
-Build and deploy jobs pin the toolchain rather than floating it:
+Generated jobs constrain the two tools they install, in opposite directions:
 
 | Tool | Spec | Why |
 |---|---|---|
-| `xmsconan` | `==<version that generated the file>` | xmsconan owns the Conan profiles, so a new release can change `compiler.version` — and therefore **every package_id** — under a repo that has not changed a line. |
+| `xmsconan` | `>=<version that generated the file>`, always with `--upgrade` | An xmsconan fix reaches a repo on its next CI run, rather than requiring a regenerate-and-commit pass across the whole suite. The floor still rules out resolving a version older than the templates were generated against. |
 | `conan` | `~=2.31.0` (patch series) | Conan computes package_ids and runs the compatibility plugin; a minor bump can silently detach a build from binaries already on the remote. |
 
-The GitHub `Coverage.yaml` workflow is the deliberate exception and still floats on `>=` — it is the canary that surfaces xmsconan regressions early (see §11.4).
+**`--upgrade` is not optional on the xmsconan install.** pip treats an already-satisfied constraint as a no-op, so on a runner image with xmsconan baked in, the floor alone installs nothing and the job silently runs whatever version the image happens to carry. `test_xmsconan_installs_float_and_upgrade` asserts both halves — the `>=` and the `--upgrade` — across every CI option combination for both templates.
 
 Two consequences worth knowing:
 
-- **Generate CI from a released xmsconan.** With `==`, a workflow generated from an unreleased working copy pins a version that is not on devpi (e.g. `2.15.3.dev2`) and CI will fail to install it.
-- **Upgrades are explicit.** Picking up a new xmsconan or Conan means re-running `xmsconan ci` (and bumping the `conan~=` value in the CI templates) and committing the result — a reviewable change instead of a silent one.
+- **An xmsconan release reaches every repo on its next CI run.** That is the point of the floor, but it cuts both ways: a bad release is suite-wide immediately, and the committed CI file no longer records which xmsconan actually ran. The sharpest edge is that xmsconan owns the Conan profiles — a release that changes a profile's `compiler.version` changes **every package_id**, for every repo, without any repo changing a line. Treat profile changes with the same care as a breaking API change.
+- **Generate CI from a released xmsconan.** A workflow generated from an unreleased working copy writes a floor that nothing on devpi satisfies yet (e.g. `>=2.16.1.dev1` while the newest release is `2.16.0`), and CI fails at `pip install`. Unlike the old `==` pin, this one self-heals: the same file starts working once that version ships.
 
 ---
 
@@ -423,7 +423,7 @@ If the library needs an X server to run its tests (VTK, GUI libs), `xmsconan cov
 ### 11.4 GitLab vs GitHub
 
 - **GitLab**: `xmsconan ci` emits a `Coverage` stage that invokes `xmsconan_coverage` (the legacy alias used throughout the generated CI for consistency with `xmsconan_gen`, `xmsconan_conan_setup`, etc.; equivalent to `xmsconan coverage`), exposes `cov-cpp.xml` as the `cobertura` coverage report, and ships HTML to Pages. The `coverage:` regex still matches gcovr's `TOTAL` line (the `--txt` summary is printed to stdout). The `pages` stage publishes a small landing page at the Pages root linking both `cpp/` and `python/` reports (the Python link is dropped if Python coverage was not produced).
-- **GitHub**: `xmsconan ci` emits a separate `Coverage.yaml` workflow that runs on `push` and `pull_request`, uploads `coverage-html-*/` and `cov-*.xml` as artifacts, and appends a summary table to the run page. The workflow runs directly on `ubuntu-latest` (no docker container) and pip-installs `--upgrade xmsconan>=…` on every run, so the Coverage canary always exercises the latest xmsconan on devpi. Setting `[ci].xvfb = true` apt-installs `xvfb` as an extra step; `[ci].docker_image` is honored by the build/deploy workflows but not by Coverage.
+- **GitHub**: `xmsconan ci` emits a separate `Coverage.yaml` workflow that runs on `push` and `pull_request`, uploads `coverage-html-*/` and `cov-*.xml` as artifacts, and appends a summary table to the run page. The workflow runs directly on `ubuntu-latest` (no docker container), which is what lets the `--upgrade xmsconan>=…` install of §10.3 actually take effect here — the image this job used to run in baked xmsconan in, so the install no-op'd and the canary was locked to whatever the image carried. Setting `[ci].xvfb = true` apt-installs `xvfb` as an extra step; `[ci].docker_image` is honored by the build/deploy workflows but not by Coverage.
 
 ---
 

@@ -314,20 +314,21 @@ def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
     assert "xmsconan_conan_deploy" not in content
 
 
-def test_github_ci_version_bump(ci_toml, tmp_path):
-    """Rendered GitHub CI pins the current xmsconan version.
+def test_github_ci_version_floor(ci_toml, tmp_path):
+    """Rendered GitHub CI floors xmsconan at the generating version.
 
-    Build and deploy jobs pin with ``==`` so an xmsconan release cannot change
-    the Conan profiles (and therefore every package_id) underneath a repo that
-    has not changed. The Coverage canary intentionally still floats on ``>=``.
+    Every job installs ``xmsconan>=<version that generated the file>`` rather
+    than pinning with ``==``, so a repo picks up an xmsconan release without
+    regenerating and committing its CI. The floor still rules out resolving a
+    version older than the templates were written against.
     """
     from xmsconan import __version__
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert f"xmsconan=={__version__}" in content
-    assert "xmsconan>=" not in content
+    assert f"xmsconan>={__version__}" in content
+    assert "xmsconan==" not in content
 
 
 def test_github_flake_job_uses_generated_flake8_config(ci_toml, tmp_path):
