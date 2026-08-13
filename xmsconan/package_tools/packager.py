@@ -322,27 +322,61 @@ class XmsConanPackager(object):
                 if combination.get('arch') == 'armv8':
                     combination['buildenv']['_PYTHON_HOST_PLATFORM'] = 'macosx-15.0-arm64'
 
-        wchar_t_updated_builds = []
+        wchar_t_updated_builds = self._wchar_t_variants(combinations)
+        pybind_updated_builds = self._pybind_variants(combinations)
+        testing_updated_builds = self._testing_variants(combinations)
+        combinations = combinations + wchar_t_updated_builds + pybind_updated_builds + testing_updated_builds
+
+        self._configurations = combinations
+        return combinations
+
+    @staticmethod
+    def _wchar_t_variants(combinations):
+        """Return a ``wchar_t=typedef`` copy of every msvc configuration.
+
+        ``wchar_t`` selects between the MSVC built-in type and the legacy
+        typedef, so it only fans out on msvc; gcc and apple-clang yield nothing
+        here.
+
+        Args:
+            combinations: The base configurations to derive from.
+
+        Returns:
+            A new list of deep-copied configurations (possibly empty).
+        """
+        variants = []
         for combination in combinations:
             if combination['compiler'] == 'msvc':
                 wchar_t_options = copy.deepcopy(combination)
                 wchar_t_options['options'].update({
                     'wchar_t': 'typedef',
                 })
-                wchar_t_updated_builds.append(wchar_t_options)
+                variants.append(wchar_t_options)
+        return variants
 
-        pybind_updated_builds = []
+    def _pybind_variants(self, combinations):
+        """Return the pybind copies of ``combinations``, one per python version.
+
+        Debug+pybind is normally redundant (the Release wheel is what ships),
+        but xmsconan_coverage needs a Debug+pybind build to instrument the
+        Python-reachable C++ surface — so the Debug gate relaxes when coverage
+        is enabled. The companion testing-only Debug build (emitted
+        unconditionally by ``_testing_variants``) handles C++ coverage. On msvc,
+        only the dynamic-runtime configurations get a pybind variant; every
+        other toolchain fans out from all of them.
+
+        Args:
+            combinations: The base configurations to derive from.
+
+        Returns:
+            A new list of deep-copied configurations, ``len(python_versions)``
+            per eligible base configuration.
+        """
+        variants = []
         for combination in combinations:
-            # Debug+pybind is normally redundant (the Release wheel is what
-            # ships), but xmsconan_coverage needs a Debug+pybind build to
-            # instrument the Python-reachable C++ surface — so relax the
-            # Debug gate when coverage is enabled. The companion testing-only
-            # Debug build (emitted unconditionally below) handles C++ coverage.
             allow_debug = combination['build_type'] != 'Debug' or self._coverage
             if allow_debug and \
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
-                if combination['compiler'] == 'msvc' and int(combination['compiler.version']) <= 12:
-                    continue
                 for py_version in self._python_versions:
                     pybind_options = copy.deepcopy(combination)
                     pybind_options['options'].update({
@@ -350,20 +384,27 @@ class XmsConanPackager(object):
                         'python_version': py_version,
                     })
                     pybind_options['buildenv']['PYTHON_TARGET_VERSION'] = py_version
-                    pybind_updated_builds.append(pybind_options)
+                    variants.append(pybind_options)
+        return variants
 
-        testing_updated_builds = []
+    @staticmethod
+    def _testing_variants(combinations):
+        """Return a ``testing=True`` copy of every configuration.
+
+        Args:
+            combinations: The base configurations to derive from.
+
+        Returns:
+            A new list of deep-copied configurations, one per input.
+        """
+        variants = []
         for combination in combinations:
             testing_options = copy.deepcopy(combination)
             testing_options['options'].update({
                 'testing': True,
             })
-            testing_updated_builds.append(testing_options)
-
-        combinations = combinations + wchar_t_updated_builds + pybind_updated_builds + testing_updated_builds
-
-        self._configurations = combinations
-        return combinations
+            variants.append(testing_options)
+        return variants
 
     def filter_configurations(self, filter_dict):
         """

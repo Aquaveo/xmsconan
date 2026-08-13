@@ -170,6 +170,25 @@ def test_login_with_config_file(mock_run, mock_creds):
 @patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
        return_value={"username": "cfguser", "password": "cfgpass"})
 @patch("xmsconan.ci_tools.conan_setup.subprocess.run")
+def test_login_without_the_config_file(mock_run, mock_creds):
+    """use_config_file=False leaves ~/.xmsconan.toml alone entirely.
+
+    The manual VS2019 driver resolves both halves from that same file itself
+    (so one read serves both, and one account's username pairs with its own
+    password). A password still None afterwards is therefore a resolved "let
+    conan prompt", and re-reading the file here would both open it a second
+    time and overturn that decision.
+    """
+    conan_setup(login=True, username="resolved", use_config_file=False)
+
+    mock_creds.assert_not_called()
+    # nothing to hand over, so conan is left to prompt for the password
+    assert _login_call(mock_run)[1]["env"] is None
+
+
+@patch("xmsconan.ci_tools.conan_setup.load_conan_credentials",
+       return_value={"username": "cfguser", "password": "cfgpass"})
+@patch("xmsconan.ci_tools.conan_setup.subprocess.run")
 def test_login_explicit_overrides_config(mock_run, mock_creds):
     """Explicit args take precedence over config file."""
     conan_setup(login=True, username="explicit", password="secret")

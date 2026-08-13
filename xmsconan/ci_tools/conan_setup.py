@@ -47,7 +47,7 @@ def _login_environment(remote_name, username, password):
 def conan_setup(
     remote_url=None, login=False, remove_conancenter=False,
     username=None, password=None, remote_name=DEFAULT_REMOTE_NAME,
-    index=0,
+    index=0, use_config_file=True,
 ):
     """Detect a Conan profile and configure the Aquaveo remote.
 
@@ -70,6 +70,14 @@ def conan_setup(
             make it the first stop for every ``conan install`` on the
             machine, including unrelated ones, so callers adding a
             special-purpose remote pass ``index=None``.
+        use_config_file: Consult ``~/.xmsconan.toml`` for whichever of
+            ``username`` / ``password`` was not supplied. Pass ``False`` when
+            the caller already resolved credentials through that same file
+            (:func:`xmsconan.build_tools.vs2019_build.resolve_credentials`
+            does, so that both halves come from one read and one account): a
+            password that is still None after such a caller resolved it is a
+            deliberate "let Conan prompt", and re-reading the file here would
+            both read it a second time and overturn that decision.
     """
     if remote_url is None:
         remote_url = DEFAULT_REMOTE_URL
@@ -88,7 +96,7 @@ def conan_setup(
         )
 
     if login:
-        if not username or not password:
+        if use_config_file and (not username or not password):
             conan_creds = load_conan_credentials()
             username = username or conan_creds.get("username")
             password = password or conan_creds.get("password")

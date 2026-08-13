@@ -31,7 +31,8 @@ _conan_stubs["conan.errors"].ConanException = type("ConanException", (Exception,
 sys.modules["conan.errors"].ConanException = _conan_stubs["conan.errors"].ConanException
 
 from conan.errors import ConanException  # noqa: E402,I100,I202
-from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402,I201
+from xmsconan.constants import MSVC_VS2019_VERSION  # noqa: E402,I201
+from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402
 
 
 def _make_conan_file(os_name, arch):
@@ -662,37 +663,53 @@ class TestCoverageWiring:
             del os.environ["XMS_COVERAGE"]
 
 
+class _Setting(str):
+    """A ``str`` that carries attributes, standing in for a Conan settings value.
+
+    Conan's settings values stringify to their value, compare equal to plain
+    strings, hang sub-settings off themselves (``compiler.version``) and expose
+    ``.value``.  A MagicMock stringifies but does *not* compare equal to a
+    string, which would silently skip every ``s_compiler == "gcc"`` comparison
+    in ``_validate_settings``.
+    """
+
+
 def _make_settings(compiler, compiler_version, os_name="Windows"):
-    """Build a mock ``settings`` object whose values stringify like Conan's."""
+    """Build a mock ``settings`` object whose values behave like Conan's."""
     settings = MagicMock()
-    settings.os = MagicMock(__str__=lambda s: os_name)
-    settings.compiler = MagicMock(__str__=lambda s: compiler)
-    settings.compiler.version = MagicMock(
-        value=compiler_version, __str__=lambda s: compiler_version
-    )
+    settings.os = _Setting(os_name)
+    settings.compiler = _Setting(compiler)
+    settings.compiler.version = _Setting(compiler_version)
+    settings.compiler.version.value = compiler_version
     return settings
 
 
-class TestIsVs2019:
-    """Verify _is_vs2019 identifies msvc 192 and nothing else.
+class TestValidateSettings:
+    """Verify configure() rejects toolchains this recipe cannot build."""
 
-    VS2019 packages are built by hand and resolve the legacy third-party stack,
-    so this predicate gates every VS2019-only behavior in the recipe.
-    """
+    def _make_obj(self, compiler, version, os_name):
+        """Create a recipe stub whose configure() reaches the settings validation."""
+        obj = object.__new__(XmsConan2File)
+        obj.python_namespaced_dir = "core"
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        obj.options = MagicMock()
+        obj.settings = _make_settings(compiler, version, os_name)
+        return obj
 
     @pytest.mark.parametrize(
-        "compiler,version,expected",
+        "compiler,version,os_name,message",
         [
-            ("msvc", "192", True),
-            ("msvc", "194", False),  # VS2022 — modern stack
-            ("gcc", "13", False),  # non-msvc short-circuits before the version check
+            ("apple-clang", "17", "Linux", "Clang on Linux"),
+            ("gcc", "4.9", "Linux", "GCC < 5.0"),
+            ("apple-clang", "8.0", "Macos", "Clang > 9.0 is required"),
         ],
     )
-    def test_detection(self, compiler, version, expected):
-        """Only msvc/192 is VS2019."""
-        obj = object.__new__(XmsConan2File)
-        obj.settings = _make_settings(compiler, version)
-        assert obj._is_vs2019() is expected
+    def test_rejects_unsupported_toolchain(self, compiler, version, os_name, message):
+        """Unsupported compiler/OS pairs fail at configure time, before any building."""
+        obj = self._make_obj(compiler, version, os_name)
+        with pytest.raises(ConanException, match=message):
+            obj.configure()
 
 
 class TestRequirements:
@@ -733,8 +750,16 @@ class TestRequirements:
         zlib is required on both stacks — the generated CMakeLists calls
         find_package(ZLIB REQUIRED) — but msvc 192 binaries exist only for
         1.2.11, so the version differs from default_requirements.
+
+        Driving this from ``MSVC_VS2019_VERSION`` is also what pins the
+        standalone ``"192"`` literal in ``xms_conan2_file._is_vs2019`` to
+        ``xmsconan.constants``: the recipe file is copied next to each
+        generated ``conanfile.py`` and imported as a bare top-level module, so
+        it cannot import the constant and has to repeat the value. Tests have
+        no such restriction, so bumping either side alone reddens here instead
+        of silently forking the two values.
         """
-        obj = self._make_obj(compiler="msvc", version="192")
+        obj = self._make_obj(compiler="msvc", version=MSVC_VS2019_VERSION)
         obj.requirements()
         assert self._required(obj) == ["boost/1.74.0.3", "zlib/1.2.11"]
 
@@ -766,15 +791,22 @@ class TestRequirements:
         assert not any(r.startswith("pybind11/") for r in self._required(obj))
 
     def test_xms_and_extra_dependencies_pass_through(self):
-        """Off VS2019, xms_dependencies and extra_dependencies are used verbatim."""
+        """Off VS2019, xms_dependencies and extra_dependencies are used verbatim.
+
+        The override here is deliberately invalid on both counts the VS2019
+        path rejects (it renames its package, and its key matches no
+        dependency): off msvc 192 the dict is neither applied nor validated, so
+        a gcc build must not fail over a table it ignores.
+        """
         obj = self._make_obj(
             xms_dependencies=["xmscore/[>=7.0.0 <8.0.0]"],
             extra_dependencies=["fmt/10.2.1"],
-            overrides={"xmscore": "xmscore/[>=6.0.1 <7.0.0]"},
+            overrides={"xmsgrd": "xmsgrid/1.2.3"},
         )
         obj.requirements()
         required = self._required(obj)
         assert "xmscore/[>=7.0.0 <8.0.0]" in required, "overrides must be VS2019-only"
+        assert "xmsgrid/1.2.3" not in required
         assert "fmt/10.2.1" in required
 
     def test_vs2019_dependency_override_replaces_matching_reference(self):
@@ -790,6 +822,46 @@ class TestRequirements:
         assert "xmscore/[>=6.0.1 <7.0.0]" in required
         assert "xmscore/[>=7.0.0 <8.0.0]" not in required
         assert "xmsgrid/1.2.3" in required, "unlisted deps must be untouched"
+
+    def test_vs2019_override_rejects_package_rename(self):
+        """An override that renames its package fails instead of silently dropping options.
+
+        ``configure()`` and ``run_python_tests()`` iterate the UNRESOLVED
+        ``xms_dependencies``, so the renamed package would never receive its
+        ``xms_dependency_options`` entry and would never be pip-installed —
+        the recipe would build against one package while configuring another.
+        """
+        obj = self._make_obj(
+            compiler="msvc",
+            version=MSVC_VS2019_VERSION,
+            xms_dependencies=["xmscore/[>=7.0.0 <8.0.0]"],
+            overrides={"xmscore": "xmsgrid/1.0"},
+        )
+        with pytest.raises(ConanException) as exc_info:
+            obj.requirements()
+
+        message = str(exc_info.value)
+        assert "xmscore" in message and "xmsgrid" in message
+
+    def test_vs2019_override_rejects_key_matching_no_dependency(self):
+        """An override key that matches nothing is a build.toml typo, not a no-op.
+
+        Ignoring it would produce a VS2019 build that quietly resolves the very
+        versions the ``[vs2019_dependency_overrides]`` entry was written to
+        replace.
+        """
+        obj = self._make_obj(
+            compiler="msvc",
+            version=MSVC_VS2019_VERSION,
+            xms_dependencies=["xmscore/[>=7.0.0 <8.0.0]"],
+            overrides={"xmsocre": "xmsocre/[>=6.0.1 <7.0.0]"},
+        )
+        with pytest.raises(ConanException) as exc_info:
+            obj.requirements()
+
+        message = str(exc_info.value)
+        assert "xmsocre" in message
+        assert "xmscore" in message, "the message should list the declared dependencies"
 
 
 class TestVs2019BoostWcharT:
@@ -825,11 +897,18 @@ class TestVs2019BoostWcharT:
         assert boost_opts.wchar_t == "typedef"
 
     def test_no_propagation_off_vs2019(self):
-        """boost/1.86.0 has no wchar_t option, so modern builds never touch it."""
-        obj, boost_opts = self._make_obj(compiler="msvc", version="194")
+        """boost/1.86.0 has no wchar_t option, so modern builds never touch it.
+
+        The observable property is that ``configure()`` never reaches for the
+        ``self.options["boost"]`` override proxy at all — this stub declares no
+        xms_dependencies, so any subscript of ``options`` would be that lookup.
+        Inspecting the returned proxy instead would prove nothing: assigning an
+        attribute on a mock is not a recorded method call, and reading it back
+        out of the mock's attribute storage tests unittest.mock, not the recipe.
+        """
+        obj, _boost_opts = self._make_obj(compiler="msvc", version="194")
         obj.configure()
-        assert not boost_opts.method_calls
-        assert "wchar_t" not in boost_opts.__dict__
+        obj.options.__getitem__.assert_not_called()
 
 
 class TestGetPythonCmakeHints:

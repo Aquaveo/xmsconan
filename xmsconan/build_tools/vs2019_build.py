@@ -23,7 +23,10 @@ this, so they are distinct:
 * ``1`` -- a library failed to build, or ``conan upload`` failed.
 * ``2`` -- the request or the machine was wrong: a bad flag, a ``--root``
   that does not exist, a selection that matches no library, a failed
-  preflight, a missing password file, or ``conan`` not on ``PATH``.
+  preflight (from either ``setup`` or ``build`` -- the same condition gets
+  the same code), an unusable password file, a file the run needed that
+  could not be read or written, or ``conan`` / ``xmsconan_gen`` not on
+  ``PATH``.
 * ``3`` -- nothing was built.  Every selected library was skipped (no
   checkout, no ``build.toml``, or ``--filter`` matched no configuration).
   This is *not* success: a typo in ``--root`` used to exit 0.
@@ -59,6 +62,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
@@ -89,12 +93,36 @@ VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 #: Python versions the pybind variants fan out across.  Two versions are
 #: what makes the verified 14-configuration VS2019 matrix (4 base + 4
 #: ``wchar_t=typedef`` + 4 testing + 2 pybind).
-DEFAULT_PYTHON_VERSIONS = ["3.10", "3.13"]
+DEFAULT_PYTHON_VERSIONS = ("3.10", "3.13")
 
 #: Process exit code for "the run completed but produced nothing".
 EXIT_NOTHING_BUILT = 3
 #: Process exit code for a bad request or an unusable machine.
 EXIT_USAGE = 2
+
+
+class ToolNotFoundError(OSError):
+    """A required executable (``conan``, ``xmsconan_gen``) would not start.
+
+    An :class:`OSError` subclass so the CLI keeps a single ``except OSError``
+    arm per subcommand, but raised only at the *launch* sites.  Everything
+    else that reaches that arm -- a password file that cannot be read, a
+    build profile that cannot be written -- is a disk or permission fault and
+    is reported verbatim, instead of being blamed on ``PATH``.
+    """
+
+
+def _tool_not_found(tool, exc):
+    """Return the :class:`ToolNotFoundError` for an executable that would not start.
+
+    Args:
+        tool: Name of the executable that could not be launched.
+        exc: The :class:`OSError` :mod:`subprocess` raised.
+
+    Returns:
+        A :class:`ToolNotFoundError` carrying the actionable message.
+    """
+    return ToolNotFoundError(f"could not run {tool} ({exc}). Is it on PATH?")
 
 
 @dataclass(frozen=True)
@@ -130,7 +158,7 @@ LIBRARIES = (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class CheckResult:
     """Outcome of a single preflight check.
 
@@ -214,6 +242,24 @@ def select_libraries(only=None, start_from=None):
 # --- credentials ---------------------------------------------------------
 
 
+class Credentials(NamedTuple):
+    """Conan remote credentials resolved from every configured source.
+
+    A named tuple rather than a bare pair: the two fields are both strings
+    and the resolution order reads "password file, then username", so a
+    transposed positional unpack at a call site would be type-silent and
+    would send the password out as the login name.
+
+    Attributes:
+        username: Remote username; never None.
+        password: Remote password, or None when no source supplied one, in
+            which case Conan is left to prompt interactively.
+    """
+
+    username: str
+    password: Optional[str]
+
+
 def resolve_credentials(password_file=None, username=None):
     """Resolve the Conan remote credentials without ever echoing the password.
 
@@ -229,6 +275,9 @@ def resolve_credentials(password_file=None, username=None):
     the shared ``aquaveo`` username was always passed, which is truthy, which
     made the config-file username fallback unreachable -- the login went out
     as ``aquaveo`` with a personal password and failed with no hint why.
+    (:func:`setup` passes ``use_config_file=False`` to keep the "at most
+    once" half of that true: a password still None after this function ran is
+    a resolved *absence*, not a source left unconsulted.)
 
     Args:
         password_file: Path to a file holding the password on its own.
@@ -236,20 +285,27 @@ def resolve_credentials(password_file=None, username=None):
         username: Username from the command line, or None.
 
     Returns:
-        A ``(username, password)`` tuple.  ``password`` is None when no
-        source supplied one -- in which case Conan is left to prompt
-        interactively.  ``username`` is never None.
+        A :class:`Credentials` named tuple.
 
     Raises:
-        ValueError: When ``password_file`` is given but does not exist.  A
-            typo'd path must not silently fall through to another source.
+        ValueError: When ``password_file`` is given but does not exist, holds
+            no password, or cannot be read.  An explicitly supplied file must
+            not silently fall through to another source -- that is the whole
+            reason the flag exists -- and a file that is empty because the
+            secret never landed in it looks exactly like a typo'd path from
+            the other end of the login.
     """
     password = None
     if password_file:
         path = Path(password_file)
         if not path.is_file():
             raise ValueError(f"password file not found: {password_file}")
-        password = path.read_text(encoding="utf-8").rstrip()
+        try:
+            password = path.read_text(encoding="utf-8").rstrip()
+        except OSError as exc:
+            raise ValueError(f"could not read password file {password_file}: {exc}") from exc
+        if not password:
+            raise ValueError(f"password file is empty: {password_file}")
     else:
         password = os.environ.get("CONAN_PASSWORD")
     username = username or os.environ.get("CONAN_LOGIN_USERNAME")
@@ -257,7 +313,7 @@ def resolve_credentials(password_file=None, username=None):
         credentials = load_conan_credentials()
         username = username or credentials.get("username")
         password = password or credentials.get("password")
-    return username or DEFAULT_REMOTE_USERNAME, password
+    return Credentials(username or DEFAULT_REMOTE_USERNAME, password)
 
 
 # --- preflight -----------------------------------------------------------
@@ -281,14 +337,23 @@ def _msvc_toolset_version(install_path):
         The toolset version string, or None when the marker file is absent --
         which is exactly what a Visual Studio install without the C++ tools
         looks like.
+
+    Raises:
+        ValueError: When the marker file exists but cannot be read.  That is
+            a permission or disk fault on this machine, not a missing C++
+            workload, so it must not be reported as one -- nor, by escaping
+            as an :class:`OSError`, as ``conan`` missing from ``PATH``.
     """
     version_file = os.path.join(
         install_path, "VC", "Auxiliary", "Build", "Microsoft.VCToolsVersion.default.txt"
     )
     if not os.path.isfile(version_file):
         return None
-    with open(version_file, "r", encoding="utf-8") as handle:
-        return handle.read().strip()
+    try:
+        with open(version_file, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError as exc:
+        raise ValueError(f"could not read {version_file} ({exc}).") from exc
 
 
 def check_visual_studio_2019():
@@ -333,7 +398,13 @@ def check_visual_studio_2019():
         )
     instance = instances[0]
     install_path = instance.get("installationPath", "")
-    toolset = _msvc_toolset_version(install_path)
+    try:
+        toolset = _msvc_toolset_version(install_path)
+    except ValueError as exc:
+        # An unreadable marker file is a fault on this machine, not a
+        # verdict on the workload: report what actually failed and let the
+        # remaining checks still run.
+        return CheckResult(name, False, str(exc))
     if toolset is None:
         return CheckResult(
             name, False,
@@ -468,23 +539,34 @@ def setup(password_file=None, username=None,
         remote_name: Conan remote name to add.
 
     Returns:
-        Process exit code: 0 when every preflight check passed, 1 otherwise.
+        Process exit code: 0 when every preflight check passed,
+        :data:`EXIT_USAGE` otherwise.  A failed preflight is "the machine was
+        wrong", which is exit 2 by the contract in the module docstring, and
+        it is what ``build`` already returns for the same condition.
 
     Raises:
-        ValueError: When ``password_file`` is given but does not exist.
+        ValueError: When ``password_file`` is given but does not exist, is
+            empty, or cannot be read.
+        ToolNotFoundError: When ``conan`` itself would not start.
     """
-    username, password = resolve_credentials(password_file, username)
+    credentials = resolve_credentials(password_file, username)
     print(f"==> Adding conan remote {remote_name} -> {remote_url} (appended)")
-    conan_setup(
-        remote_url=remote_url,
-        login=True,
-        username=username,
-        password=password,
-        remote_name=remote_name,
-        index=None,
-    )
+    try:
+        conan_setup(
+            remote_url=remote_url,
+            login=True,
+            username=credentials.username,
+            password=credentials.password,
+            remote_name=remote_name,
+            index=None,
+            # The config file was already consulted by resolve_credentials;
+            # a password still None here is a resolved "let conan prompt".
+            use_config_file=False,
+        )
+    except FileNotFoundError as exc:
+        raise _tool_not_found("conan", exc) from exc
     checks = run_preflight(remote=remote_name)
-    return 0 if all(check.ok for check in checks) else 1
+    return 0 if all(check.ok for check in checks) else EXIT_USAGE
 
 
 # --- build ---------------------------------------------------------------
@@ -549,8 +631,8 @@ def preview(libraries, python_versions=None, config_filter=None):
     return 0
 
 
-def build_library(library, root, version=None, generate=True, python_versions=None,
-                  config_filter=None, log_dir=None):
+def build_library(library: LibrarySpec, root, version=None, generate=True,
+                  python_versions=None, config_filter=None, log_dir=None):
     """Generate build files for one library and build the VS2019 matrix.
 
     A missing checkout or ``build.toml`` is reported and skipped rather than
@@ -559,7 +641,8 @@ def build_library(library, root, version=None, generate=True, python_versions=No
     :func:`print_summary`.
 
     Args:
-        library: Library name; also its directory name under ``root``.
+        library: The :class:`LibrarySpec` to build.  Its ``name`` is both the
+            Conan package name and the directory name under ``root``.
         root: Directory holding the library checkouts.
         version: Version passed to ``xmsconan_gen``.
         generate: Run ``xmsconan_gen`` before building.
@@ -569,14 +652,22 @@ def build_library(library, root, version=None, generate=True, python_versions=No
 
     Returns:
         A :class:`LibraryResult`.
+
+    Raises:
+        ToolNotFoundError: When ``xmsconan_gen`` itself would not start.  That
+            is the machine being wrong, not this library failing: it would
+            fail identically for every remaining library, so it aborts the run
+            with :data:`EXIT_USAGE` instead of being counted as a build
+            failure and (without ``--continue-on-error``) exiting 1.
     """
     start = time.monotonic()
-    library_dir = os.path.join(root, library)
+    name = library.name
+    library_dir = os.path.join(root, name)
     if not os.path.isdir(library_dir):
-        return LibraryResult(library, "skipped", message=f"no checkout at {library_dir}")
+        return LibraryResult(name, "skipped", message=f"no checkout at {library_dir}")
     if not os.path.isfile(os.path.join(library_dir, "build.toml")):
         return LibraryResult(
-            library, "skipped", message=f"no build.toml in {library_dir}"
+            name, "skipped", message=f"no build.toml in {library_dir}"
         )
 
     if generate:
@@ -584,29 +675,31 @@ def build_library(library, root, version=None, generate=True, python_versions=No
         if version:
             command += ["--version", version]
         command.append("build.toml")
-        print(f"==> {library}: generating build files")
+        print(f"==> {name}: generating build files")
         try:
             subprocess.run(command, cwd=library_dir, check=True)
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except FileNotFoundError as exc:
+            raise _tool_not_found("xmsconan_gen", exc) from exc
+        except subprocess.CalledProcessError as exc:
             return LibraryResult(
-                library, "failed", elapsed=time.monotonic() - start,
+                name, "failed", elapsed=time.monotonic() - start,
                 message=f"xmsconan_gen failed: {exc}",
             )
 
     packager = _new_packager(
-        library, os.path.join(library_dir, "conanfile.py"), python_versions
+        name, os.path.join(library_dir, "conanfile.py"), python_versions
     )
     configurations = _configure(packager, config_filter)
     attempted = len(configurations)
     if not attempted:
         return LibraryResult(
-            library, "skipped", elapsed=time.monotonic() - start,
+            name, "skipped", elapsed=time.monotonic() - start,
             message="no configurations matched --filter",
         )
-    print(f"==> {library}: building {attempted} configuration(s)")
+    print(f"==> {name}: building {attempted} configuration(s)")
     failed = packager.run(log_dir=log_dir)
     return LibraryResult(
-        library,
+        name,
         "failed" if failed else "ok",
         attempted=attempted,
         succeeded=attempted - failed,
@@ -643,7 +736,7 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
     results = []
     for library in libraries:
         results.append(build_library(
-            library.name, root, version=version, generate=generate,
+            library, root, version=version, generate=generate,
             python_versions=python_versions, config_filter=config_filter,
             log_dir=log_dir,
         ))
@@ -730,6 +823,7 @@ def upload(library, version, remote=VS2019_REMOTE_NAME, allow_other_remote=False
     Raises:
         ValueError: When ``remote`` is not the VS2019 remote and
             ``allow_other_remote`` is False.
+        ToolNotFoundError: When ``conan`` itself would not start.
     """
     if remote != VS2019_REMOTE_NAME and not allow_other_remote:
         raise ValueError(
@@ -739,10 +833,13 @@ def upload(library, version, remote=VS2019_REMOTE_NAME, allow_other_remote=False
             f"really mean it."
         )
     packager = XmsConanPackager(library, apply_boost_defaults=False)
-    return packager.upload(
-        version, remote=remote,
-        package_query=f"compiler.version={MSVC_VS2019_VERSION}",
-    )
+    try:
+        return packager.upload(
+            version, remote=remote,
+            package_query=f"compiler.version={MSVC_VS2019_VERSION}",
+        )
+    except FileNotFoundError as exc:
+        raise _tool_not_found("conan", exc) from exc
 
 
 # --- CLI -----------------------------------------------------------------
@@ -773,18 +870,12 @@ def _parse_filter(text):
     return value
 
 
-def _build_parser():
-    """Build the ``xmsconan_vs2019`` argument parser."""
-    # No explicit prog: xmsconan/cli.py rewrites sys.argv[0] so the same
-    # parser prints "xmsconan vs2019" when dispatched through the unified CLI.
-    parser = argparse.ArgumentParser(
-        description=(
-            "Build and publish the Visual Studio 2019 (msvc 192) Conan "
-            "packages from a developer workstation."
-        ),
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+def _add_setup_parser(subparsers):
+    """Add the ``setup`` subcommand.
 
+    Args:
+        subparsers: The subparser action returned by ``add_subparsers``.
+    """
     setup_parser = subparsers.add_parser(
         "setup",
         help=f"Add and log in to the {VS2019_REMOTE_NAME} remote, then preflight.",
@@ -810,6 +901,13 @@ def _build_parser():
              f"with --remote-url when pointing at a different Artifactory repo.",
     )
 
+
+def _add_build_parser(subparsers):
+    """Add the ``build`` subcommand.
+
+    Args:
+        subparsers: The subparser action returned by ``add_subparsers``.
+    """
     build_parser = subparsers.add_parser(
         "build", help="Build the VS2019 matrix for the enabled libraries.",
     )
@@ -859,7 +957,20 @@ def _build_parser():
         help="Package version; passed to xmsconan_gen and exported as "
              "XMS_VERSION.",
     )
+    build_parser.add_argument(
+        "--remote-name", default=VS2019_REMOTE_NAME,
+        help=f"Conan remote the preflight check requires (default: "
+             f"{VS2019_REMOTE_NAME}). Match it to the --remote-name you gave "
+             f"setup; otherwise preflight fails on a remote you never added.",
+    )
 
+
+def _add_upload_parser(subparsers):
+    """Add the ``upload`` subcommand.
+
+    Args:
+        subparsers: The subparser action returned by ``add_subparsers``.
+    """
     upload_parser = subparsers.add_parser(
         "upload",
         help=f"Upload built msvc {MSVC_VS2019_VERSION} packages to the "
@@ -883,19 +994,45 @@ def _build_parser():
              f"msvc {MSVC_VS2019_VERSION} binaries to the CI remote is almost "
              f"always a typo.",
     )
+
+
+def _build_parser():
+    """Build the ``xmsconan_vs2019`` argument parser.
+
+    Returns:
+        The configured :class:`argparse.ArgumentParser`.
+    """
+    # No explicit prog: xmsconan/cli.py rewrites sys.argv[0] so the same
+    # parser prints "xmsconan vs2019" when dispatched through the unified CLI.
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build and publish the Visual Studio 2019 (msvc 192) Conan "
+            "packages from a developer workstation."
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_setup_parser(subparsers)
+    _add_build_parser(subparsers)
+    _add_upload_parser(subparsers)
     return parser
 
 
-def _conan_missing(exc):
-    """Print the message for a ``conan``/``xmsconan_gen`` that would not run.
+def _os_failure(exc):
+    """Print an OS-level failure and return the process exit code.
+
+    A :class:`ToolNotFoundError` already names the executable and points at
+    ``PATH``.  Every other :class:`OSError` -- an unreadable password file, a
+    build profile that cannot be written -- is reported verbatim, because
+    blaming ``PATH`` for a disk or permission fault sends the reader looking
+    in the wrong place entirely.
 
     Args:
-        exc: The :class:`OSError` raised by :mod:`subprocess`.
+        exc: The raised :class:`OSError`.
 
     Returns:
         The process exit code to use.
     """
-    print(f"error: could not run conan ({exc}). Is it on PATH?", file=sys.stderr)
+    print(f"error: {exc}", file=sys.stderr)
     return EXIT_USAGE
 
 
@@ -908,11 +1045,11 @@ def _run_setup(args):
             remote_url=args.remote_url,
             remote_name=args.remote_name,
         )
-    except ValueError as exc:  # missing --password-file
+    except ValueError as exc:  # unusable --password-file
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except OSError as exc:
-        return _conan_missing(exc)
+        return _os_failure(exc)
     except subprocess.CalledProcessError as exc:
         # Deliberately not printing `exc`: its .cmd is the full conan argv.
         # The password is no longer in there, but there is no reason to make
@@ -951,7 +1088,7 @@ def _run_build(args):
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        if not all(check.ok for check in run_preflight()):
+        if not all(check.ok for check in run_preflight(remote=args.remote_name)):
             print(
                 "error: preflight failed; fix the items above and re-run.",
                 file=sys.stderr,
@@ -970,7 +1107,7 @@ def _run_build(args):
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except OSError as exc:
-        return _conan_missing(exc)
+        return _os_failure(exc)
 
 
 def _run_upload(args):
@@ -984,7 +1121,7 @@ def _run_upload(args):
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except OSError as exc:
-        return _conan_missing(exc)
+        return _os_failure(exc)
 
 
 #: Subcommand name -> handler taking the parsed args and returning an exit code.

@@ -1,5 +1,6 @@
 """Tests for generator_tools.build_file_generator."""
 from pathlib import Path
+import re
 
 import pytest
 
@@ -545,7 +546,9 @@ def test_generated_build_py_exits_nonzero_on_upload_failure(build_toml, tmp_path
     )
 
     content = (output_dir / "build.py").read_text(encoding="utf-8")
-    assert "if builder.upload(version=args.version) != 0:" in content
+    # Matched loosely: the guarantee is that upload()'s return code is compared
+    # against 0 and drives exit(1), not the exact spacing of the generated line.
+    assert re.search(r"if\s+builder\.upload\(version=args\.version\)\s*!=\s*0\s*:", content)
     assert "exit(1)" in content
     compile(content, "build.py", "exec")
 

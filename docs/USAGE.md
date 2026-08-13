@@ -135,7 +135,7 @@ option-overridden configurations.
 | `xms_dependencies` | array[object] | `[]` | XMS sister libraries. Object shape: `{ name = "xmscore", version = "7.0.0", no_python = false }`. `no_python = true` excludes the dep from `_package/pyproject.toml`. |
 | `extra_dependencies` | array[string] | `[]` | Extra Conan deps in `"name/version"` form. |
 | `xms_dependency_options` | object | `{}` | Override an XMS dep's options. e.g. `{ "xmscore" = { "pybind" = false } }`. |
-| `vs2019_dependency_overrides` | object | `{}` | Replace an XMS dep's *reference* — but only on a Visual Studio 2019 (msvc 192) build. e.g. `{ "xmscore" = "xmscore/[>=6.0.1 <7.0.0]" }`. Matched on the package name before the first `/`; every other toolchain ignores it entirely. See §7.4. |
+| `vs2019_dependency_overrides` | object | `{}` | Replace an XMS dep's *reference* — but only on a Visual Studio 2019 (msvc 192) build. e.g. `{ "xmscore" = "xmscore/[>=6.0.1 <7.0.0]" }`. Matched on the package name before the first `/`; every other toolchain ignores it entirely. An entry may change the version or range only — renaming the package, or naming one that is not in `xms_dependencies`, fails the msvc 192 build. See §7.4. |
 | `conan_profile_options` | object | `{}` | Per-package options written into the `[options]` section of every generated profile. e.g. `{ "boost" = { "shared" = true } }`. The wildcard `"*"` is supported (e.g. `{ "*" = { "shared" = true } }`); a more specific entry overrides the wildcard. |
 
 Boost (`1.86.0`) and zlib (`1.3.1`) are added automatically by the recipe. On a Visual Studio 2019 (msvc 192) build the recipe swaps in the legacy stack instead — the same two packages at the versions the `aquaveo-vs2019` remote publishes msvc 192 binaries for: boost `1.74.0.3` and zlib `1.2.11`. See §7.4 and §16.
@@ -269,7 +269,7 @@ The recipe resolves a different third-party stack when it detects Visual Studio 
 |---|---|---|---|
 | `default_requirements` | `["boost/1.86.0", "zlib/1.3.1"]` | no | Third-party (non-XMS) requirements for the modern toolchains: gcc 13, apple-clang 17, msvc 194. |
 | `vs2019_requirements` | `["boost/1.74.0.3", "zlib/1.2.11"]` | no | Third-party requirements used **instead** on msvc 192. Same package set as `default_requirements`, at the versions the `aquaveo-vs2019` remote publishes msvc 192 binaries for: the Aquaveo legacy boost the desktop products link against, and zlib `1.2.11` (`zlib/1.3.1` exists only on `aquaveo-stable`, msvc 194 only, so naming it here would force a from-source build or fail). zlib is not optional on either stack — the generated `CMakeLists.txt` calls `find_package(ZLIB REQUIRED)` and sources such as `daStreamIo.cpp` include `<zlib.h>`. |
-| `vs2019_dependency_overrides` | `{}` | **yes** — the `[vs2019_dependency_overrides]` table (§5.3) | Per-library replacement of `xms_dependencies` references on msvc 192, e.g. `{"xmscore": "xmscore/[>=6.0.1 <7.0.0]"}`. Matched on the package name before the first `/`. Legacy desktop products pin xmscore 6.x while the Conan 2 line is at 7.x. Every other toolchain ignores this dict entirely. |
+| `vs2019_dependency_overrides` | `{}` | **yes** — the `[vs2019_dependency_overrides]` table (§5.3) | Per-library replacement of `xms_dependencies` references on msvc 192, e.g. `{"xmscore": "xmscore/[>=6.0.1 <7.0.0]"}`. Matched on the package name before the first `/`. Legacy desktop products pin xmscore 6.x while the Conan 2 line is at 7.x. Every other toolchain ignores this dict entirely — including its invalid entries, since the two rules below are checked only on msvc 192. |
 
 Shared by both stacks: `pybind11/3.0.1` when `pybind=True`, and the `testing_framework` requirement (`cxxtest/4.4` or `gtest/1.17.0`) when `testing=True`. pybind11 on VS2019 is intentionally `3.0.1` — an upgrade from the Conan-1-era `2.9.1`, not an oversight.
 
@@ -299,6 +299,8 @@ class XmsgridConanFile(XmsConan2File):
         "xmscore/7.0.0",
     ]
 ```
+
+**Two rules are enforced, and only on msvc 192.** An entry's key must match a package already declared in `xms_dependencies`, and it may change the version or version range only — the package name on both sides of the entry must be identical. Either violation raises a `ConanException` naming the offending entry, rather than being skipped: `configure()` and `run_python_tests()` iterate the *unresolved* `xms_dependencies`, so a rename would set options on and pip-install from a package no longer in the graph, and a key that matches nothing (a typo in the `build.toml` table) would produce a VS2019 build that quietly resolves the very versions the override was written to replace. Silent wrong output is worse than a loud failure, and on this build in particular the failure is the only signal you get — nothing downstream would look wrong until the desktop products linked against it.
 
 Omit the table and the attribute is not emitted at all, so the recipe inherits the empty default. **Do not hand-edit the value into `conanfile.py` or `xms_conan2_file.py`** — `xmsconan gen` rewrites the first and re-copies the second on every run (§6), so only the `build.toml` key survives regeneration.
 
@@ -600,7 +602,7 @@ Adds the remote, logs in, then runs the preflight checks.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--password-file PATH` | — | File holding the remote password on its own. Trailing whitespace (the editor's newline) is stripped. |
+| `--password-file PATH` | — | File holding the remote password on its own. Trailing whitespace (the editor's newline) is stripped. A path that doesn't exist, a file that can't be read, and a file that holds nothing but whitespace are all errors (exit 2) — see the resolution table below. |
 | `--username NAME` | resolved (see below) | Remote username. |
 | `--remote-url URL` | `https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-vs2019` | Artifactory URL backing the remote. |
 | `--remote-name NAME` | `aquaveo-vs2019` | Conan remote name to add. Pair it with `--remote-url` when pointing at a different Artifactory repo. |
@@ -609,22 +611,22 @@ Adds the remote, logs in, then runs the preflight checks.
 
 | | Username | Password |
 |---|---|---|
-| 1 | `--username` | `--password-file` — a path that doesn't exist is an error, not a fall-through to the next source. A typo must not silently log you in with a different password. |
+| 1 | `--username` | `--password-file` — a path that doesn't exist, or a file that exists but holds no password, is an error, not a fall-through to the next source. A typo (or a secret that never landed in the file) must not silently log you in with a different password. |
 | 2 | `$CONAN_LOGIN_USERNAME` | `$CONAN_PASSWORD` |
 | 3 | `[conan] username` in `~/.xmsconan.toml` (§17) | `[conan] password` in the same file |
 | 4 | `aquaveo` | — Conan prompts interactively |
 
-Both halves fall back independently, so a personal Artifactory account configured in `~/.xmsconan.toml` is used as *your* username with *your* password. (The username used to be pinned to `aquaveo` before the config file was ever consulted, which meant a personal password was sent with the shared username and the login failed with no hint why.) If no source supplies a password, `setup` hands Conan nothing and Conan prompts for both username and password itself.
+Both halves fall back independently, so a personal Artifactory account configured in `~/.xmsconan.toml` is used as *your* username with *your* password. (The username used to be pinned to `aquaveo` before the config file was ever consulted, which meant a personal password was sent with the shared username and the login failed with no hint why.) If no source supplies a password, `setup` hands Conan nothing and Conan prompts for both username and password itself — the file is not consulted a second time to second-guess that, because it has already been consulted here.
 
 **The password is never a command-line argument.** `setup` hands it to Conan in the child process's environment (`CONAN_LOGIN_USERNAME_AQUAVEO_VS2019` / `CONAN_PASSWORD_AQUAVEO_VS2019` — Conan derives those names by uppercasing the remote name and replacing hyphens with underscores) and runs a bare `conan remote login aquaveo-vs2019`. On a managed workstation, process-creation auditing (Windows Event 4688 with command-line capture, or Sysmon Event ID 1) copies the full argv of every process into the event log and ships it to the SIEM in cleartext, where it outlives and out-reads the NTFS ACLs on your password file.
 
 **Where the remote lands in the list.** `setup` **appends** `aquaveo-vs2019` after the remotes already configured — it does *not* insert it at index 0 the way `xmsconan conan-setup` does for the CI remote. Conan resolves a version range such as `xmscore/[>=7.0.0 <8.0.0]` across every remote in list order, so a VS2019 remote at the front would be the first stop for every `conan install` and `conan create --build=missing` on the machine, including ordinary msvc 194 work, and a version present only on the VS2019 remote would win. That is the exact mixing the separate remote exists to prevent. `setup` prints `(appended)` when it adds the remote; run `conan remote list` to see the resulting order, and `conan remote update aquaveo-vs2019 --index N` if you ever need to change it deliberately.
 
-`setup` exits 0 only when every preflight check (§16.3) also passed, so a fresh machine gets one pass/fail answer on whether it can build the matrix. A missing `--password-file` exits 2; `conan` not being on `PATH` exits 2; any other failing `conan` command propagates its own exit code.
+`setup` exits 0 only when every preflight check (§16.3) also passed, so a fresh machine gets one pass/fail answer on whether it can build the matrix. A failed preflight exits 2 — the same code `build` uses for the same condition; an unusable `--password-file` exits 2; `conan` not being on `PATH` exits 2; any other failing `conan` command propagates its own exit code.
 
 ### 16.3 Preflight
 
-Run at the end of `setup`, and again at the start of every `build` — a failure there aborts the build with exit code 2 before anything is compiled.
+Run at the end of `setup`, and again at the start of every `build` — a failure exits 2 either way, aborting the build before anything is compiled. Both verbs take `--remote-name`, and the third check follows it.
 
 | Check | Passes when | Fix |
 |---|---|---|
@@ -650,6 +652,7 @@ A VS2019 carrying only, say, the .NET workload used to pass this check and then 
 | `--python-versions X.Y [X.Y …]` | `3.10 3.13` | Python versions the pybind variants fan out across. |
 | `--filter JSON` | — | Restrict the matrix, same shape as `build.py --filter`: `'{"build_type": "Release"}'`. |
 | `--version V` | — | Passed to `xmsconan_gen`, and exported as `XMS_VERSION` so it reaches each profile's `[buildenv]` the way CI supplies it. |
+| `--remote-name NAME` | `aquaveo-vs2019` | The remote the preflight check requires. Match it to the `--remote-name` you gave `setup`; a machine set up against a different Artifactory repo otherwise fails preflight (exit 2) on a remote it was never meant to have. |
 
 Per library, in dependency order, `build`:
 
@@ -669,7 +672,7 @@ A single failing configuration does not stop the library — the packager runs t
 |---|---|
 | `0` | At least one library built and none failed. |
 | `1` | A library failed. |
-| `2` | The request or the machine was wrong: an unknown `--only`/`--from` name, a `--filter` that isn't a JSON object, a `--python-versions` entry the packager rejects, a `--root` that doesn't exist, a selection that matches no library at all (`--only xmscore --from xmsgrid`, or a `--from` past the last enabled library), a failed preflight, or `conan` not on `PATH`. |
+| `2` | The request or the machine was wrong: an unknown `--only`/`--from` name, a `--filter` that isn't a JSON object, a `--python-versions` entry the packager rejects, a `--root` that doesn't exist, a selection that matches no library at all (`--only xmscore --from xmsgrid`, or a `--from` past the last enabled library), a failed preflight, `conan` or `xmsconan_gen` not on `PATH`, or a file the run needed that could not be read or written. The last two are told apart in the message: only an executable that would not start is reported as a `PATH` problem, and a `xmsconan_gen` that is missing stops the run here rather than being counted as one failed library (exit 1) — it would fail identically for every library after it. |
 | `3` | The run completed but **nothing was built** — every selected library was skipped (no checkout, no `build.toml`, or `--filter` matched nothing). Not success: a typo in `--root` used to print a table of skips and exit 0, which any `&&` chain or wrapper script read as "the stack is built". |
 
 ### 16.5 The library list
