@@ -10,8 +10,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Optional
 
+from xmsconan.constants import DEFAULT_REMOTE_NAME, MSVC_VS2019_VERSION
 from xmsconan.package_tools.printer import Printer
 
 
@@ -35,6 +37,20 @@ configurations = {
         'compiler': ['msvc'],
         'compiler.cppstd': ['17'],
         'compiler.version': ['194'],
+        'compiler.runtime': ['dynamic', 'static'],
+    },
+    # Visual Studio 2019 (msvc 192). GitHub retired the `windows-2019`
+    # runner image, so this matrix is built manually on a developer
+    # workstation and published to the `aquaveo-vs2019` remote rather than
+    # to `aquaveo` (see XmsConanPackager.upload's `remote` argument).
+    # Identical to 'windows' apart from the compiler version.
+    'windows_vs2019': {
+        'os': ['Windows'],
+        'build_type': ['Release', 'Debug'],
+        'arch': ['x86_64'],
+        'compiler': ['msvc'],
+        'compiler.cppstd': ['17'],
+        'compiler.version': [MSVC_VS2019_VERSION],
         'compiler.runtime': ['dynamic', 'static'],
     },
     'linux': {
@@ -73,6 +89,7 @@ class XmsConanPackager(object):
         profile_options: Optional[dict] = None,
         python_versions: Optional[list[str]] = None,
         coverage: Optional[bool] = None,
+        apply_boost_defaults: bool = True,
     ):
         """Initialize the packager.
 
@@ -90,7 +107,7 @@ class XmsConanPackager(object):
             python_versions: Python versions to fan out pybind builds across
                 (e.g. ["3.10", "3.13"]). When None, falls back to the
                 ``PYTHON_TARGET_VERSION`` environment variable (single value)
-                or the default list ["3.10", "3.13"]. Each pybind variant is
+                or to ``DEFAULT_PYTHON_VERSIONS``. Each pybind variant is
                 duplicated per version with the matching ``python_version``
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
             coverage: If True, allow Debug+pybind combinations in
@@ -101,6 +118,15 @@ class XmsConanPackager(object):
                 that drives C++ coverage is always emitted (it does not
                 require this flag). When None, defaults to ``True`` iff
                 ``XMS_COVERAGE=1`` is set in the environment.
+            apply_boost_defaults: If True (the default), inject the boost
+                ``without_stacktrace`` / ``without_locale`` defaults described
+                below into the profile options. Set to False when building
+                against the legacy Aquaveo ``boost/1.74.0.3`` recipe (used by
+                the VS2019 / msvc 192 matrix): both defaults are conan-center
+                boost 1.86 options that the legacy recipe may not declare, and
+                Conan fails the build when a profile sets an option the recipe
+                does not define. A caller that needs only one of the two can
+                still pass it explicitly through ``profile_options``.
         """
         self._library_name = library_name
         self._conanfile_path = conanfile_path
@@ -118,16 +144,21 @@ class XmsConanPackager(object):
         self._temp_dir = tempfile.TemporaryDirectory()
         self._temp_dir_path = self._temp_dir.name
 
-        # Disable boost stacktrace to avoid __cxa_allocate_exception symbol
-        # conflict with -static-libstdc++ in pybind shared modules.
-        self._set_default_option_value('boost', 'without_stacktrace', True)
+        # Both defaults below name conan-center boost 1.86 options. The legacy
+        # Aquaveo boost/1.74.0.3 recipe required by the VS2019 (msvc 192)
+        # matrix may not declare them, and Conan errors out on a profile option
+        # an involved recipe does not define — hence the opt-out.
+        if apply_boost_defaults:
+            # Disable boost stacktrace to avoid __cxa_allocate_exception symbol
+            # conflict with -static-libstdc++ in pybind shared modules.
+            self._set_default_option_value('boost', 'without_stacktrace', True)
 
-        # Disable boost.locale: boost/1.86.0 passes
-        # `boost.locale.iconv.lib=libiconv` to b2 unconditionally on macOS,
-        # but b2 >=5.2 validates command-line features before loading the
-        # locale Jamfile and rejects it as unknown. No xms library uses
-        # boost.locale, so dropping it is the cleanest unblock.
-        self._set_default_option_value('boost', 'without_locale', True)
+            # Disable boost.locale: boost/1.86.0 passes
+            # `boost.locale.iconv.lib=libiconv` to b2 unconditionally on macOS,
+            # but b2 >=5.2 validates command-line features before loading the
+            # locale Jamfile and rejects it as unknown. No xms library uses
+            # boost.locale, so dropping it is the cleanest unblock.
+            self._set_default_option_value('boost', 'without_locale', True)
 
     def __del__(self):
         """Cleanup the temporary directory."""
@@ -204,6 +235,19 @@ class XmsConanPackager(object):
         Considers common Conan settings like arch, build_type, compiler, and os. Also considers standard XMS options:
         pybind, testing, wchar_t. Result is essentially every combination of values for those settings that make sense
         to build for the given platform.
+
+        Args:
+            system_platform: Key into the module-level ``configurations`` dict
+                (e.g. ``'windows'``, ``'windows_vs2019'``, ``'linux'``,
+                ``'darwin'``). When None the platform is auto-detected from
+                ``platform.system()`` and the detected architecture replaces the
+                configured one.
+
+        Raises:
+            ValueError: When ``system_platform`` is not a key of
+                ``configurations``. This is user-facing input (a CLI flag), so
+                the message names the unknown key and lists the valid ones
+                instead of failing with a bare ``AttributeError`` on None.
         """
         # Get system_platform name
         auto_detected = system_platform is None
@@ -211,7 +255,12 @@ class XmsConanPackager(object):
             system_platform = platform.system().lower()
 
         # Get the current system_platform configuration
-        system_platform_configuration = configurations.get(system_platform).copy()
+        if system_platform not in configurations:
+            raise ValueError(
+                f'Unknown platform {system_platform!r}. Valid platforms are: '
+                f'{", ".join(sorted(configurations))}.'
+            )
+        system_platform_configuration = configurations[system_platform].copy()
 
         # Override arch with detected architecture only when platform was auto-detected
         if auto_detected:
@@ -361,8 +410,22 @@ class XmsConanPackager(object):
         self._configurations = filtered_configurations
 
     def _config_label(self, combination):
-        """Return a human-readable label for a build configuration."""
+        """Return a human-readable label for a build configuration.
+
+        The label has to be *unique across the generated matrix*: it names the
+        per-configuration log file (``run(log_dir=...)``) and the test-artifact
+        directory (``XMS_TEST_ARTIFACTS_LABEL``), both of which are overwritten
+        when two configurations share a label. ``compiler.runtime`` is
+        therefore part of the label — the msvc matrices fan out over
+        ``dynamic``/``static``, so without it 14 msvc configurations collapse
+        onto 8 labels and each static build destroys the dynamic build's log.
+        Toolchains that don't set ``compiler.runtime`` (gcc, apple-clang) are
+        unaffected and keep their shorter labels.
+        """
         parts = [combination.get('build_type', 'unknown')]
+        runtime = combination.get('compiler.runtime')
+        if runtime:
+            parts.append(str(runtime))
         opts = combination.get('options', {})
         if opts.get('testing'):
             parts.append('testing')
@@ -373,10 +436,38 @@ class XmsConanPackager(object):
             parts.append('wchar_typedef')
         return '-'.join(parts)
 
-    def run(self):
-        """Run the build process."""
+    def run(self, log_dir=None):
+        """Run the build process.
+
+        Args:
+            log_dir: When set, each configuration's ``conan create`` output is
+                redirected to ``<log_dir>/<library>-<config label>.log`` and a
+                one-line pointer is printed to the console instead. Intended
+                for long batch runs (e.g. the manual VS2019 matrix), where a
+                wall of interleaved compiler output is unreadable. Defaults to
+                None, which keeps the historical behavior of letting the child
+                process inherit stdout/stderr. An empty string is treated the
+                same as None (a shell that expands ``--log-dir "$X"`` to
+                nothing must not scatter bare log files into the cwd).
+                Logging is best-effort: if the directory or a log file cannot
+                be opened, a warning is printed and that output falls back to
+                the console rather than aborting a multi-hour run.
+
+        Returns:
+            The number of failed configurations plus failed test shards; 0 when
+            everything succeeded.
+        """
         self.printer.print_ascci_art()
         self.print_configuration_table()
+        if log_dir:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+            except OSError as exc:
+                self.printer.print_message(
+                    f'WARNING: could not create log directory {log_dir} ({exc}); '
+                    f'falling back to console output.'
+                )
+                log_dir = None
         failing_configurations = []
         sharded_test_runs = []
         for i, combination in enumerate(self.configurations):
@@ -398,7 +489,7 @@ class XmsConanPackager(object):
             if self._build_missing:
                 cmd.append('--build=missing')
             try:
-                subprocess.run(cmd, check=True, env=env)
+                self._conan_create(cmd, env, self._config_label(combination), log_dir)
                 self.printer.print_message(f'Finished building configuration {i + 1} of {len(self.configurations)}')
                 if shard_this and self._artifacts_dir:
                     label = self._config_label(combination)
@@ -425,6 +516,71 @@ class XmsConanPackager(object):
         else:
             self.printer.print_message('All configurations built successfully.')
             return 0
+
+    def _archive_existing_log(self, log_path):
+        """Move an existing log aside so a re-run cannot destroy it.
+
+        The canonical path stays ``<library>-<label>.log`` (that is what the
+        docs and the console pointer name), so the *previous* run's file is the
+        one that moves, to ``<library>-<label>.<timestamp>.log`` where the
+        timestamp is that file's own mtime. Re-running after a failure is the
+        normal way to work through a long matrix, and the failed run's compiler
+        output is exactly what the developer still needs.
+
+        Args:
+            log_path: Path the current run is about to write.
+
+        Raises:
+            OSError: When the existing log cannot be renamed; the caller
+                degrades to console output.
+        """
+        if not os.path.exists(log_path):
+            return
+        stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(os.path.getmtime(log_path)))
+        root, extension = os.path.splitext(log_path)
+        archived = f'{root}.{stamp}{extension}'
+        # Two runs of the same configuration can share an mtime second (a
+        # configuration that fails immediately), so disambiguate.
+        counter = 1
+        while os.path.exists(archived):
+            archived = f'{root}.{stamp}.{counter}{extension}'
+            counter += 1
+        os.replace(log_path, archived)
+        self.printer.print_message(f'Archived previous log to {archived}')
+
+    def _conan_create(self, cmd, env, label, log_dir):
+        """Run one ``conan create``, optionally redirecting its output to a log.
+
+        Args:
+            cmd: The ``conan create`` argv.
+            env: Environment for the child process; None inherits this one's.
+            label: Configuration label used to name the log file.
+            log_dir: Directory for the log file, or None/empty to let the child
+                inherit stdout/stderr.
+
+        Raises:
+            subprocess.CalledProcessError: When ``conan create`` fails.
+        """
+        if not log_dir:
+            subprocess.run(cmd, check=True, env=env)
+            return
+        log_path = os.path.join(log_dir, f'{self._library_name}-{label}.log')
+        try:
+            self._archive_existing_log(log_path)
+            log_file = open(log_path, 'w', encoding='utf-8')
+        except OSError as exc:
+            # Losing a log must not lose the build: fall back to the console
+            # rather than letting OSError escape run()'s CalledProcessError
+            # handler and take the whole matrix (and its summary) down.
+            self.printer.print_message(
+                f'WARNING: could not write {log_path} ({exc}); '
+                f'falling back to console output for this configuration.'
+            )
+            subprocess.run(cmd, check=True, env=env)
+            return
+        self.printer.print_message(f'Logging output to {log_path}')
+        with log_file:
+            subprocess.run(cmd, check=True, env=env, stdout=log_file, stderr=subprocess.STDOUT)
 
     def _run_sharded_tests(self, label):
         """Run test runner in parallel shards using GTest sharding.
@@ -476,18 +632,52 @@ class XmsConanPackager(object):
             self.printer.print_message(f'All {self._test_shards} shards passed for {label}')
         return failures
 
-    def upload(self, version):
-        """Upload the packages to the server."""
-        self.printer.print_message('Uploading packages to the server.')
-        cmd = ['conan', 'upload', f'{self._library_name}/{version}*', '-r', 'aquaveo', '--confirm']
+    def upload(self, version, remote=DEFAULT_REMOTE_NAME, package_query=None):
+        """Upload the packages to the server.
+
+        Args:
+            version: Package version to upload; every package matching
+                ``<library>/<version>*`` in the local cache is sent.
+            remote: Conan remote name to upload to. Defaults to
+                ``DEFAULT_REMOTE_NAME`` (the CI-published aquaveo-stable
+                remote). The manually-built VS2019 / msvc 192 matrix passes
+                ``VS2019_REMOTE_NAME`` so those binaries stay out of the
+                CI remote.
+            package_query: Conan binary query passed through as
+                ``-p/--package-query``, e.g. ``'compiler.version=192'``.
+                Without it, ``conan upload`` matches by *reference* only and
+                publishes every binary of that version sitting in the local
+                cache — on a workstation that is both the VS2019 build box and
+                a normal dev machine, that quietly pushes msvc 194 binaries to
+                the VS2019 remote and exits 0. Callers that publish to a
+                toolchain-specific remote must pass the matching query.
+
+        Returns:
+            0 when ``conan upload`` succeeded, 1 when it failed. Shaped as a
+            process exit code — the same convention ``run()`` uses — because
+            both callers (the generated ``build.py`` and ``xmsconan_vs2019
+            upload``) turn the result straight into one. A failed publish to
+            a shared remote must never be reported as success.
+        """
+        self.printer.print_message(f'Uploading packages to the server ({remote}).')
+        cmd = ['conan', 'upload', f'{self._library_name}/{version}*', '-r', remote, '--confirm']
+        if package_query:
+            # Verified against the pinned conan 2.31 client: `conan upload`
+            # accepts `-p/--package-query`.
+            cmd += ['-p', package_query]
+            self.printer.print_message(f'Restricting upload to packages matching: {package_query}')
         try:
             subprocess.run(cmd, check=True)
             self.printer.print_message('Finished uploading')
-        except subprocess.CalledProcessError:
-            self.printer.print_message('ERROR uploading')
-            return
+        except subprocess.CalledProcessError as exc:
+            self.printer.print_message(
+                f'ERROR uploading {self._library_name}/{version}* to {remote} '
+                f'(conan upload exited {exc.returncode}).'
+            )
+            return 1
         self.printer.print_message('*-' * 40 + '\n')
         self.printer.print_message('All packages uploaded successfully.')
+        return 0
 
     def extract_wheel(self, output_dir, version='*'):
         """Extract pre-built wheels from every pybind Conan package.

@@ -1,11 +1,14 @@
 """Tests for package_tools.packager."""
+import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from unittest.mock import patch
 
 import pytest
 
+from xmsconan.constants import DEFAULT_REMOTE_NAME, MSVC_VS2019_VERSION, VS2019_REMOTE_NAME
 from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
 from .utils import patch_env
 
@@ -57,13 +60,87 @@ def test_generate_configurations_linux():
 
 
 @patch_env(clear=True)
-def test_generate_configurations_windows():
-    """Windows config uses msvc compiler."""
+@pytest.mark.parametrize("platform_key,expected_msvc_version", [
+    ("windows", "194"),   # CI / VS2022
+    ("windows_vs2019", "192"),  # manually built, published to aquaveo-vs2019
+])
+def test_generate_configurations_windows_matrix(platform_key, expected_msvc_version):
+    """Both msvc matrices produce the same 14-config shape, differing only in compiler.version.
+
+    Composition with two python versions:
+      4 base    (Release/Debug x dynamic/static runtime)
+    + 4 wchar_t=typedef variants (one per base; all msvc)
+    + 2 pybind  (Release + dynamic runtime only, one per python version)
+    + 4 testing variants (one per base)
+    = 14
+
+    The pybind count is the interesting one for VS2019: the generator skips
+    pybind for ``int(compiler.version) <= 12``, and ``int("192") > 12``, so
+    msvc 192 fans out exactly like msvc 194.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
+    configs = p.generate_configurations(system_platform=platform_key)
+
+    for cfg in configs:
+        assert cfg["os"] == "Windows"
+        assert cfg["compiler"] == "msvc"
+        assert cfg["compiler.version"] == expected_msvc_version
+
+    def select(**opts):
+        return [c for c in configs if all(c["options"].get(k) == v for k, v in opts.items())]
+
+    base = select(wchar_t="builtin", pybind=False, testing=False)
+    typedef = select(wchar_t="typedef")
+    pybind = select(pybind=True)
+    testing = select(testing=True)
+
+    assert len(base) == 4
+    assert {(c["build_type"], c["compiler.runtime"]) for c in base} == {
+        ("Release", "dynamic"), ("Release", "static"),
+        ("Debug", "dynamic"), ("Debug", "static"),
+    }
+    assert len(typedef) == 4
+    assert len(testing) == 4
+    assert len(pybind) == 2
+    assert {c["build_type"] for c in pybind} == {"Release"}
+    assert {c["compiler.runtime"] for c in pybind} == {"dynamic"}
+    assert {c["options"]["python_version"] for c in pybind} == {"3.10", "3.13"}
+    assert len(configs) == 14
+
+
+@patch_env(clear=True)
+def test_generate_configurations_auto_detects_platform_and_arch():
+    """system_platform=None looks the platform up from platform.system() and uses the detected arch.
+
+    The explicit-platform path keeps the configured arch; only the
+    auto-detected path substitutes the machine's real architecture.
+    """
+    with patch("xmsconan.package_tools.packager.platform.system", return_value="Linux"), \
+            patch("xmsconan.package_tools.packager.platform.machine", return_value="aarch64"):
+        p = XmsConanPackager("xmscore")
+        configs = p.generate_configurations()
+
+    assert configs
+    assert {c["os"] for c in configs} == {"Linux"}
+    assert {c["arch"] for c in configs} == {"armv8"}
+
+
+@patch_env(clear=True)
+def test_generate_configurations_rejects_unknown_platform():
+    """An unknown platform key names itself and the valid keys instead of raising AttributeError.
+
+    The platform name reaches this method from a CLI flag, so a bare
+    ``AttributeError: 'NoneType' object has no attribute 'copy'`` (the old
+    behavior of ``configurations.get(...).copy()``) is not actionable.
+    """
     p = XmsConanPackager("xmscore")
-    configs = p.generate_configurations(system_platform="windows")
-    base = configs[0]
-    assert base["os"] == "Windows"
-    assert base["compiler"] == "msvc"
+    with pytest.raises(ValueError) as exc_info:
+        p.generate_configurations(system_platform="windows_vs2017")
+
+    message = str(exc_info.value)
+    assert "windows_vs2017" in message
+    for valid in ("windows", "windows_vs2019", "linux", "darwin"):
+        assert valid in message
 
 
 @patch_env(clear=True)
@@ -86,27 +163,6 @@ def test_generate_configurations_darwin_arm_sets_host_platform():
     assert len(arm_configs) > 0
     for cfg in arm_configs:
         assert cfg["buildenv"].get("_PYTHON_HOST_PLATFORM") == "macosx-15.0-arm64"
-
-
-@patch_env(clear=True)
-def test_generate_configurations_includes_variants():
-    """Windows produces base + wchar_t + pybind + testing variants."""
-    p = XmsConanPackager("xmscore")
-    configs = p.generate_configurations(system_platform="windows")
-    # Windows has 4 base combos (2 build_type x 2 runtime)
-    # + wchar_t variants (4 msvc combos)
-    # + pybind variants (Release/dynamic only = 1)
-    # + testing variants (4 combos)
-    # Total should be > 4
-    assert len(configs) > 4
-
-    # Verify variant types exist
-    has_typedef = any(c["options"].get("wchar_t") == "typedef" for c in configs)
-    has_pybind = any(c["options"].get("pybind") is True for c in configs)
-    has_testing = any(c["options"].get("testing") is True for c in configs)
-    assert has_typedef
-    assert has_pybind
-    assert has_testing
 
 
 @patch_env(clear=True)
@@ -529,14 +585,51 @@ def test_create_build_profile_with_no_profile_options(tmp_path):
     profile_path = p.create_build_profile(config)
     with open(profile_path, "r") as f:
         content = f.read()
-    # The packager unconditionally injects boost defaults (without_stacktrace,
-    # without_locale).  Any other `pkg/*:` line would indicate a stray
-    # caller-supplied option leaking through.
+    # apply_boost_defaults defaults to True, so the boost defaults
+    # (without_stacktrace, without_locale) are injected here.  Any other
+    # `pkg/*:` line would indicate a stray caller-supplied option leaking
+    # through.
     dep_lines = [line for line in content.splitlines() if "/*:" in line]
     assert dep_lines == [
         "boost/*:without_stacktrace=True",
         "boost/*:without_locale=True",
     ]
+
+
+@patch_env(clear=True)
+def test_create_build_profile_skips_boost_defaults_when_disabled(tmp_path):
+    """apply_boost_defaults=False keeps the boost 1.86-only options out of the profile.
+
+    The VS2019 matrix builds against the legacy Aquaveo boost/1.74.0.3, which
+    may not declare without_stacktrace / without_locale; Conan fails the build
+    when a profile sets an option the recipe does not define.
+    """
+    p = XmsConanPackager("xmscore", apply_boost_defaults=False)
+    p.generate_configurations(system_platform="windows_vs2019")
+
+    profile_path = p.create_build_profile(p.configurations[0])
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    assert "boost/*:" not in content
+
+
+@patch_env(clear=True)
+def test_boost_defaults_disabled_still_honors_explicit_profile_options(tmp_path):
+    """Caller-supplied boost options survive apply_boost_defaults=False."""
+    p = XmsConanPackager(
+        "xmscore",
+        profile_options={"boost": {"shared": False}},
+        apply_boost_defaults=False,
+    )
+    p.generate_configurations(system_platform="windows_vs2019")
+
+    profile_path = p.create_build_profile(p.configurations[0])
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    dep_lines = [line for line in content.splitlines() if "/*:" in line]
+    assert dep_lines == ["boost/*:shared=False"]
 
 
 # --- print_configuration_table ---
@@ -610,33 +703,213 @@ def test_run_returns_failure_count(mock_run):
     assert result > 0
 
 
-# --- upload ---
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_without_log_dir_inherits_stdout(mock_run):
+    """Default run() lets conan create inherit stdout (no redirection)."""
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": False, "pybind": False}})
+
+    p.run()
+
+    assert "stdout" not in mock_run.call_args.kwargs
 
 
 @patch_env(clear=True)
 @patch("xmsconan.package_tools.packager.subprocess.run")
-def test_upload_calls_conan_upload(mock_run):
-    """upload() calls conan upload with correct command structure."""
+def test_run_log_dir_redirects_output_per_configuration(mock_run, tmp_path, capsys):
+    """log_dir writes <library>-<label>.log per config and prints a pointer."""
+    log_dir = tmp_path / "logs"  # created by run(), not by the test
     p = XmsConanPackager("xmscore")
-    p.upload("7.0.0")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    p.run(log_dir=str(log_dir))
+
+    expected = log_dir / "xmscore-Release-testing.log"
+    assert expected.is_file()
+    assert mock_run.call_args.kwargs["stdout"].name == str(expected)
+    assert mock_run.call_args.kwargs["stderr"] == subprocess.STDOUT
+    assert str(expected) in capsys.readouterr().out
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_log_dir_writes_one_log_per_msvc_configuration(mock_run, tmp_path):
+    """The whole msvc matrix lands in distinct log files — nothing is truncated.
+
+    compiler.runtime fans the msvc matrix out over dynamic/static but was once
+    missing from the config label, so 14 configurations shared 8 log paths and
+    each static build silently destroyed the dynamic build's log.
+    """
+    log_dir = tmp_path / "logs"
+    p = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
+    p.generate_configurations(system_platform="windows_vs2019")
+
+    p.run(log_dir=str(log_dir))
+
+    assert len(p.configurations) == 14  # the documented VS2019 matrix
+    assert len(list(log_dir.glob("*.log"))) == len(p.configurations)
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_empty_log_dir_does_not_scatter_logs_into_cwd(mock_run, tmp_path, monkeypatch):
+    """An empty --log-dir behaves like None instead of writing bare filenames."""
+    monkeypatch.chdir(tmp_path)
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    p.run(log_dir="")
+
+    assert "stdout" not in mock_run.call_args.kwargs
+    assert list(tmp_path.iterdir()) == []
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_log_dir_archives_previous_runs_log(mock_run, tmp_path):
+    """Re-running keeps the earlier run's log instead of truncating it."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    previous = log_dir / "xmscore-Release-testing.log"
+    previous.write_text("first run: the compiler errors the developer needs")
+
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    p.run(log_dir=str(log_dir))
+
+    archived = list(log_dir.glob("xmscore-Release-testing.*.log"))
+    assert len(archived) == 1
+    assert archived[0].read_text() == "first run: the compiler errors the developer needs"
+    assert previous.is_file() and previous.read_text() == ""  # current run's log
+
+
+def test_archive_existing_log_disambiguates_same_second(tmp_path):
+    """A second archive with the same mtime second gets a counter suffix."""
+    p = XmsConanPackager("xmscore")
+    log_path = tmp_path / "xmscore-Release.log"
+    log_path.write_text("current")
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(os.path.getmtime(log_path)))
+    already_archived = tmp_path / f"xmscore-Release.{stamp}.log"
+    already_archived.write_text("older")
+
+    p._archive_existing_log(str(log_path))
+
+    assert not log_path.exists()
+    assert already_archived.read_text() == "older"
+    assert (tmp_path / f"xmscore-Release.{stamp}.1.log").read_text() == "current"
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+@patch("xmsconan.package_tools.packager.os.makedirs", side_effect=OSError("read-only file system"))
+def test_run_survives_unusable_log_dir(mock_makedirs, mock_run, tmp_path, capsys):
+    """A log directory that can't be created warns and builds anyway.
+
+    An OSError escaping here would skip run()'s summary table and take down a
+    multi-hour matrix over a logging problem.
+    """
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    assert p.run(log_dir=str(tmp_path / "logs")) == 0
+
+    assert "stdout" not in mock_run.call_args.kwargs
+    assert "could not create log directory" in capsys.readouterr().out
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_conan_create_survives_unwritable_log_file(mock_run, tmp_path, capsys):
+    """A log file that can't be opened warns and runs on the console instead."""
+    p = XmsConanPackager("xmscore")
+
+    # A directory that doesn't exist: open() raises FileNotFoundError (OSError).
+    p._conan_create(["conan", "create", "."], None, "Release", str(tmp_path / "gone"))
+
+    assert "stdout" not in mock_run.call_args.kwargs
+    out = capsys.readouterr().out
+    assert "could not write" in out and "falling back to console output" in out
+
+
+@patch_env(clear=True)
+@pytest.mark.parametrize("build_missing,expected", [(True, True), (False, False)])
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_passes_build_missing_to_conan(mock_run, build_missing, expected):
+    """build_missing=True puts --build=missing on the conan create argv."""
+    p = XmsConanPackager("xmscore", build_missing=build_missing)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Release", "options": {"testing": True}})
+
+    p.run()
+
+    assert ("--build=missing" in mock_run.call_args[0][0]) is expected
+
+
+# --- upload ---
+
+
+@patch_env(clear=True)
+@pytest.mark.parametrize("kwargs,expected_remote", [
+    ({}, DEFAULT_REMOTE_NAME),  # default keeps every existing caller on the CI remote
+    ({"remote": VS2019_REMOTE_NAME}, VS2019_REMOTE_NAME),  # manual VS2019 builds
+])
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_upload_calls_conan_upload(mock_run, kwargs, expected_remote):
+    """upload() calls conan upload with the correct command/remote and returns 0."""
+    p = XmsConanPackager("xmscore")
+    assert p.upload("7.0.0", **kwargs) == 0
 
     mock_run.assert_called_once()
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "conan"
     assert "upload" in cmd
     assert "xmscore/7.0.0*" in cmd
+    assert cmd[cmd.index("-r") + 1] == expected_remote
+    # No query given: conan matches by reference only, the historical behavior.
+    assert "-p" not in cmd
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_upload_restricts_binaries_with_package_query(mock_run, capsys):
+    """package_query becomes `-p <query>` so only the intended binaries publish.
+
+    Without it `conan upload` selects by reference alone: on a workstation that
+    is both the VS2019 build box and a normal dev machine, every msvc 194
+    binary of that version would land on the VS2019 remote and exit 0.
+    """
+    p = XmsConanPackager("xmscore")
+    query = f"compiler.version={MSVC_VS2019_VERSION}"
+
+    assert p.upload("7.0.0", remote=VS2019_REMOTE_NAME, package_query=query) == 0
+
+    cmd = mock_run.call_args[0][0]
+    assert cmd[cmd.index("-p") + 1] == query
+    assert query in capsys.readouterr().out
 
 
 @patch_env(clear=True)
 @patch(
     "xmsconan.package_tools.packager.subprocess.run",
-    side_effect=subprocess.CalledProcessError(1, "conan"),
+    side_effect=subprocess.CalledProcessError(3, "conan"),
 )
-def test_upload_handles_called_process_error(mock_run):
-    """Handles CalledProcessError without crashing."""
+def test_upload_returns_nonzero_on_called_process_error(mock_run, capsys):
+    """A failed conan upload is reported and returns 1 instead of faking success."""
     p = XmsConanPackager("xmscore")
-    # Should not raise — CalledProcessError is caught internally
-    p.upload("7.0.0")
+    # Should not raise — CalledProcessError is caught and turned into an exit code.
+    assert p.upload("7.0.0", remote="aquaveo-vs2019") == 1
+
+    out = capsys.readouterr().out
+    assert "ERROR uploading xmscore/7.0.0* to aquaveo-vs2019" in out
+    assert "exited 3" in out
+    assert "All packages uploaded successfully" not in out
 
 
 # --- artifacts_dir ---
@@ -707,6 +980,34 @@ def test_config_label_plain():
     p = XmsConanPackager("xmscore")
     combo = {"build_type": "Debug", "options": {"testing": False, "pybind": False, "wchar_t": "builtin"}}
     assert p._config_label(combo) == "Debug"
+
+
+@patch_env(clear=True)
+def test_config_label_includes_compiler_runtime():
+    """Verify msvc's dynamic/static runtime is part of the label."""
+    p = XmsConanPackager("xmscore")
+    combo = {
+        "build_type": "Release",
+        "compiler.runtime": "static",
+        "options": {"testing": True, "pybind": False, "wchar_t": "typedef"},
+    }
+    assert p._config_label(combo) == "Release-static-testing-wchar_typedef"
+
+
+@patch_env(clear=True)
+def test_config_labels_unique_across_msvc_matrix():
+    """Every configuration of the msvc matrix gets its own label.
+
+    The label names both the per-configuration log file and the test-artifact
+    directory, so a duplicate label means one configuration's evidence
+    overwrites another's.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
+    p.generate_configurations(system_platform="windows_vs2019")
+
+    labels = [p._config_label(c) for c in p.configurations]
+    assert len(labels) == len(set(labels)) == 14
+    assert {"Release-dynamic-testing", "Release-static-testing"} <= set(labels)
 
 
 # --- run with artifacts ---

@@ -63,4 +63,6 @@ if __name__ == "__main__":
             print("Warning: no wheel extracted (no pybind package found)")
 
     if args.upload:
-        builder.upload(version=args.version)
+        if builder.upload(version=args.version) != 0:
+            print("errors when uploading... exiting...")
+            exit(1)

@@ -48,6 +48,66 @@ class XmsConan2File(ConanFile):
     python_namespaced_dir = None
     xms_dependency_options = {}  # Per-dependency option overrides: {"dep_name": {"pybind": False, "testing": False}}
 
+    # Third-party (non-XMS) requirements used by EVERY toolchain except msvc 192
+    # — today that is gcc 13, apple-clang 17 and msvc 194 (VS2022), and any
+    # future compiler lands here by default.  This is not the whole third-party
+    # stack: ``requirements()`` additionally adds the testing framework when
+    # ``testing`` is on and pybind11 when ``pybind`` is on, for this stack and
+    # the VS2019 one alike.
+    #
+    # To change it in a subclass, REPLACE the whole list
+    # (``default_requirements = [...]``).  Do not mutate it in place — it is a
+    # class-level list shared by every recipe loaded in the process, so a
+    # subclass-scope ``.append(...)`` also changes it for the base class and for
+    # every sibling recipe.  Note that ``vs2019_requirements`` below is a
+    # separate list that REPLACES this one on msvc 192 rather than extending it,
+    # so a dependency added here must be added there too if VS2019 needs it.
+    default_requirements = ["boost/1.86.0", "zlib/1.3.1"]
+
+    # Third-party requirements for msvc 192 (VS2019), used INSTEAD OF
+    # ``default_requirements`` — not in addition to it.  VS2019 packages are
+    # built by hand against the LEGACY stack that the desktop products
+    # (GMS/SMS/WMS) link against, which is why the VERSIONS differ from
+    # ``default_requirements`` even though the package set is the same:
+    #
+    # * ``boost`` is the Aquaveo 1.74.0.3 build rather than conan-center
+    #   1.86.0.
+    # * ``zlib`` is 1.2.11 rather than 1.3.1.  The ``aquaveo-vs2019`` remote
+    #   carries 1.2.11 with msvc 192 binaries; 1.3.1 exists only on
+    #   ``aquaveo-stable`` and only with msvc 194 binaries, so naming it here
+    #   would force a from-source build or fail outright.
+    #
+    # zlib is REQUIRED on this stack, not optional: the generated
+    # ``CMakeLists.txt`` calls ``find_package(ZLIB REQUIRED)`` unconditionally
+    # and sources such as ``xmscore/dataio/daStreamIo.cpp`` ``#include
+    # <zlib.h>``.  It was once omitted here on the theory that the Conan 1
+    # recipe never required it; that recipe only got away with it because its
+    # CMake integration exposed every dependency's include directories
+    # globally.  Under Conan 2's CMakeDeps a package must declare what it
+    # uses — boost happening to require zlib transitively is an accident to
+    # not depend on.  Replace the whole list in a subclass, with the same
+    # no-in-place-mutation caveat as ``default_requirements``.
+    vs2019_requirements = ["boost/1.74.0.3", "zlib/1.2.11"]
+
+    # Per-library replacements for ``xms_dependencies`` on VS2019 builds:
+    # {"xmscore": "xmscore/[>=6.0.1 <7.0.0]"}.  An entry replaces the matching
+    # reference in ``xms_dependencies`` — matched on the package name before the
+    # first ``/`` — when (and only when) the build is msvc 192.  Every other
+    # toolchain ignores this dict entirely.  It exists because the legacy desktop
+    # products pin xmscore 6.x while the Conan 2 line has moved on to 7.x.
+    # Generated recipes populate it from the ``[vs2019_dependency_overrides]``
+    # table in ``build.toml``; hand-written recipes can set it directly.
+    #
+    # CONSTRAINT: an override may change only the VERSION or version range —
+    # the package name on both sides of the entry must be identical.
+    # ``configure()`` and ``run_python_tests()`` iterate the UNRESOLVED
+    # ``xms_dependencies``, so a rename would set options on, and pip-install
+    # from, a package that is no longer in the graph, and would also orphan any
+    # matching ``xms_dependency_options`` key.  Replace the whole dict in a
+    # subclass rather than mutating this one in place (it is shared by every
+    # recipe in the process, exactly like the two lists above).
+    vs2019_dependency_overrides = {}
+
     default_options = {
         'wchar_t': 'builtin',
         'pybind': False,
@@ -55,19 +115,58 @@ class XmsConan2File(ConanFile):
         'python_version': '3.13',
     }
 
+    def _is_vs2019(self):
+        """Return True when this build targets Visual Studio 2019 (msvc 192).
+
+        VS2019 packages are produced manually on a developer workstation and
+        published to the ``aquaveo-vs2019`` remote, and they resolve the legacy
+        third-party stack rather than the modern one.  ``settings`` values are
+        Conan objects, not plain strings, so both sides are coerced with
+        ``str()`` before comparing.
+
+        The ``"192"`` literal is the same value as
+        ``xmsconan.constants.MSVC_VS2019_VERSION``, but it cannot be imported
+        here: ``build_file_generator.copy_xms_conan2_file()`` copies this file
+        next to each library's generated ``conanfile.py``, which imports it as
+        a bare top-level ``xms_conan2_file`` module with no ``xmsconan``
+        package on the path.  Change both together.
+        """
+        compiler = str(self.settings.compiler)
+        return compiler == "msvc" and str(self.settings.compiler.version) == "192"
+
+    def _resolved_xms_dependencies(self):
+        """Return ``xms_dependencies`` with the VS2019 overrides applied.
+
+        On an msvc 192 build, any entry in ``vs2019_dependency_overrides`` whose
+        key matches a dependency's package name (the text before the first
+        ``/``) replaces that dependency's full reference.  On every other
+        toolchain the list is returned unchanged.
+        """
+        if not self._is_vs2019():
+            return list(self.xms_dependencies)
+        return [
+            self.vs2019_dependency_overrides.get(dependency.split('/')[0], dependency)
+            for dependency in self.xms_dependencies
+        ]
+
     def requirements(self):
         """Requirements."""
-        self.requires("boost/1.86.0")
-        self.requires("zlib/1.3.1")
+        # VS2019 resolves the legacy third-party stack the desktop products are
+        # built against; everything else gets the modern one.
+        for requirement in (self.vs2019_requirements if self._is_vs2019()
+                            else self.default_requirements):
+            self.requires(requirement)
         if self.options.testing:
             if self.testing_framework == "cxxtest":
                 self.requires('cxxtest/4.4')
             elif self.testing_framework == "gtest":
                 self.requires('gtest/1.17.0')
         if self.options.pybind and self.python_binding_type == "pybind11":
+            # Intentionally 3.0.1 on VS2019 too — an upgrade from the
+            # Conan-1-era pybind11/2.9.1.  Do not "fix" this back to 2.9.1.
             self.requires("pybind11/3.0.1")
 
-        for dependency in self.xms_dependencies:
+        for dependency in self._resolved_xms_dependencies():
             self.requires(dependency)
 
         for dependency in self.extra_dependencies:
@@ -98,6 +197,23 @@ class XmsConan2File(ConanFile):
 
         if s_compiler == "apple-clang" and s_os == 'Macos' and float(s_compiler_version.value) < 9.0:
             raise ConanException("Clang > 9.0 is required for Mac.")
+
+        if self._is_vs2019():
+            # The Conan 1 recipe propagated the recipe's own wchar_t setting
+            # into the legacy Aquaveo boost; boost/1.86.0 has no such option,
+            # which is why this is VS2019-only.
+            #
+            # ``self.options["boost"]`` is the consumer-side override proxy:
+            # the assignment only records `boost/*:wchar_t=<value>`, and Conan
+            # 2.31 SILENTLY IGNORES an override for an option the resolved
+            # recipe does not declare.  The boost/1.74.0.3 currently published
+            # on aquaveo-vs2019 is a binary-republish shim that declares no
+            # options at all, so this line is a verified no-op today; it starts
+            # taking effect once a boost that declares ``wchar_t`` is
+            # published.  Nothing here can fail: the assignment performs no
+            # validation, and real option validation happens later during graph
+            # computation, outside configure().
+            self.options["boost"].wchar_t = self.options.wchar_t
 
         for dependency in self.xms_dependencies:
             dep_split = dependency.split('/')
