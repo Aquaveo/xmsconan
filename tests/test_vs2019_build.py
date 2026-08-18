@@ -73,6 +73,7 @@ def test_library_table_is_in_dependency_order():
     assert [library.name for library in vs.LIBRARIES] == [
         "xmscore", "xmsgrid", "xmsinterp", "xmsmesher",
         "xmsextractor", "xmsstamper", "xmsconstraint", "xmsgridtrace",
+        "xmssnap",
     ]
     assert all(library.note for library in vs.LIBRARIES)
 

@@ -95,6 +95,24 @@ def generate_ci(
 
     # CI-specific options (for GitLab conditional sections)
     ci_config = toml_data.get("ci", {})
+
+    # A GitLab pipeline with neither platform builds nothing, and the Linux
+    # jobs are load-bearing in a way the Windows ones are not: they own the
+    # wheelhouse that Repair Wheel and Wheel Deploy consume, and coverage runs
+    # only under gcc.  Reject the impossible combinations here rather than
+    # emitting a pipeline that fails opaquely in CI.
+    if ci_type == "gitlab":
+        if not ci_config.get("linux", True) and not ci_config.get("windows", True):
+            raise ValueError(
+                "build.toml sets both [ci].linux and [ci].windows to false, "
+                "which would generate a pipeline with nothing to build."
+            )
+        if ci_config.get("coverage", False) and not ci_config.get("linux", True):
+            raise ValueError(
+                "build.toml sets [ci].coverage = true with [ci].linux = false. "
+                "Coverage builds with --coverage under gcc; the generated "
+                "CMakeLists rejects MSVC when XMS_COVERAGE is set."
+            )
     coverage_config = toml_data.get("coverage", {})
 
     from xmsconan import __version__ as xmsconan_version
@@ -107,6 +125,7 @@ def generate_ci(
         "version": version,
         "python_namespaced_dir": toml_data.get("python_namespaced_dir", library_name[3:]),
         "ci_windows": ci_config.get("windows", True),
+        "ci_linux": ci_config.get("linux", True),
         "ci_deploy": ci_config.get("deploy", True),
         "ci_coverage": ci_config.get("coverage", False),
         "ci_xvfb": ci_config.get("xvfb", False),

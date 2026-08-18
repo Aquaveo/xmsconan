@@ -161,8 +161,8 @@ class LibrarySpec:
     Attributes:
         name: Directory name of the checkout under ``--root``, which is also
             the Conan package name.
-        enabled: Whether a plain ``build`` run includes this library.  Flip a
-            library on (a one-line change) once it has a Conan 2 recipe.
+        enabled: Whether a plain ``build`` run includes this library.  ``--only``
+            ignores this flag, so a library can still be built while off.
         note: Why the library is disabled, or what makes it special.
     """
 
@@ -172,18 +172,21 @@ class LibrarySpec:
 
 
 #: The XMS stack in dependency order -- each library is built against the
-#: packages produced by the ones above it, so the order matters.  Only
-#: ``xmscore`` has a Conan 2 recipe today; the rest are listed so that
-#: enabling one as it migrates is a single-flag change.
+#: packages produced by the ones above it, so the order matters.  Every entry
+#: has a Conan 2 recipe, so all of them are enabled; the flag remains so a
+#: library can be taken out of a plain ``build`` run without deleting it.
+PUBLISHED = "Conan 2 recipe; msvc 192 packages on aquaveo-vs2019."
+
 LIBRARIES = (
-    LibrarySpec("xmscore", True, "The only library with a Conan 2 recipe today."),
-    LibrarySpec("xmsgrid", False, "Awaiting Conan 2 migration."),
-    LibrarySpec("xmsinterp", False, "Awaiting Conan 2 migration."),
-    LibrarySpec("xmsmesher", False, "Awaiting Conan 2 migration."),
-    LibrarySpec("xmsextractor", False, "Awaiting Conan 2 migration."),
-    LibrarySpec("xmsstamper", False, "Awaiting Conan 2 migration."),
-    LibrarySpec("xmsconstraint", False, "Awaiting Conan 2 migration."),
-    LibrarySpec("xmsgridtrace", False, "Awaiting Conan 2 migration."),
+    LibrarySpec("xmscore", True, PUBLISHED),
+    LibrarySpec("xmsgrid", True, PUBLISHED),
+    LibrarySpec("xmsinterp", True, PUBLISHED),
+    LibrarySpec("xmsmesher", True, PUBLISHED),
+    LibrarySpec("xmsextractor", True, PUBLISHED),
+    LibrarySpec("xmsstamper", True, PUBLISHED),
+    LibrarySpec("xmsconstraint", True, PUBLISHED),
+    LibrarySpec("xmsgridtrace", True, "Conan 2 recipe; no msvc 192 packages published yet."),
+    LibrarySpec("xmssnap", True, "Python-only -- the pybind wheel is the only consumable artifact."),
 )
 
 

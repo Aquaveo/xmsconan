@@ -822,3 +822,109 @@ def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsGrid-CI.yaml"
     assert ci_file.exists()
+
+
+# --- [ci].linux ----------------------------------------------------------
+
+
+def test_gitlab_linux_defaults_on(tmp_path):
+    """Without [ci].linux the Linux jobs are emitted, exactly as before."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core"\nci_type = "gitlab"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert "\nConan Build:" in content
+    assert "Repair Wheel:" in content
+    assert '"Wheel Deploy":' in content
+    assert '"Conan Deploy - Linux":' in content
+    assert "  - Package" in content
+
+
+def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
+    """[ci].linux = false removes the Linux jobs and the wheel chain they feed.
+
+    The Linux job owns ``wheelhouse``; Repair Wheel and Wheel Deploy consume it
+    through ``dependencies:``. Dropping the producer while keeping the consumers
+    would leave a pipeline that fails at run time on a missing artifact, so they
+    go together -- as does the Package stage that would otherwise be empty.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmssnap"\ndescription = "Snap"\nci_type = "gitlab"\n'
+        '\n[ci]\nlinux = false\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert "\nConan Build:" not in content
+    assert "Repair Wheel:" not in content
+    assert '"Wheel Deploy":' not in content
+    assert '"Conan Deploy - Linux":' not in content
+    assert "  - Package" not in content
+    # The Windows half is untouched.
+    assert '"Conan Build - Windows":' in content
+    assert '"Conan Deploy - Windows":' in content
+
+
+def test_gitlab_linux_false_still_valid_yaml(tmp_path):
+    """A Windows-only pipeline parses and declares only stages that have jobs."""
+    yaml = pytest.importorskip("yaml")
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmssnap"\ndescription = "Snap"\nci_type = "gitlab"\n'
+        '\n[ci]\nlinux = false\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert parsed["stages"] == ["Test", "Deploy"]
+    jobs = {key for key in parsed if key not in ("stages", "variables", "include")}
+    assert jobs == {"Conan Build - Windows", "Conan Deploy - Windows", "Lint"}
+
+
+def test_gitlab_rejects_disabling_both_platforms(tmp_path):
+    """Disabling both platforms is rejected, since nothing would be built."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmssnap"\ndescription = "Snap"\nci_type = "gitlab"\n'
+        '\n[ci]\nlinux = false\nwindows = false\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="nothing to build"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+
+def test_gitlab_rejects_coverage_without_linux(tmp_path):
+    """Coverage instruments with --coverage under gcc, so it needs the Linux job."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmssnap"\ndescription = "Snap"\nci_type = "gitlab"\n'
+        '\n[ci]\nlinux = false\ncoverage = true\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="coverage"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+
+def test_github_is_unaffected_by_linux_flag(tmp_path):
+    """[ci].linux is a GitLab concept, matching [ci].windows.
+
+    Neither flag is referenced by the GitHub template, so a GitHub project that
+    sets one still gets its full matrix rather than a silently truncated one.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core"\nci_type = "github"\n'
+        '\n[ci]\nlinux = false\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    assert "\n  linux:" in content

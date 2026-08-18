@@ -4,6 +4,7 @@ import re
 
 import pytest
 
+from xmsconan.generator_tools import build_file_generator as build_file_generator_module
 from xmsconan.generator_tools.build_file_generator import (
     _write_text_lf,
     copy_xms_conan2_file,
@@ -579,3 +580,85 @@ def test_render_raises_clear_error_for_missing_toml_key(tmp_path):
     msg = str(exc_info.value)
     assert "Missing field in build.toml" in msg
     assert "missing_key" in msg
+
+
+# --- xms_python_dependencies ---------------------------------------------
+
+SHIPPED_PACKAGE_TEMPLATES = (
+    Path(build_file_generator_module.__file__).parent / "templates" / "_package"
+)
+
+BASE_TOML = (
+    'library_name = "xmssnap"\n'
+    'description = "Snap"\n'
+    'python_namespaced_dir = "snap"\n'
+    'xms_dependencies = [{ name = "xmscore", version = "7.0.12" }]\n'
+)
+
+
+def _render_pyproject(tmp_path, toml_body):
+    """Render the shipped ``_package`` templates against ``toml_body``.
+
+    Args:
+        tmp_path: pytest temporary directory.
+        toml_body: Contents of the ``build.toml`` to render with.
+
+    Returns:
+        The rendered ``pyproject.toml`` text.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(toml_body, encoding="utf-8")
+    out = tmp_path / "out"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(SHIPPED_PACKAGE_TEMPLATES),
+        output_dir=str(out),
+    )
+    return (out / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def _dependency_block(content):
+    """Return the body of the rendered ``dependencies = [...]`` list.
+
+    Args:
+        content: Rendered ``pyproject.toml`` text.
+
+    Returns:
+        The text between the brackets of the dependencies list.
+    """
+    return content.split("dependencies = [", 1)[1].split("]", 1)[0]
+
+
+def test_xms_python_dependencies_reach_the_wheel_metadata(tmp_path):
+    """Non-XMS Python requirements land in the generated pyproject.toml.
+
+    Without them the wheel installs and then fails at import: xmssnap needs
+    geopandas and data_objects, neither of which is an xms_dependency.
+    """
+    content = _render_pyproject(
+        tmp_path,
+        BASE_TOML + 'xms_python_dependencies = ["geopandas", "data_objects>=4.0.0"]\n',
+    )
+    block = _dependency_block(content)
+    assert '"numpy",' in block
+    assert '"xmscore>=7.0.12",' in block
+    assert '"geopandas",' in block
+    assert '"data_objects>=4.0.0",' in block
+
+
+def test_xms_python_dependencies_keep_declared_order(tmp_path):
+    """Entries land after the xms dependencies, in the order given."""
+    block = _dependency_block(
+        _render_pyproject(tmp_path, BASE_TOML + 'xms_python_dependencies = ["aaa", "zzz"]\n')
+    )
+    assert block.index("xmscore") < block.index("aaa") < block.index("zzz")
+
+
+def test_xms_python_dependencies_is_optional(tmp_path):
+    """Omitting the key renders exactly what it did before the key existed."""
+    block = _dependency_block(_render_pyproject(tmp_path, BASE_TOML))
+    assert [line.strip() for line in block.strip().splitlines()] == [
+        '"numpy",',
+        '"xmscore>=7.0.12",',
+    ]
