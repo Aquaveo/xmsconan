@@ -30,6 +30,7 @@ dependencies = [
 xmsconan = "xmsconan.cli:main"
 xmsconan_gen = "xmsconan.generator_tools.build_file_generator:main"
 xmsconan_ci = "xmsconan.generator_tools.ci_file_generator:main"
+xmsconan_profiles = "xmsconan.generator_tools.profile_generator:main"
 xmsconan_coverage = "xmsconan.coverage_tools.coverage_generator:main"
 xmsconan_build = "xmsconan.build_tools.build_library:main"
 xmsconan_vs2019 = "xmsconan.build_tools.vs2019_build:main"

@@ -1,4 +1,5 @@
 """Tests for package_tools.packager."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -8,7 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from xmsconan.constants import DEFAULT_REMOTE_NAME, MSVC_VS2019_VERSION, VS2019_REMOTE_NAME
+from xmsconan.constants import (
+    build_folder_for_generator,
+    DEFAULT_REMOTE_NAME,
+    GENERATOR_FOLDER_SUFFIXES,
+    MSVC_VS2019_VERSION,
+    VS2019_REMOTE_NAME,
+)
 from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
 from .utils import patch_env
 
@@ -1256,3 +1263,337 @@ def test_collect_dependency_libs_skips_non_libraries(mock_run, tmp_path):
     XmsConanPackager("xmsvtk").collect_dependency_libs(str(output_dir))
 
     assert sorted(p.name for p in output_dir.iterdir()) == ["libbaz.so.1.2"]
+
+
+# --- profile generation (write_profiles / profile_name) ---
+
+
+def _linux_packager(**kwargs):
+    """Packager with the deterministic linux matrix already generated."""
+    packager = XmsConanPackager("xmscore", **kwargs)
+    packager.generate_configurations("linux")
+    return packager
+
+
+@pytest.mark.parametrize("configuration,expected", [
+    ({"os": "Macos", "build_type": "Release",
+      "options": {"pybind": False, "testing": False}}, "mac_os_library_release"),
+    ({"os": "Linux", "build_type": "Debug",
+      "options": {"pybind": False, "testing": True}}, "linux_testing_debug"),
+    ({"os": "Macos", "build_type": "Release",
+      "options": {"pybind": True, "testing": False, "python_version": "3.13"}},
+     "mac_os_python_release_py313"),
+    ({"os": "Windows", "build_type": "Debug", "compiler.runtime": "static",
+      "options": {"pybind": False, "testing": False, "wchar_t": "typedef"}},
+     "windows_library_debug_typedef_static"),
+])
+def test_profile_name(configuration, expected):
+    """Configuration maps to the xmsvtk-style profile file stem."""
+    assert XmsConanPackager.profile_name(configuration) == expected
+
+
+def test_write_profiles_writes_one_file_per_configuration(tmp_path):
+    """Every configuration produces its own profile, and none overwrite each other."""
+    packager = _linux_packager()
+
+    written = packager.write_profiles(str(tmp_path))
+
+    assert len(written) == len(packager.configurations)
+    assert len(set(written)) == len(written)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(os.path.basename(w) for w in written)
+
+
+def test_write_profiles_returns_sorted_paths(tmp_path):
+    """Returned paths are sorted so callers get a stable order."""
+    written = _linux_packager().write_profiles(str(tmp_path))
+
+    assert written == sorted(written)
+
+
+@patch_env({"AQUAPI_PASSWORD": "s3cret-value", "AQUAPI_USERNAME": "ci-bot"})
+def test_write_profiles_omits_credentials(tmp_path):
+    """Credentials present in the environment never reach a profile on disk."""
+    _linux_packager().write_profiles(str(tmp_path))
+
+    contents = "\n".join(p.read_text() for p in tmp_path.iterdir())
+    assert "s3cret-value" not in contents
+    assert "ci-bot" not in contents
+    assert "AQUAPI_PASSWORD" not in contents
+
+
+def test_write_profiles_keeps_public_buildenv(tmp_path):
+    """Non-credential build variables are still written."""
+    _linux_packager().write_profiles(str(tmp_path))
+
+    contents = (tmp_path / "linux_library_release.txt").read_text()
+    assert "PYTHON_TARGET_VERSION=" in contents
+
+
+def test_write_profiles_drops_unset_values(tmp_path):
+    """An unset variable is omitted rather than serialized as the string 'None'."""
+    _linux_packager().write_profiles(str(tmp_path))
+
+    contents = "\n".join(p.read_text() for p in tmp_path.iterdir())
+    assert "=None" not in contents
+
+
+def test_write_profiles_emits_default_conf(tmp_path):
+    """Generated profiles pin the CMake generator so it does not vary by machine."""
+    _linux_packager().write_profiles(str(tmp_path))
+
+    contents = (tmp_path / "linux_library_release.txt").read_text()
+    assert "[conf]" in contents
+    assert "tools.cmake.cmaketoolchain:generator=Ninja Multi-Config" in contents
+
+
+def test_write_profiles_conf_is_overridable(tmp_path):
+    """A repo can replace the default [conf] entries."""
+    packager = _linux_packager(profile_conf={"tools.cmake.cmaketoolchain:generator": "Xcode"})
+
+    packager.write_profiles(str(tmp_path))
+
+    contents = (tmp_path / "linux_library_release.txt").read_text()
+    assert "tools.cmake.cmaketoolchain:generator=Xcode" in contents
+
+
+def test_write_profiles_omits_conf_when_empty(tmp_path):
+    """An empty profile_conf omits the section entirely."""
+    packager = _linux_packager(profile_conf={})
+
+    packager.write_profiles(str(tmp_path))
+
+    assert "[conf]" not in (tmp_path / "linux_library_release.txt").read_text()
+
+
+def test_write_profiles_includes_dependency_options(tmp_path):
+    """Per-dependency options reach the profile so package ids match the build."""
+    packager = _linux_packager(profile_options={"boost": {"without_locale": True}})
+
+    packager.write_profiles(str(tmp_path))
+
+    assert "boost/*:without_locale=True" in (tmp_path / "linux_library_release.txt").read_text()
+
+
+@patch_env({"AQUAPI_PASSWORD": "s3cret-value"})
+def test_create_build_profile_still_carries_full_environment():
+    """The ephemeral build profile is unchanged: it keeps credentials the build needs."""
+    packager = _linux_packager()
+
+    path = packager.create_build_profile(packager.configurations[0])
+
+    with open(path) as profile:
+        assert "AQUAPI_PASSWORD=s3cret-value" in profile.read()
+
+
+# --- generator variants ---
+
+
+VS_VARIANT = {
+    "name": "vs",
+    "platforms": ["windows"],
+    "kinds": ["testing", "python"],
+    "conf": {"tools.cmake.cmaketoolchain:generator": "Visual Studio 17 2022"},
+}
+
+
+@pytest.mark.parametrize("configuration,expected", [
+    ({"os": "Windows", "options": {"testing": True}}, True),
+    ({"os": "Windows", "options": {"pybind": True}}, True),
+    ({"os": "Windows", "options": {}}, False),          # library kind is out of scope
+    ({"os": "Linux", "options": {"testing": True}}, False),   # wrong platform
+    ({"os": "Macos", "options": {"testing": True}}, False),
+])
+def test_variant_applies(configuration, expected):
+    """A variant only matches the platforms and kinds it declares."""
+    assert XmsConanPackager.variant_applies(VS_VARIANT, configuration) is expected
+
+
+def test_variant_without_filters_applies_everywhere():
+    """Omitting platforms/kinds means the variant is unrestricted."""
+    variant = {"name": "alt", "conf": {}}
+
+    assert XmsConanPackager.variant_applies(variant, {"os": "Linux", "options": {}})
+    assert XmsConanPackager.variant_applies(variant, {"os": "Windows", "options": {"testing": True}})
+
+
+@pytest.mark.parametrize("configuration,expected", [
+    ({"options": {"testing": True}}, "testing"),
+    ({"options": {"pybind": True}}, "python"),
+    ({"options": {"testing": True, "pybind": True}}, "testing"),
+    ({"options": {}}, "library"),
+])
+def test_configuration_kind(configuration, expected):
+    """Kind is derived from the testing/pybind options, testing taking precedence."""
+    assert XmsConanPackager.configuration_kind(configuration) == expected
+
+
+def test_write_profiles_emits_scoped_variant_profiles(tmp_path):
+    """A windows-scoped variant adds profiles only for the kinds it names."""
+    packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
+    packager.generate_configurations("windows")
+
+    packager.write_profiles(str(tmp_path))
+
+    names = sorted(p.stem for p in tmp_path.iterdir())
+    assert any(n.startswith("windows_testing") and n.endswith("_vs") for n in names)
+    assert any(n.startswith("windows_python") and n.endswith("_vs") for n in names)
+    # library configurations are outside the variant's declared kinds
+    assert not any(n.startswith("windows_library") and n.endswith("_vs") for n in names)
+
+
+def test_variant_profile_overlays_conf(tmp_path):
+    """The variant's conf replaces the default generator in its own profile only."""
+    packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
+    packager.generate_configurations("windows")
+
+    packager.write_profiles(str(tmp_path))
+
+    variant = next(p for p in tmp_path.iterdir() if p.stem.endswith("_vs"))
+    base = next(p for p in tmp_path.iterdir()
+                if p.stem.startswith("windows_testing") and not p.stem.endswith("_vs"))
+    assert "generator=Visual Studio 17 2022" in variant.read_text()
+    assert "generator=Ninja Multi-Config" in base.read_text()
+
+
+def test_variant_does_not_apply_to_other_platforms(tmp_path):
+    """A windows-scoped variant leaves the linux matrix untouched."""
+    packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
+    packager.generate_configurations("linux")
+
+    packager.write_profiles(str(tmp_path))
+
+    assert not any(p.stem.endswith("_vs") for p in tmp_path.iterdir())
+
+
+def test_plan_profiles_matches_write_profiles(tmp_path):
+    """The plan is exactly what gets written.
+
+    Regression guard: the dry-run path previously re-derived filenames from
+    profile_name() and so silently omitted variant profiles that a real run
+    would write.
+    """
+    packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
+    packager.generate_configurations("windows")
+
+    planned = [entry['filename'] for entry in packager.plan_profiles()]
+    written = packager.write_profiles(str(tmp_path))
+
+    assert sorted(planned) == sorted(os.path.basename(w) for w in written)
+
+
+# --- CMakePresets.json generation ---
+
+
+def _recipe_class():
+    """Import XmsConan2File lazily.
+
+    Deliberately not a module-level import: xms_conan2_file imports the real
+    conan package, and tests/test_xms_conan2_file.py installs MagicMock conan
+    stubs with sys.modules.setdefault(), which silently no-ops if conan is
+    already imported. A module-level import here collects first (alphabetically)
+    and would disable those stubs for the whole run.
+    """
+    from xmsconan.xms_conan2_file import XmsConan2File
+    return XmsConan2File
+
+
+def _recipe_stub(generator, testing=False, pybind=False):
+    """Minimal stand-in for the ConanFile surface _build_folder_name() touches.
+
+    Binds the real method so the parity test exercises the shipped
+    implementation rather than a copy of its logic.
+    """
+    recipe_class = _recipe_class()
+
+    class _Conf:
+        def get(self, name, default=None):
+            if name == "tools.cmake.cmaketoolchain:generator":
+                return generator
+            return default
+
+    class _Options:
+        def get_safe(self, name):
+            return {"testing": testing, "pybind": pybind}.get(name)
+
+    class _Stub:
+        _GENERATOR_FOLDER_SUFFIXES = recipe_class._GENERATOR_FOLDER_SUFFIXES
+        _build_folder_name = recipe_class._build_folder_name
+
+        def __init__(self):
+            self.conf = _Conf()
+            self.options = _Options()
+
+    return _Stub()
+
+
+def test_generator_folder_suffixes_match_recipe():
+    """The recipe's standalone copy of the suffix table matches constants."""
+    assert _recipe_class()._GENERATOR_FOLDER_SUFFIXES == GENERATOR_FOLDER_SUFFIXES
+
+
+@pytest.mark.parametrize("generator,testing,pybind,kind", [
+    ("Ninja Multi-Config", False, False, "library"),
+    ("Ninja Multi-Config", True, False, "testing"),
+    ("Ninja Multi-Config", False, True, "python"),
+    ("Visual Studio 17 2022", True, False, "testing"),
+    ("Unix Makefiles", False, False, "library"),
+    (None, False, False, "library"),
+])
+def test_recipe_build_folder_matches_constants(generator, testing, pybind, kind):
+    """Recipe and generated presets agree on the build folder.
+
+    They must: the presets' binaryDir points at the folder the recipe creates,
+    and the recipe cannot import from xmsconan (it is copied standalone), so the
+    logic is duplicated and this pins the two together.
+    """
+    recipe_folder = _recipe_stub(generator, testing, pybind)._build_folder_name()
+
+    assert recipe_folder == build_folder_for_generator(generator, kind if generator else None)
+
+
+def test_plan_cmake_presets_one_configure_preset_per_kind():
+    """Each build kind gets its own configure preset and its own binaryDir."""
+    document = _linux_packager().plan_cmake_presets()
+
+    names = sorted(p["name"] for p in document["configurePresets"])
+    binary_dirs = [p["binaryDir"] for p in document["configurePresets"]]
+    assert names == ["library", "python-py313", "testing"]
+    assert len(set(binary_dirs)) == len(binary_dirs)
+
+
+def test_multi_config_generator_collapses_build_types():
+    """Debug and Release share a configure preset and differ as build presets."""
+    document = _linux_packager().plan_cmake_presets()
+
+    library = next(p for p in document["configurePresets"] if p["name"] == "library")
+    library_builds = sorted(b["name"] for b in document["buildPresets"]
+                            if b["configurePreset"] == "library")
+    assert library["cacheVariables"]["CMAKE_CONFIGURATION_TYPES"] == "Debug;Release"
+    assert library_builds == ["library-debug", "library-release"]
+
+
+def test_preset_toolchain_lives_in_its_binary_dir():
+    """Every preset's toolchain path sits under that preset's own binaryDir."""
+    document = _linux_packager().plan_cmake_presets()
+
+    for preset in document["configurePresets"]:
+        assert preset["toolchainFile"].startswith(preset["binaryDir"] + "/")
+
+
+def test_write_cmake_presets_skipped_without_generator(tmp_path):
+    """With no generator pinned there is nothing to express, so no file."""
+    packager = _linux_packager(profile_conf={})
+
+    assert packager.write_cmake_presets(str(tmp_path / "CMakePresets.json")) is None
+    assert not (tmp_path / "CMakePresets.json").exists()
+
+
+def test_write_cmake_presets_is_valid_json(tmp_path):
+    """The written document parses and carries the presets schema version."""
+    path = tmp_path / "CMakePresets.json"
+
+    _linux_packager().write_cmake_presets(str(path))
+
+    document = json.loads(path.read_text())
+    assert document["version"] == 6
+    assert document["configurePresets"]

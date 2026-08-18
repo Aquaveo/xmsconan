@@ -35,3 +35,57 @@ VS2019_REMOTE_URL = f"{ARTIFACTORY_BASE_URL}/aquaveo-vs2019"
 #: with this compiler version are built by hand and published to
 #: :data:`VS2019_REMOTE_NAME`.
 MSVC_VS2019_VERSION = "192"
+
+
+#: Build-folder suffix for each CMake generator.  CMake refuses to reuse a
+#: binary directory configured by a different generator, so a Ninja build and a
+#: Visual Studio build of the same recipe need separate folders.
+#:
+#: :mod:`xmsconan.xms_conan2_file` repeats this mapping for the same reason it
+#: repeats the msvc 192 literal (see the module note above): it is copied next
+#: to each generated ``conanfile.py`` and must stay standalone.  The two copies
+#: are pinned together by ``test_generator_folder_mapping_matches_recipe``.
+GENERATOR_FOLDER_SUFFIXES = {
+    "ninja multi-config": "ninja",
+    "ninja": "ninja",
+    "xcode": "xcode",
+    "unix makefiles": "make",
+}
+
+#: Generators that build several configurations from one configure step.  These
+#: collapse Debug/Release into build presets rather than separate configure
+#: presets.
+MULTI_CONFIG_GENERATOR_MARKERS = ("multi-config", "visual studio", "xcode")
+
+
+def build_folder_for_generator(generator, kind=None):
+    """Return the build folder name for ``generator`` and build ``kind``.
+
+    Two axes, both of which must separate folders:
+
+    * generator -- CMake refuses to reuse a binary directory configured by a
+      different generator.
+    * kind (``testing`` / ``python`` / ``library``) -- each installs a different
+      Conan dependency set (gtest, pybind11, neither), so sharing a folder means
+      the second install overwrites the first one's generated toolchain.
+
+    An unset generator keeps the historical ``build`` folder, which is what the
+    ephemeral profile used by ``build.py`` produces.
+    """
+    if not generator:
+        return "build"
+    key = str(generator).strip().lower()
+    suffix = GENERATOR_FOLDER_SUFFIXES.get(key)
+    if suffix is None:
+        import re
+        suffix = "vs" if key.startswith("visual studio") else re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+    # Underscore, not hyphen: every xms repo already ignores `build_*/`, so the
+    # generated folders are covered without touching ten .gitignore files.
+    parts = ["build", kind, suffix]
+    return "_".join(part for part in parts if part) or "build"
+
+
+def is_multi_config_generator(generator):
+    """Whether ``generator`` configures several build types at once."""
+    key = str(generator or "").strip().lower()
+    return any(marker in key for marker in MULTI_CONFIG_GENERATOR_MARKERS)
