@@ -133,7 +133,7 @@ option-overridden configurations.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `xms_dependencies` | array[object] | `[]` | XMS sister libraries. Object shape: `{ name = "xmscore", version = "7.0.0", no_python = false }`. `no_python = true` excludes the dep from `_package/pyproject.toml`. |
-| `xms_python_dependencies` | array[string] | `[]` | Extra **Python** requirements written into `_package/pyproject.toml`, in pip requirement form (`"geopandas"`, `"data_objects>=4.0.0"`). For runtime imports that are not XMS sister libraries and so have no entry in `xms_dependencies`. Appended after the XMS entries, in the order given. Conan is unaffected — this is wheel metadata only. |
+| `xms_python_dependencies` | array[string] | `[]` | Extra **Python** requirements written into `_package/pyproject.toml`, in pip requirement form (`"geopandas"`, `"data_objects>=4.0.0"`). For runtime imports that are not XMS sister libraries and so have no entry in `xms_dependencies`. Appended after the XMS entries, in the order given. The Conan *dependency graph* is unaffected — nothing is added to `conanfile.py` — but these are real wheel requirements, so pip resolves them from an index during the Conan build when `pybind` is on (see §5.3). |
 | `extra_dependencies` | array[string] | `[]` | Extra Conan deps in `"name/version"` form. |
 | `xms_dependency_options` | object | `{}` | Override an XMS dep's options. e.g. `{ "xmscore" = { "pybind" = false } }`. |
 | `vs2019_dependency_overrides` | object | `{}` | Replace an XMS dep's *reference* — but only on a Visual Studio 2019 (msvc 192) build. e.g. `{ "xmscore" = "xmscore/[>=6.0.1 <7.0.0]" }`. Matched on the package name before the first `/`; every other toolchain ignores it entirely. An entry may change the version or range only — renaming the package, or naming one that is not in `xms_dependencies`, fails the msvc 192 build. See §7.4. |
@@ -473,6 +473,7 @@ If the library needs an X server to run its tests (VTK, GUI libs), `xmsconan cov
 |---|---|---|
 | `XMS_COVERAGE` | `xmsconan coverage` | Recipe-side flag. Enables `--coverage` in `CMakeLists.txt`, installs `pytest-cov`, and passes `--cov=xms.<python_namespaced_dir>` to pytest. |
 | `XMS_COVERAGE_PIP_INDEX` | you | Optional extra `--extra-index-url` for the build venv's `pip install` when coverage is enabled (useful when `pytest-cov` lives on a private index). |
+| `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` | you | Read by pip itself, not by xmsconan. The wheel install at the end of a pybind build resolves `xms_python_dependencies` from whatever index pip is configured with; set these when any of those requirements live on a private index. |
 | `GITHUB_STEP_SUMMARY` | GitHub Actions | When set, a coverage summary table is appended. |
 
 ### 11.4 GitLab vs GitHub

@@ -163,7 +163,8 @@ class LibrarySpec:
             the Conan package name.
         enabled: Whether a plain ``build`` run includes this library.  ``--only``
             ignores this flag, so a library can still be built while off.
-        note: Why the library is disabled, or what makes it special.
+        note: What makes the library special -- its packaging status, or why
+            it is held out of a plain ``build`` run when it is.
     """
 
     name: str
@@ -171,12 +172,12 @@ class LibrarySpec:
     note: str = ""
 
 
+PUBLISHED = "Conan 2 recipe; msvc 192 packages on aquaveo-vs2019."
+
 #: The XMS stack in dependency order -- each library is built against the
 #: packages produced by the ones above it, so the order matters.  Every entry
 #: has a Conan 2 recipe, so all of them are enabled; the flag remains so a
 #: library can be taken out of a plain ``build`` run without deleting it.
-PUBLISHED = "Conan 2 recipe; msvc 192 packages on aquaveo-vs2019."
-
 LIBRARIES = (
     LibrarySpec("xmscore", True, PUBLISHED),
     LibrarySpec("xmsgrid", True, PUBLISHED),

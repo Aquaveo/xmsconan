@@ -12,10 +12,12 @@ import pytest
 yaml = pytest.importorskip("yaml", reason="PyYAML required for CI validation tests")
 
 from xmsconan.generator_tools.ci_file_generator import generate_ci  # noqa: E402
+from .utils import GITLAB_NON_JOB_KEYS  # noqa: E402
 
 
 # All boolean CI options and their possible values.
 CI_OPTIONS = {
+    "linux": [False, True],
     "windows": [False, True],
     "deploy": [False, True],
     "coverage": [False, True],
@@ -28,6 +30,25 @@ _OPTION_COMBOS = [
     dict(zip(CI_OPTIONS.keys(), combo))
     for combo in itertools.product(*CI_OPTIONS.values())
 ]
+
+
+def _is_generatable_for_gitlab(options):
+    """Whether generate_ci accepts this combination for a GitLab project.
+
+    Two combinations are rejected by design (ci_file_generator): no platform at
+    all, and coverage without the gcc job that instruments it. They are excluded
+    here rather than expected to generate -- the dedicated rejection tests in
+    test_ci_file_generator cover the raising itself.
+    """
+    if not options.get("linux", True) and not options.get("windows", True):
+        return False
+    if not options.get("linux", True) and options.get("coverage", False):
+        return False
+    return True
+
+
+#: GitLab-valid subset of :data:`_OPTION_COMBOS`.
+_GITLAB_COMBOS = [combo for combo in _OPTION_COMBOS if _is_generatable_for_gitlab(combo)]
 
 
 def _combo_id(combo):
@@ -105,7 +126,7 @@ def test_github_ci_job_steps_are_lists(options, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("options", _OPTION_COMBOS, ids=_combo_id)
+@pytest.mark.parametrize("options", _GITLAB_COMBOS, ids=_combo_id)
 def test_gitlab_ci_produces_valid_yaml(options, tmp_path):
     """Generated GitLab CI is parseable YAML for every option combo."""
     toml_file = _write_toml(tmp_path, "gitlab", options)
@@ -123,7 +144,7 @@ def test_gitlab_ci_produces_valid_yaml(options, tmp_path):
     assert isinstance(parsed["stages"], list), "'stages' must be a list"
 
 
-@pytest.mark.parametrize("options", _OPTION_COMBOS, ids=_combo_id)
+@pytest.mark.parametrize("options", _GITLAB_COMBOS, ids=_combo_id)
 def test_gitlab_ci_jobs_have_script(options, tmp_path):
     """Every GitLab job has a 'script' list (not a bare string)."""
     toml_file = _write_toml(tmp_path, "gitlab", options)
@@ -134,7 +155,7 @@ def test_gitlab_ci_jobs_have_script(options, tmp_path):
     parsed = yaml.safe_load(ci_file.read_text(encoding="utf-8"))
 
     # Keys that aren't jobs
-    non_job_keys = {"stages", "variables", "pages"}
+    non_job_keys = GITLAB_NON_JOB_KEYS
     for key, value in parsed.items():
         if key in non_job_keys:
             continue
@@ -147,7 +168,7 @@ def test_gitlab_ci_jobs_have_script(options, tmp_path):
         )
 
 
-@pytest.mark.parametrize("options", _OPTION_COMBOS, ids=_combo_id)
+@pytest.mark.parametrize("options", _GITLAB_COMBOS, ids=_combo_id)
 def test_gitlab_ci_stages_match_jobs(options, tmp_path):
     """Every job's stage is listed in the top-level stages list."""
     toml_file = _write_toml(tmp_path, "gitlab", options)
@@ -158,7 +179,7 @@ def test_gitlab_ci_stages_match_jobs(options, tmp_path):
     parsed = yaml.safe_load(ci_file.read_text(encoding="utf-8"))
 
     stages = set(parsed["stages"])
-    non_job_keys = {"stages", "variables"}
+    non_job_keys = GITLAB_NON_JOB_KEYS
     for key, value in parsed.items():
         if key in non_job_keys or not isinstance(value, dict):
             continue
@@ -169,7 +190,7 @@ def test_gitlab_ci_stages_match_jobs(options, tmp_path):
             )
 
 
-@pytest.mark.parametrize("options", _OPTION_COMBOS, ids=_combo_id)
+@pytest.mark.parametrize("options", _GITLAB_COMBOS, ids=_combo_id)
 def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
     """Every 'needs' entry names a defined job and uses no unexpanded variables.
 
@@ -185,7 +206,7 @@ def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
     ci_file = output_dir / ".gitlab-ci.yml"
     parsed = yaml.safe_load(ci_file.read_text(encoding="utf-8"))
 
-    non_job_keys = {"stages", "variables", "pages"}
+    non_job_keys = GITLAB_NON_JOB_KEYS
     job_names = {
         key for key, value in parsed.items()
         if key not in non_job_keys and isinstance(value, dict)
@@ -261,6 +282,9 @@ def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
     every run. ``--upgrade`` is what makes the floor actually resolve to the
     newest release on devpi.
     """
+    if ci_type == "gitlab" and not _is_generatable_for_gitlab(options):
+        pytest.skip("combination is rejected for GitLab by design")
+
     toml_file = _write_toml(tmp_path, ci_type, options)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
