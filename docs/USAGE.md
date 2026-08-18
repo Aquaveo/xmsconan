@@ -133,6 +133,7 @@ option-overridden configurations.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `xms_dependencies` | array[object] | `[]` | XMS sister libraries. Object shape: `{ name = "xmscore", version = "7.0.0", no_python = false }`. `no_python = true` excludes the dep from `_package/pyproject.toml`. |
+| `xms_python_dependencies` | array[string] | `[]` | Extra **Python** requirements written into `_package/pyproject.toml`, in pip requirement form (`"geopandas"`, `"data_objects>=4.0.0"`). For runtime imports that are not XMS sister libraries and so have no entry in `xms_dependencies`. Appended after the XMS entries, in the order given. Conan is unaffected — this is wheel metadata only. |
 | `extra_dependencies` | array[string] | `[]` | Extra Conan deps in `"name/version"` form. |
 | `xms_dependency_options` | object | `{}` | Override an XMS dep's options. e.g. `{ "xmscore" = { "pybind" = false } }`. |
 | `vs2019_dependency_overrides` | object | `{}` | Replace an XMS dep's *reference* — but only on a Visual Studio 2019 (msvc 192) build. e.g. `{ "xmscore" = "xmscore/[>=6.0.1 <7.0.0]" }`. Matched on the package name before the first `/`; every other toolchain ignores it entirely. An entry may change the version or range only — renaming the package, or naming one that is not in `xms_dependencies`, fails the msvc 192 build. See §7.4. |
@@ -165,6 +166,7 @@ These drive the CI templates. All optional.
 |---|---|---|
 | `ci_type` | — | `"github"` or `"gitlab"`. **Required** for `xmsconan ci`. (Lives at the top level, not under `[ci]`.) |
 | `[ci].windows` | `true` | Emit a Windows job. |
+| `[ci].linux` | `true` | Emit the Linux jobs. **GitLab only**, like `[ci].windows` — the GitHub templates ignore both. Setting it to `false` also removes `Repair Wheel`, `Wheel Deploy`, `Conan Deploy - Linux` and the `Package` stage, because the Linux job is what produces `wheelhouse/` and the others consume it through `dependencies:`. Intended for libraries that cannot build on Linux at all; see the note below. |
 | `[ci].linux_arm` | `false` | Emit a Linux ARM job (GitHub only). |
 | `[ci].deploy` | `true` | Emit deploy jobs (only run on tag pushes). |
 | `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
@@ -414,6 +416,8 @@ The generated jobs follow the pattern:
 - `Conan Build - Windows`, `Conan Deploy - Windows`: `parallel:matrix` over `PYTHON_TARGET_VERSION`. The matrix also sets `PY_TAG` (`py310` / `py313`) which selects the runner via `image: GLR-${PY_TAG}`.
 - Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
+- `[ci].linux = false` yields a **Windows-only pipeline**: `Conan Build - Windows`, `Lint`, and (on tags) `Conan Deploy - Windows`. Two combinations are rejected at generation time rather than producing a pipeline that fails opaquely later — `linux = false` together with `windows = false` (nothing would build), and `linux = false` with `coverage = true` (coverage compiles with `--coverage` under gcc, and the generated `CMakeLists.txt` rejects MSVC when `XMS_COVERAGE` is set).
+- **A Windows-only pipeline publishes no wheel.** `Conan Build - Windows` does not pass `--wheel-dir`, so with the Linux job gone nothing stages `wheelhouse/`. Conan packages still publish on tags. A library in that position gets its wheels from the manual VS2019 track (§16.8) until the Windows job learns to stage them.
 
 ### 10.3 Toolchain versions
 
@@ -688,11 +692,15 @@ A single failing configuration does not stop the library — the packager runs t
 The driver holds the XMS stack in dependency order — each library builds against the packages produced by the ones before it — with an `enabled` flag per entry:
 
 ```
-xmscore (enabled) → xmsgrid → xmsinterp → xmsmesher → xmsextractor
-→ xmsstamper → xmsconstraint → xmsgridtrace
+xmscore → xmsgrid → xmsinterp → xmsmesher → xmsextractor
+→ xmsstamper → xmsconstraint → xmsgridtrace → xmssnap
 ```
 
-**Only `xmscore` is enabled today**, because it is the only library with a Conan 2 recipe. As each of the others migrates, enabling it is a one-line change — flip `False` to `True` in the `LIBRARIES` tuple in `xmsconan/build_tools/vs2019_build.py`. Until then, `--only <lib>` builds a disabled library without touching the list.
+**Every entry now has a Conan 2 recipe, so all of them are enabled.** The flag remains so a library can be dropped from a plain `build` run without deleting its row; `--only <lib>` ignores the flag entirely, so a library can still be built while it is off.
+
+`xmssnap` sits last because nothing builds against it: Python is its only consumer, and the pybind wheel is the only consumable artifact. `xmsgridtrace` has a Conan 2 recipe but no msvc 192 packages published yet.
+
+A name that is not in this tuple cannot be built by the driver at all — `--only`/`--from` validate against it and exit 2 with `unknown library`. Adding a newly migrated library here is a one-line change in `xmsconan/build_tools/vs2019_build.py`.
 
 ### 16.6 The matrix — 14 configurations per library
 

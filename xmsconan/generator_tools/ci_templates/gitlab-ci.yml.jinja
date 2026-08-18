@@ -12,7 +12,9 @@ stages:
   - Build
 <% endif %>
   - Test
+<% if ci_linux %>
   - Package
+<% endif %>
 <% if ci_deploy %>
   - Deploy
 <% endif %>
@@ -27,6 +29,7 @@ variables:
   PACKAGE_VERSION: "${CI_COMMIT_TAG:-$DEFAULT_VERSION}"
 
 <% endif %>
+<% if ci_linux %>
 Conan Build:
 <% if ci_split_tests %>
   stage: Build
@@ -132,6 +135,7 @@ Conan Build:
 <% endif %>
 
 <% endif %>
+<% endif %>
 <% if ci_windows %>
 "Conan Build - Windows":
 <% if ci_split_tests %>
@@ -180,6 +184,7 @@ Lint:
     - xmsconan_gen --version 0.0.0 build.toml
     - flake8 _package
 
+<% if ci_linux %>
 Repair Wheel:
   stage: Package
 <% if docker_image %>
@@ -199,7 +204,9 @@ Repair Wheel:
     paths:
       - wheelhouse/
 
+<% endif %>
 <% if ci_deploy %>
+<% if ci_linux %>
 "Wheel Deploy":
   stage: Deploy
   image: python:3.13
@@ -229,6 +236,7 @@ Repair Wheel:
   only:
     - tags
 
+<% endif %>
 <% if ci_windows %>
 "Conan Deploy - Windows":
   stage: Deploy
