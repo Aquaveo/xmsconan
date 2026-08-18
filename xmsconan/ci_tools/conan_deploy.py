@@ -24,8 +24,12 @@ def conan_deploy(library, version, save=None, restore=None, upload=False):
     ref = f"{library}/{version}"
 
     if save:
+        # `conan cache save` treats a bare `pkg/version` as a recipe-only pattern, so
+        # the tarball would carry the recipe and none of the binaries built alongside
+        # it. `:*` selects every package id under the reference. Without it the deploy
+        # job restores a recipe with no packages and silently uploads nothing.
         subprocess.run(
-            ["conan", "cache", "save", "--file", save, ref],
+            ["conan", "cache", "save", "--file", save, f"{ref}:*"],
             check=True,
         )
 
