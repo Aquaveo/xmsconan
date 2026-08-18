@@ -113,6 +113,20 @@ def generate_ci(
                 "Coverage builds with --coverage under gcc; the generated "
                 "CMakeLists rejects MSVC when XMS_COVERAGE is set."
             )
+    # [ci].linux and [ci].windows are GitLab-only (docs/USAGE.md:169). The
+    # GitHub templates ignore both, so a project that sets one here gets the
+    # full matrix and no indication its setting did nothing. Documented is not
+    # the same as discoverable -- say so at generation time. Both flags are
+    # named, not just linux, so the two stay consistent.
+    if ci_type == "github":
+        ignored = [key for key in ("linux", "windows") if ci_config.get(key, True) is False]
+        if ignored:
+            LOGGER.warning(
+                "build.toml sets [ci].%s = false, but these are GitLab-only options; "
+                "the generated GitHub workflow ignores them and emits the full matrix.",
+                " and [ci].".join(ignored),
+            )
+
     coverage_config = toml_data.get("coverage", {})
 
     from xmsconan import __version__ as xmsconan_version

@@ -662,3 +662,23 @@ def test_xms_python_dependencies_is_optional(tmp_path):
         '"numpy",',
         '"xmscore>=7.0.12",',
     ]
+
+
+def test_xms_python_dependencies_stay_out_of_the_conan_graph(tmp_path):
+    """Python-only requirements never reach conanfile.py.
+
+    The key exists to add wheel metadata; the PR claims the Conan graph is
+    untouched, and nothing asserted it. If one of these leaked into the recipe
+    Conan would try to resolve it as a package and the build would fail on a
+    reference that only exists on PyPI.
+    """
+    content = _render_conanfile(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'xms_python_dependencies = ["geopandas", "data_objects>=4.0.0"]\n',
+        tmp_path,
+    )
+
+    assert "geopandas" not in content
+    assert "data_objects" not in content
+    assert "xms_python_dependencies" not in content

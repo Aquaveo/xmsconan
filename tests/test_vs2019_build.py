@@ -75,7 +75,8 @@ def test_library_table_is_in_dependency_order():
         "xmsextractor", "xmsstamper", "xmsconstraint", "xmsgridtrace",
         "xmssnap",
     ]
-    assert all(library.note for library in vs.LIBRARIES)
+    unexplained = [library.name for library in vs.LIBRARIES if not library.note]
+    assert unexplained == [], f"LibrarySpec entries with an empty note: {unexplained}"
 
 
 def test_select_libraries_defaults_to_enabled():
@@ -93,17 +94,54 @@ def test_select_libraries_defaults_to_enabled():
         assert [library.name for library in vs.select_libraries()] == ["first", "third"]
 
 
+def test_select_libraries_returns_every_entry_when_all_enabled():
+    """A table with nothing disabled selects the whole stack.
+
+    That is the shape the real table has today, asserted generically so this
+    test does not have to change as libraries migrate on and off the flag.
+    """
+    table = (
+        vs.LibrarySpec("first", True),
+        vs.LibrarySpec("second", True),
+        vs.LibrarySpec("third", True),
+    )
+    with mock.patch(f"{MODULE}.LIBRARIES", table):
+        assert [library.name for library in vs.select_libraries()] == ["first", "second", "third"]
+
+
 def test_select_libraries_only_overrides_enabled_flag():
-    """--only builds a named library even while it is still disabled."""
-    selected = vs.select_libraries(only=["xmsgrid", "xmscore"])
+    """--only builds a named library even while it is still disabled.
+
+    Run against a synthetic table whose --only target is disabled. Against the
+    real table -- where every entry is enabled -- the plain `enabled` filter
+    alone satisfies the assertion, so the bypass this test exists for would go
+    unexercised and the test would still pass if it were removed.
+    """
+    table = (
+        vs.LibrarySpec("first", True),
+        vs.LibrarySpec("second", False),
+        vs.LibrarySpec("third", True),
+    )
+    with mock.patch(f"{MODULE}.LIBRARIES", table):
+        selected = vs.select_libraries(only=["second", "first"])
     # order follows the dependency order of LIBRARIES, not the flag order
-    assert [library.name for library in selected] == ["xmscore", "xmsgrid"]
+    assert [library.name for library in selected] == ["first", "second"]
 
 
 def test_select_libraries_from_truncates_the_stack():
-    """--from drops everything before the named library."""
-    selected = vs.select_libraries(only=["xmscore", "xmsinterp"], start_from="xmsgrid")
-    assert [library.name for library in selected] == ["xmsinterp"]
+    """--from drops everything before the named library.
+
+    Synthetic table for the same reason as above: the truncation must be what
+    drops the earlier entry, not its enabled flag.
+    """
+    table = (
+        vs.LibrarySpec("first", True),
+        vs.LibrarySpec("second", True),
+        vs.LibrarySpec("third", True),
+    )
+    with mock.patch(f"{MODULE}.LIBRARIES", table):
+        selected = vs.select_libraries(only=["first", "third"], start_from="second")
+    assert [library.name for library in selected] == ["third"]
 
 
 def test_select_libraries_unknown_only():
