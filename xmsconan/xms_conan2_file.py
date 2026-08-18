@@ -4,6 +4,7 @@ Conanfile base for the xmscore projects compatible with Conan 2.x.
 import glob
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -304,9 +305,71 @@ class XmsConan2File(ConanFile):
         if not self.info.options.pybind:
             del self.info.options.python_version
 
+    # CMake refuses to reuse a binary directory configured by a different
+    # generator ("Does not match the generator used previously"), so a Ninja
+    # build and a Visual Studio build of the same recipe cannot share one.
+    # Deriving the folder from the generator lets both coexist instead of
+    # forcing a wipe to switch between them.
+    _GENERATOR_FOLDER_SUFFIXES = {
+        'ninja multi-config': 'ninja',
+        'ninja': 'ninja',
+        'xcode': 'xcode',
+        'unix makefiles': 'make',
+    }
+
+    def _build_folder_name(self):
+        """Return the build folder for this profile's generator and build kind.
+
+        Must stay in step with ``xmsconan.constants.build_folder_for_generator``,
+        which the generated CMakePresets.json uses for binaryDir. This file is
+        copied next to the generated conanfile.py and imported standalone, so it
+        cannot import from the xmsconan package (see the note in constants.py);
+        the two are pinned together by a parity test.
+        """
+        generator = self.conf.get('tools.cmake.cmaketoolchain:generator', default=None)
+        if not generator:
+            # No generator pinned -- this is the ephemeral profile that build.py
+            # uses. Keep the historical "build" folder so existing local and CI
+            # workflows are untouched by profile-driven builds.
+            return 'build'
+
+        key = str(generator).strip().lower()
+        suffix = self._GENERATOR_FOLDER_SUFFIXES.get(key)
+        if suffix is None:
+            # Visual Studio generators carry a version and year, so match the
+            # family rather than enumerating every release.
+            suffix = 'vs' if key.startswith('visual studio') else re.sub(r'[^a-z0-9]+', '-', key).strip('-')
+
+        # Each kind installs a different dependency set, so they cannot share a
+        # build folder without overwriting one another's generated toolchain.
+        if self.options.get_safe('testing'):
+            kind = 'testing'
+        elif self.options.get_safe('pybind'):
+            kind = 'python'
+        else:
+            kind = 'library'
+
+        # Underscore, not hyphen: the xms repos already ignore `build_*/`.
+        parts = ['build', kind, suffix]
+        return '_'.join(part for part in parts if part) or 'build'
+
     def layout(self):
         """The layout method."""
-        cmake_layout(self)
+        cmake_layout(self, build_folder=self._build_folder_name())
+        # Editable-mode include root. ``self.cpp.source`` is consulted ONLY
+        # when this package is consumed via ``conan editable add``; the
+        # packaged layout is described by ``package_info()`` and is unaffected.
+        # (``cmake_layout`` already points libdirs at build/<cfg> for editables,
+        # so only the include root needs correcting here.)
+        #
+        # Headers are written as ``#include <xmscore/misc/XmError.h>``, i.e.
+        # relative to the REPO ROOT, because that is where they sit in the
+        # source tree. A built package is different: ``cmake.install()``
+        # relocates them under ``include/``, which is why ``package_info()``
+        # advertises ``include`` instead. Without this override an editable
+        # consumer is handed ``<repo>/include``, which does not exist in a
+        # source checkout, and every include fails to resolve.
+        self.cpp.source.includedirs = ["."]
 
     def _get_python_cmake_hints(self):
         """Return CMake hint variables for FindPython3.

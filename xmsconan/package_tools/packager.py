@@ -13,7 +13,12 @@ import tempfile
 import time
 from typing import Any, Optional
 
-from xmsconan.constants import DEFAULT_REMOTE_NAME, MSVC_VS2019_VERSION
+from xmsconan.constants import (
+    build_folder_for_generator,
+    DEFAULT_REMOTE_NAME,
+    is_multi_config_generator,
+    MSVC_VS2019_VERSION,
+)
 from xmsconan.package_tools.printer import Printer
 
 
@@ -28,6 +33,43 @@ def get_current_arch():
     }
     return arch_map.get(machine, machine)
 
+
+# Build-environment keys allowed into a profile written into a repository.
+#
+# This is an ALLOW-list, not a deny-list, and deliberately so: buildenv is
+# assembled from the process environment, so a deny-list fails OPEN -- a
+# credential added later under a new name is written to disk until somebody
+# remembers to update the list. Anything not named here is dropped, so a new
+# variable has to be consciously admitted before it can be persisted.
+#
+# The ephemeral profile used by an actual build is unaffected: it keeps the
+# full environment (including AQUAPI_* credentials) because the build needs
+# them, and that file is discarded with its temporary directory.
+PUBLIC_BUILDENV_KEYS = frozenset({
+    'XMS_VERSION',
+    'PYTHON_TARGET_VERSION',
+    'CI_COMMIT_TAG',
+    'RELEASE_PYTHON',
+    'MACOSX_DEPLOYMENT_TARGET',
+    '_PYTHON_HOST_PLATFORM',
+    'XMS_COVERAGE',
+    'XMS_TEST_ARTIFACTS_DIR',
+})
+
+# Default [conf] for generated profiles. Ninja Multi-Config matches what the
+# hand-maintained xmsvtk profiles pin on every platform except their explicit
+# Visual Studio variant. Without a generator in the profile Conan falls back to
+# a platform default, which differs between machines -- the exact class of
+# silent divergence these profiles exist to remove.
+DEFAULT_PROFILE_CONF = {
+    'tools.cmake.cmaketoolchain:generator': 'Ninja Multi-Config',
+    # Disable Conan's CMakeUserPresets.json. We generate CMakePresets.json
+    # ourselves with stable, readable names; Conan's file otherwise ACCUMULATES
+    # an include per output folder, and because it names every preset
+    # `conan-default` regardless of options, a second install makes
+    # `cmake --list-presets` fail outright with "Duplicate preset".
+    'tools.cmake.cmaketoolchain:user_presets': '',
+}
 
 configurations = {
     'windows': {
@@ -90,6 +132,8 @@ class XmsConanPackager(object):
         python_versions: Optional[list[str]] = None,
         coverage: Optional[bool] = None,
         apply_boost_defaults: bool = True,
+        profile_conf: Optional[dict] = None,
+        profile_variants: Optional[list] = None,
     ):
         """Initialize the packager.
 
@@ -102,6 +146,16 @@ class XmsConanPackager(object):
                 in parallel shards using GTest's GTEST_TOTAL_SHARDS.
             profile_options: Per-dependency option overrides written into each
                 configuration's profile, e.g. {'boost': {'shared': True}}.
+            profile_conf: ``[conf]`` entries for profiles written by
+                :meth:`write_profiles`. None uses ``DEFAULT_PROFILE_CONF``; an
+                empty dict omits the section.
+            profile_variants: Additional generator variants, each a dict with
+                ``name`` plus optional ``platforms`` / ``kinds`` filters and a
+                ``conf`` overlay. A matching configuration is emitted a second
+                time under ``<stem>_<name>``. Used for cases like Windows,
+                where the same settings are built with both Ninja and Visual
+                Studio; scoped rather than blanket so a repo does not get
+                variants for configurations it never builds that way.
                 Each dep/opt pair is emitted as a `pkg/*:opt=value` line in the
                 profile's [options] section.
             python_versions: Python versions to fan out pybind builds across
@@ -135,6 +189,10 @@ class XmsConanPackager(object):
         self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
         self._test_shards = test_shards
         self._profile_options = profile_options or {}
+        # Only consulted by write_profiles(); the ephemeral build profile has
+        # never carried a [conf] section and still does not.
+        self._profile_conf = dict(DEFAULT_PROFILE_CONF) if profile_conf is None else dict(profile_conf)
+        self._profile_variants = list(profile_variants or [])
         self._python_versions = self._resolve_python_versions(python_versions)
         self._coverage = (
             coverage if coverage is not None
@@ -879,15 +937,28 @@ class XmsConanPackager(object):
         subprocess.run(cmd, check=True)
         self.printer.print_message('Wheel repair completed successfully.')
 
-    def create_build_profile(self, configuration):
-        """Create a temporary build profile."""
+    def _serialize_profile(self, configuration, path, public_only=False, skip_empty=False, conf=None):
+        """Write one configuration to a Conan profile file.
+
+        Single serialization path shared by the ephemeral build profile and the
+        profiles written into a repository by :meth:`write_profiles`.
+
+        Args:
+            configuration: One entry from :attr:`configurations`.
+            path: Destination file path.
+            public_only: Keep only ``PUBLIC_BUILDENV_KEYS``. Required for any
+                profile that lands on disk; the temporary build profile keeps
+                the full environment because the build needs it and the file is
+                discarded with its temporary directory.
+            skip_empty: Drop buildenv entries whose value is None. Without this
+                an unset variable serializes as the literal string ``None``,
+                which Conan would faithfully export into the build.
+            conf: Mapping written as a ``[conf]`` section. None omits the
+                section entirely, preserving the ephemeral profile's shape.
+        """
         settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv']}
 
-        # Create a temporary directory
-        temp_profile_path = os.path.join(self._temp_dir_path, 'temp_profile')
-
-        # Write the profile to the temporary file
-        with open(temp_profile_path, 'w') as f:
+        with open(path, 'w') as f:
             f.write('[settings]\n')
             for k, v in settings.items():
                 f.write(f'{k}={v}\n')
@@ -902,12 +973,253 @@ class XmsConanPackager(object):
 
             f.write('\n[buildenv]\n')
             for k, v in configuration['buildenv'].items():
+                if public_only and k not in PUBLIC_BUILDENV_KEYS:
+                    continue
+                if skip_empty and v is None:
+                    continue
                 f.write(f'{k}={v}\n')
 
-            # Use the temporary profile file as needed
-            # For example, you can print the path to the temporary profile file
-            print(f'Temporary profile created at: {temp_profile_path}')
-            return temp_profile_path
+            if conf:
+                f.write('\n[conf]\n')
+                for k, v in conf.items():
+                    f.write(f'{k}={v}\n')
+
+        return path
+
+    def create_build_profile(self, configuration):
+        """Create a temporary build profile."""
+        temp_profile_path = os.path.join(self._temp_dir_path, 'temp_profile')
+        self._serialize_profile(configuration, temp_profile_path)
+        print(f'Temporary profile created at: {temp_profile_path}')
+        return temp_profile_path
+
+    # Conan `os` value -> the platform key used in profile filenames and in a
+    # variant's `platforms` filter. Kept in one place so the two cannot drift.
+    _PLATFORM_KEYS = {'Macos': 'mac_os', 'Linux': 'linux', 'Windows': 'windows'}
+
+    @classmethod
+    def platform_key(cls, configuration):
+        """Return the filename platform key for a configuration."""
+        os_value = configuration.get('os')
+        return cls._PLATFORM_KEYS.get(os_value, str(os_value or 'unknown').lower())
+
+    @staticmethod
+    def configuration_kind(configuration):
+        """Return 'testing', 'python' or 'library' for a configuration.
+
+        Mirrors how the hand-maintained xmsvtk profiles are grouped, and is what
+        a variant's ``kinds`` filter matches against.
+        """
+        options = configuration.get('options', {})
+        if options.get('testing'):
+            return 'testing'
+        if options.get('pybind'):
+            return 'python'
+        return 'library'
+
+    @classmethod
+    def variant_applies(cls, variant, configuration):
+        """Whether a generator variant should be emitted for a configuration.
+
+        An absent filter means "no restriction", so a variant with neither
+        ``platforms`` nor ``kinds`` applies everywhere.
+        """
+        platforms = variant.get('platforms')
+        if platforms and cls.platform_key(configuration) not in platforms:
+            return False
+        kinds = variant.get('kinds')
+        if kinds and cls.configuration_kind(configuration) not in kinds:
+            return False
+        return True
+
+    @classmethod
+    def profile_name(cls, configuration):
+        """Return the file stem for a configuration, e.g. ``mac_os_testing_debug``.
+
+        Follows the naming convention already used by the hand-maintained
+        profiles in xmsvtk so generated profiles are recognizable to anyone who
+        has used those.
+        """
+        options = configuration.get('options', {})
+        parts = [cls.platform_key(configuration), cls.configuration_kind(configuration),
+                 str(configuration.get('build_type', '')).lower()]
+        if options.get('pybind') and options.get('python_version'):
+            parts.append('py' + str(options['python_version']).replace('.', ''))
+        if options.get('wchar_t') and options['wchar_t'] != 'builtin':
+            parts.append(str(options['wchar_t']))
+        if configuration.get('compiler.runtime'):
+            parts.append(str(configuration['compiler.runtime']))
+        return '_'.join(part for part in parts if part)
+
+    def write_profiles(self, output_dir, system_platform=None):
+        """Write one Conan profile per configuration into ``output_dir``.
+
+        These are generated artifacts, regenerated from build.toml like the
+        other generated build files — not local state to be hand-edited. They
+        exist so that entry points other than ``build.py`` (a bare
+        ``conan install``, ``conan editable``, an IDE, a fresh worktree) resolve
+        the same package ids the build does, instead of whatever
+        ``conan profile detect`` happens to produce.
+
+        Returns:
+            List of written profile paths, sorted.
+        """
+        if self._configurations is None:
+            self.generate_configurations(system_platform)
+
+        os.makedirs(output_dir, exist_ok=True)
+        written = []
+        for entry in self.plan_profiles(system_platform):
+            path = os.path.join(output_dir, entry['filename'])
+            self._serialize_profile(entry['configuration'], path, public_only=True, skip_empty=True,
+                                    conf=entry['conf'])
+            written.append(path)
+
+        return sorted(written)
+
+    def plan_profiles(self, system_platform=None):
+        """Return ``(filename, configuration, conf)`` for every profile to write.
+
+        Each entry is a dict with ``filename``, ``configuration``, ``conf`` and
+        ``variant`` (None for the base rendering).
+
+        The single source of truth for what :meth:`write_profiles` and
+        :meth:`plan_cmake_presets` produce, so a dry run reports exactly what a
+        real run writes rather than re-deriving the names and drifting from it.
+        """
+        if self._configurations is None:
+            self.generate_configurations(system_platform)
+
+        planned = []
+        used = {}
+        for configuration in self._configurations:
+            base_stem = self.profile_name(configuration)
+
+            # Base rendering, plus one per generator variant that matches this
+            # configuration. A variant only overlays [conf]; settings and
+            # options are identical, which is what makes the pair meaningful.
+            renderings = [(base_stem, self._profile_conf, None)]
+            for variant in self._profile_variants:
+                if not self.variant_applies(variant, configuration):
+                    continue
+                merged_conf = dict(self._profile_conf)
+                merged_conf.update(variant.get('conf') or {})
+                renderings.append((f"{base_stem}_{variant['name']}", merged_conf, variant['name']))
+
+            for stem, conf, variant_name in renderings:
+                # Deterministic disambiguation: identical stems would otherwise
+                # silently overwrite one another and drop configurations.
+                seen = used.get(stem, 0)
+                used[stem] = seen + 1
+                filename = stem if seen == 0 else f'{stem}_{seen + 1}'
+                planned.append({
+                    'filename': f'{filename}.txt',
+                    'configuration': configuration,
+                    'conf': conf,
+                    'variant': variant_name,
+                })
+
+        return planned
+
+    @classmethod
+    def preset_name(cls, configuration, variant_name=None, include_build_type=False):
+        """Return the CMake preset name for a configuration.
+
+        Deliberately shorter than :meth:`profile_name`: a presets file is
+        consumed on the machine it was generated for, so the platform prefix
+        would be noise. Build type is omitted for multi-config generators,
+        which express it as a build preset instead of a second configure step.
+        """
+        options = configuration.get('options', {})
+        parts = [cls.configuration_kind(configuration)]
+        if include_build_type:
+            parts.append(str(configuration.get('build_type', '')).lower())
+        if options.get('pybind') and options.get('python_version'):
+            parts.append('py' + str(options['python_version']).replace('.', ''))
+        if options.get('wchar_t') and options['wchar_t'] != 'builtin':
+            parts.append(str(options['wchar_t']))
+        if configuration.get('compiler.runtime'):
+            parts.append(str(configuration['compiler.runtime']))
+        if variant_name:
+            parts.append(variant_name)
+        return '-'.join(part for part in parts if part)
+
+    def plan_cmake_presets(self, system_platform=None):
+        """Return the CMakePresets.json document for this repository.
+
+        Derived from the same plan as the profiles, so a preset and the profile
+        that provisions it always name the same generator and build folder --
+        the pair previously had to be kept in sync by hand.
+
+        Configurations whose profile pins no generator are skipped: without one
+        there is nothing to express that Conan's own generated presets do not
+        already cover.
+        """
+        configure_presets = {}
+        build_presets = []
+
+        for entry in self.plan_profiles(system_platform):
+            configuration = entry['configuration']
+            generator = (entry['conf'] or {}).get('tools.cmake.cmaketoolchain:generator')
+            if not generator:
+                continue
+
+            multi_config = is_multi_config_generator(generator)
+            folder = build_folder_for_generator(generator, self.configuration_kind(configuration))
+            name = self.preset_name(configuration, entry['variant'], include_build_type=not multi_config)
+            build_type = str(configuration.get('build_type', 'Release'))
+            options = configuration.get('options', {})
+
+            preset = configure_presets.get(name)
+            if preset is None:
+                preset = {
+                    'name': name,
+                    'displayName': f'{name} ({generator})',
+                    'generator': generator,
+                    'binaryDir': folder,
+                    'toolchainFile': f'{folder}/generators/conan_toolchain.cmake',
+                    'cacheVariables': {
+                        'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON',
+                        'BUILD_TESTING': 'ON' if options.get('testing') else 'OFF',
+                        'IS_PYTHON_BUILD': 'YES' if options.get('pybind') else 'NO',
+                        'CMAKE_INSTALL_PREFIX': '_install',
+                    },
+                }
+                configure_presets[name] = preset
+                preset['_build_types'] = []
+
+            if build_type not in preset['_build_types']:
+                preset['_build_types'].append(build_type)
+                build_presets.append({
+                    'name': f'{name}-{build_type.lower()}' if multi_config else name,
+                    'displayName': f'{name} {build_type}',
+                    'configurePreset': name,
+                    'configuration': build_type,
+                })
+
+        ordered = []
+        for name in sorted(configure_presets):
+            preset = configure_presets[name]
+            build_types = preset.pop('_build_types')
+            if is_multi_config_generator(preset['generator']):
+                preset['cacheVariables']['CMAKE_CONFIGURATION_TYPES'] = ';'.join(sorted(build_types))
+            ordered.append(preset)
+
+        return {
+            'version': 6,
+            'configurePresets': ordered,
+            'buildPresets': sorted(build_presets, key=lambda b: b['name']),
+        }
+
+    def write_cmake_presets(self, path, system_platform=None):
+        """Write CMakePresets.json to ``path``. Returns the path, or None."""
+        document = self.plan_cmake_presets(system_platform)
+        if not document['configurePresets']:
+            return None
+        with open(path, 'w') as presets_file:
+            json.dump(document, presets_file, indent=2)
+            presets_file.write('\n')
+        return path
 
     def print_configuration_table(self, configurations_to_print=None):
         """
