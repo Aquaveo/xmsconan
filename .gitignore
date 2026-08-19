@@ -68,3 +68,14 @@ cov-cpp-summary.json
 cov-py-summary.json
 coverage-html-cpp/
 coverage-html-py/
+
+# Local Python environment (rebuilt per worktree, never shared or committed)
+.venv/
+.envrc
+.env
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/worktrees/
+.claude-tmp/
+CLAUDE.local.md

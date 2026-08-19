@@ -1,0 +1,41 @@
+{
+  "worktree": {
+    "baseRef": "head"
+  },
+  "hooks": {
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/scripts/provision_claude_worktree.sh\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(uv venv:*)",
+      "Bash(uv pip install -e .:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run flake8:*)",
+      "Bash(uv run --project:*)",
+      "Bash(sh scripts/provision_claude_worktree.sh:*)",
+      "Bash(.venv/bin/pytest:*)",
+      "Bash(.venv/bin/flake8:*)",
+      "Bash(.venv/bin/python -m pytest:*)"
+    ]
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowWrite": [
+        "~/.cache/uv",
+        "~/.local/share/uv",
+        "~/Library/Caches/uv",
+        "~/Library/Application Support/uv"
+      ]
+    }
+  }
+}

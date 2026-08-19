@@ -45,3 +45,42 @@ Before declaring a feature or fix done:
 
 If a change genuinely has no doc impact, say so explicitly in the PR body —
 silence reads as "forgot to check."
+
+## Working in a Claude Code worktree
+
+Agent work happens in a worktree, never in the main checkout. `.claude/settings.json`
+wires a `WorktreeCreate` hook to `scripts/provision_claude_worktree.sh`, so a worktree
+Claude creates arrives with a ready `.venv`: Python 3.13 (the CI matrix version),
+`uv pip install -e ".[test]"`, plus the exact flake8 plugin set
+`.github/workflows/xmsconan-ci.yaml` installs. `bin/xms-task` in the workspace root
+calls the same script for `.tasks/<name>/xmsconan` worktrees.
+
+Provision an existing worktree by hand with:
+
+```bash
+sh scripts/provision_claude_worktree.sh provision "$PWD"
+```
+
+**The editable install is per-worktree and that is the point.** The workspace rule
+against `uv pip install -e ./xmsconan` targets *shared* environments, where it would
+put a working copy behind `xmsconan_gen` on PATH and silently change what every repo
+generates. Inside a worktree's own `.venv` the opposite is wanted: activate it and
+`xmsconan_gen` runs that tree's generator, which is how a generator change gets
+exercised against a consumer repo. Never activate a worktree venv and then regenerate
+files in a repo you are not testing.
+
+`.venv/` is deliberately absent from `.worktreeinclude` — it holds absolute paths and
+an editable install pointing at the tree that built it, so a copied venv would import
+the wrong worktree's `xmsconan`. It is always rebuilt, never copied.
+
+Both CI gates run from the worktree venv:
+
+```bash
+.venv/bin/flake8 .
+.venv/bin/python -m pytest tests/ -v
+```
+
+Note that `ultracode` is a Claude Code session setting, not a repo setting — there is
+no `.claude/settings.json` key for it. Turn it on per-session with `/config`, or by
+including the word in a prompt. This repo's config is what makes the agents it fans
+out land in usable worktrees.
