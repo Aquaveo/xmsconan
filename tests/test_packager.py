@@ -1515,13 +1515,15 @@ def _recipe_class():
     return XmsConan2File
 
 
-def _recipe_stub(generator, testing=False, pybind=False):
+def _recipe_stub(generator, options=None, settings=None):
     """Minimal stand-in for the ConanFile surface _build_folder_name() touches.
 
     Binds the real method so the parity test exercises the shipped
     implementation rather than a copy of its logic.
     """
     recipe_class = _recipe_class()
+    option_values = options or {}
+    setting_values = settings or {}
 
     class _Conf:
         def get(self, name, default=None):
@@ -1529,9 +1531,12 @@ def _recipe_stub(generator, testing=False, pybind=False):
                 return generator
             return default
 
-    class _Options:
+    class _Mapping:
+        def __init__(self, values):
+            self._values = values
+
         def get_safe(self, name):
-            return {"testing": testing, "pybind": pybind}.get(name)
+            return self._values.get(name)
 
     class _Stub:
         _GENERATOR_FOLDER_SUFFIXES = recipe_class._GENERATOR_FOLDER_SUFFIXES
@@ -1539,14 +1544,10 @@ def _recipe_stub(generator, testing=False, pybind=False):
 
         def __init__(self):
             self.conf = _Conf()
-            self.options = _Options()
+            self.options = _Mapping(option_values)
+            self.settings = _Mapping(setting_values)
 
     return _Stub()
-
-
-#: (testing, pybind) -> the kind those options select. Spelled out so the
-#: folder table above states its expectation instead of recomputing it.
-_KIND_FOR_OPTIONS = {(False, False): "library", (True, False): "testing", (False, True): "python"}
 
 
 def test_generator_folder_suffixes_match_recipe():
@@ -1554,28 +1555,89 @@ def test_generator_folder_suffixes_match_recipe():
     assert _recipe_class()._GENERATOR_FOLDER_SUFFIXES == GENERATOR_FOLDER_SUFFIXES
 
 
-@pytest.mark.parametrize("generator,testing,pybind,expected_folder", [
-    ("Ninja Multi-Config", False, False, "build_library_ninja"),
-    ("Ninja Multi-Config", True, False, "build_testing_ninja"),
-    ("Ninja Multi-Config", False, True, "build_python_ninja"),
-    ("Visual Studio 17 2022", True, False, "build_testing_vs"),
-    ("Unix Makefiles", False, False, "build_library_make"),
-    (None, False, False, "build"),
+@pytest.mark.parametrize("generator,options,settings,kind,discriminators,expected_folder", [
+    pytest.param("Ninja Multi-Config", {}, {}, "library", [],
+                 "build_library_ninja", id="library"),
+    pytest.param("Ninja Multi-Config", {"testing": True}, {}, "testing", [],
+                 "build_testing_ninja", id="testing"),
+    pytest.param("Ninja Multi-Config", {"pybind": True, "python_version": "3.13"}, {},
+                 "python", ["py313"], "build_python_ninja_py313", id="python"),
+    pytest.param("Visual Studio 17 2022", {"testing": True}, {}, "testing", [],
+                 "build_testing_vs", id="testing-vs"),
+    pytest.param("Unix Makefiles", {}, {}, "library", [],
+                 "build_library_make", id="library-make"),
+    # The axes the Windows matrix fans out over, and the reason this test exists
+    # in its current form: these four used to collapse onto build_library_ninja.
+    pytest.param("Ninja Multi-Config", {}, {"compiler.runtime": "static"},
+                 "library", ["static"], "build_library_ninja_static", id="static"),
+    pytest.param("Ninja Multi-Config", {}, {"compiler.runtime": "dynamic"},
+                 "library", ["dynamic"], "build_library_ninja_dynamic", id="dynamic"),
+    pytest.param("Ninja Multi-Config", {"wchar_t": "typedef"}, {"compiler.runtime": "static"},
+                 "library", ["typedef", "static"], "build_library_ninja_typedef_static",
+                 id="wchar-and-runtime"),
+    pytest.param("Ninja Multi-Config", {"wchar_t": "builtin"}, {},
+                 "library", [], "build_library_ninja", id="builtin-wchar-omitted"),
+    pytest.param(None, {}, {}, None, [], "build", id="no-generator"),
 ])
-def test_recipe_build_folder_matches_constants(generator, testing, pybind, expected_folder):
+def test_recipe_build_folder_matches_constants(generator, options, settings, kind,
+                                               discriminators, expected_folder):
     """Recipe and generated presets agree on the build folder.
 
     They must: the presets' binaryDir points at the folder the recipe creates,
     and the recipe cannot import from xmsconan (it is copied standalone), so the
-    logic is duplicated and this pins the two together. The expected folder is
-    written out rather than computed, so a change to the naming rule shows up
-    here as a literal diff instead of being reproduced by the expectation.
+    logic is duplicated and this pins the two together. Both the kind and the
+    discriminators are written out rather than computed, so a change to the
+    naming rule shows up here as a literal diff instead of being reproduced by
+    the expectation.
     """
-    recipe_folder = _recipe_stub(generator, testing, pybind)._build_folder_name()
+    recipe_folder = _recipe_stub(generator, options, settings)._build_folder_name()
 
     assert recipe_folder == expected_folder
-    assert build_folder_for_generator(generator, _KIND_FOR_OPTIONS[(testing, pybind)]
-                                      if generator else None) == expected_folder
+    assert build_folder_for_generator(generator, kind, discriminators) == expected_folder
+
+
+def _packager_for(system_platform, **kwargs):
+    """Packager with the deterministic matrix for ``system_platform`` generated.
+
+    Same pinning as :func:`_linux_packager`, for the platforms whose matrix fans
+    out past one configuration per kind.
+    """
+    kwargs.setdefault("python_versions", ["3.13"])
+    kwargs.setdefault("coverage", False)
+    packager = XmsConanPackager("xmscore", **kwargs)
+    packager.generate_configurations(system_platform)
+    return packager
+
+
+@pytest.mark.parametrize("system_platform", ["linux", "windows", "darwin"])
+def test_every_configure_preset_gets_its_own_binary_dir(system_platform):
+    """No two configure presets configure into the same directory.
+
+    The regression this pins: the folder name was derived from the build kind
+    alone, but the Windows matrix also fans out over compiler.runtime and
+    wchar_t, so four library configurations and two testing configurations
+    landed on build_library_ninja and build_testing_ninja respectively. Nothing
+    complained -- they share a generator, so CMake reconfigures in place -- and
+    each configure silently overwrote the previous one's toolchain.
+    """
+    document = _packager_for(system_platform).plan_cmake_presets()
+
+    binary_dirs = [p["binaryDir"] for p in document["configurePresets"]]
+    assert len(binary_dirs) == len(document["configurePresets"]) > 0
+    assert len(set(binary_dirs)) == len(binary_dirs)
+
+
+def test_windows_matrix_fans_out_past_one_preset_per_kind():
+    """Windows really does produce several presets per kind.
+
+    Guards the test above from passing vacuously: if the matrix ever collapsed
+    to one configuration per kind, uniqueness would hold for the wrong reason
+    and the collision could return unnoticed.
+    """
+    document = _packager_for("windows").plan_cmake_presets()
+
+    library = [p for p in document["configurePresets"] if p["name"].startswith("library")]
+    assert len(library) > 1
 
 
 def test_plan_cmake_presets_one_configure_preset_per_kind():

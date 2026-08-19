@@ -59,16 +59,23 @@ GENERATOR_FOLDER_SUFFIXES = {
 MULTI_CONFIG_GENERATOR_MARKERS = ("multi-config", "visual studio", "xcode")
 
 
-def build_folder_for_generator(generator, kind=None):
-    """Return the build folder name for ``generator`` and build ``kind``.
+def build_folder_for_generator(generator, kind=None, discriminators=()):
+    """Return the build folder name for ``generator``, build ``kind`` and settings.
 
-    Two axes, both of which must separate folders:
+    Three axes, all of which must separate folders:
 
     * generator -- CMake refuses to reuse a binary directory configured by a
       different generator.
     * kind (``testing`` / ``python`` / ``library``) -- each installs a different
       Conan dependency set (gtest, pybind11, neither), so sharing a folder means
       the second install overwrites the first one's generated toolchain.
+    * discriminators -- everything else that changes the package id, currently
+      python version, ``wchar_t`` and MSVC runtime. The Windows matrix fans out
+      over runtime and ``wchar_t``, so without these four library configurations
+      and two testing configurations collapse onto one folder. They configure
+      with the same generator, so CMake does not object the way it does on a
+      generator mismatch: the second install silently overwrites the first one's
+      toolchain and the build links against the wrong runtime.
 
     An unset generator keeps the historical ``build`` folder, which is what the
     ephemeral profile used by ``build.py`` produces.
@@ -81,8 +88,8 @@ def build_folder_for_generator(generator, kind=None):
         suffix = "vs" if key.startswith("visual studio") else re.sub(r"[^a-z0-9]+", "-", key).strip("-")
     # Underscore, not hyphen: every xms repo already ignores `build_*/`, so the
     # generated folders are covered without touching ten .gitignore files.
-    parts = ["build", kind, suffix]
-    return "_".join(part for part in parts if part) or "build"
+    parts = ["build", kind, suffix, *discriminators]
+    return "_".join(str(part) for part in parts if part) or "build"
 
 
 def is_multi_config_generator(generator):
