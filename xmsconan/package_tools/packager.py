@@ -1270,7 +1270,14 @@ class XmsConanPackager(object):
 
             multi_config = is_multi_config_generator(generator)
             build_type = str(configuration.get('build_type', 'Release'))
-            base_folder = build_folder_for_generator(generator, self.configuration_kind(configuration))
+            # The same discriminators preset_name uses. Names and folders have
+            # to agree on what makes a configuration distinct, or two presets
+            # get different names and one binary directory.
+            base_folder = build_folder_for_generator(
+                generator,
+                self.configuration_kind(configuration),
+                self._discriminator_parts(configuration),
+            )
             # Conan's cmake_layout appends the build type for a single-config
             # generator and only collapses to the bare folder for multi-config
             # (conan/tools/cmake/layout.py). The preset has to name the same

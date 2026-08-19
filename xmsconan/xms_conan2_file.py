@@ -349,9 +349,24 @@ class XmsConan2File(ConanFile):
         else:
             kind = 'library'
 
+        # Everything else that changes the package id. The Windows matrix fans
+        # out over runtime and wchar_t, so without these, configurations that
+        # link against different runtimes would share one binary directory and
+        # silently overwrite each other's toolchain.
+        discriminators = []
+        python_version = self.options.get_safe('python_version')
+        if self.options.get_safe('pybind') and python_version:
+            discriminators.append('py' + str(python_version).replace('.', ''))
+        wchar_t = self.options.get_safe('wchar_t')
+        if wchar_t and str(wchar_t) != 'builtin':
+            discriminators.append(str(wchar_t))
+        runtime = self.settings.get_safe('compiler.runtime')
+        if runtime:
+            discriminators.append(str(runtime))
+
         # Underscore, not hyphen: the xms repos already ignore `build_*/`.
-        parts = ['build', kind, suffix]
-        return '_'.join(part for part in parts if part) or 'build'
+        parts = ['build', kind, suffix, *discriminators]
+        return '_'.join(str(part) for part in parts if part) or 'build'
 
     def layout(self):
         """The layout method."""
