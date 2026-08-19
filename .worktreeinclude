@@ -1,0 +1,10 @@
+# Gitignored files a fresh worktree needs, copied from the main checkout.
+# .gitignore syntax.
+#
+# NOTE: .venv/ is deliberately NOT listed — a copied venv holds absolute paths
+# and an editable install pointing at the tree it was built in.
+
+.envrc
+.env
+CLAUDE.local.md
+.claude/settings.local.json

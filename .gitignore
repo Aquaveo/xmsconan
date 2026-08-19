@@ -68,3 +68,10 @@ cov-cpp-summary.json
 cov-py-summary.json
 coverage-html-cpp/
 coverage-html-py/
+
+# Claude Code ephemeral worktrees (never committed)
+.claude/worktrees/
+
+.claude/settings.local.json
+.envrc
+.env
