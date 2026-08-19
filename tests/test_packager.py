@@ -1269,23 +1269,35 @@ def test_collect_dependency_libs_skips_non_libraries(mock_run, tmp_path):
 
 
 def _linux_packager(**kwargs):
-    """Packager with the deterministic linux matrix already generated."""
+    """Packager with the deterministic linux matrix already generated.
+
+    The two inputs that would otherwise be read from the developer's shell are
+    pinned: python_versions falls back to PYTHON_TARGET_VERSION and coverage to
+    XMS_COVERAGE, and either one exported locally changes the matrix these tests
+    assert literal names and counts against. Pinned rather than patched over the
+    environment, because callers here set other variables deliberately -- and
+    the env fallbacks have their own tests.
+    """
+    kwargs.setdefault("python_versions", ["3.13"])
+    kwargs.setdefault("coverage", False)
     packager = XmsConanPackager("xmscore", **kwargs)
     packager.generate_configurations("linux")
     return packager
 
 
 @pytest.mark.parametrize("configuration,expected", [
-    ({"os": "Macos", "build_type": "Release",
-      "options": {"pybind": False, "testing": False}}, "mac_os_library_release"),
-    ({"os": "Linux", "build_type": "Debug",
-      "options": {"pybind": False, "testing": True}}, "linux_testing_debug"),
-    ({"os": "Macos", "build_type": "Release",
-      "options": {"pybind": True, "testing": False, "python_version": "3.13"}},
-     "mac_os_python_release_py313"),
-    ({"os": "Windows", "build_type": "Debug", "compiler.runtime": "static",
-      "options": {"pybind": False, "testing": False, "wchar_t": "typedef"}},
-     "windows_library_debug_typedef_static"),
+    pytest.param({"os": "Macos", "build_type": "Release",
+                  "options": {"pybind": False, "testing": False}},
+                 "mac_os_library_release", id="mac-library"),
+    pytest.param({"os": "Linux", "build_type": "Debug",
+                  "options": {"pybind": False, "testing": True}},
+                 "linux_testing_debug", id="linux-testing-debug"),
+    pytest.param({"os": "Macos", "build_type": "Release",
+                  "options": {"pybind": True, "testing": False, "python_version": "3.13"}},
+                 "mac_os_python_release_py313", id="mac-python-py313"),
+    pytest.param({"os": "Windows", "build_type": "Debug", "compiler.runtime": "static",
+                  "options": {"pybind": False, "testing": False, "wchar_t": "typedef"}},
+                 "windows_library_debug_typedef_static", id="windows-wchar-runtime"),
 ])
 def test_profile_name(configuration, expected):
     """Configuration maps to the xmsvtk-style profile file stem."""
@@ -1298,7 +1310,9 @@ def test_write_profiles_writes_one_file_per_configuration(tmp_path):
 
     written = packager.write_profiles(str(tmp_path))
 
-    assert len(written) == len(packager.configurations)
+    # The linux matrix: library and testing at Debug and Release, plus one
+    # pybind configuration at the default python version.
+    assert len(written) == 5
     assert len(set(written)) == len(written)
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(os.path.basename(w) for w in written)
 
@@ -1313,9 +1327,10 @@ def test_write_profiles_returns_sorted_paths(tmp_path):
 @patch_env({"AQUAPI_PASSWORD": "s3cret-value", "AQUAPI_USERNAME": "ci-bot"})
 def test_write_profiles_omits_credentials(tmp_path):
     """Credentials present in the environment never reach a profile on disk."""
-    _linux_packager().write_profiles(str(tmp_path))
+    written = _linux_packager().write_profiles(str(tmp_path))
 
     contents = "\n".join(p.read_text() for p in tmp_path.iterdir())
+    assert written, "no profiles written -- the assertions below would pass vacuously"
     assert "s3cret-value" not in contents
     assert "ci-bot" not in contents
     assert "AQUAPI_PASSWORD" not in contents
@@ -1331,9 +1346,10 @@ def test_write_profiles_keeps_public_buildenv(tmp_path):
 
 def test_write_profiles_drops_unset_values(tmp_path):
     """An unset variable is omitted rather than serialized as the string 'None'."""
-    _linux_packager().write_profiles(str(tmp_path))
+    written = _linux_packager().write_profiles(str(tmp_path))
 
     contents = "\n".join(p.read_text() for p in tmp_path.iterdir())
+    assert written, "no profiles written -- the assertion below would pass vacuously"
     assert "=None" not in contents
 
 
@@ -1434,11 +1450,10 @@ def test_write_profiles_emits_scoped_variant_profiles(tmp_path):
 
     packager.write_profiles(str(tmp_path))
 
-    names = sorted(p.stem for p in tmp_path.iterdir())
-    assert any(n.startswith("windows_testing") and n.endswith("_vs") for n in names)
-    assert any(n.startswith("windows_python") and n.endswith("_vs") for n in names)
+    variant_names = sorted(n for n in (p.stem for p in tmp_path.iterdir()) if n.endswith("_vs"))
+    kinds = sorted({n.split("_")[1] for n in variant_names})
     # library configurations are outside the variant's declared kinds
-    assert not any(n.startswith("windows_library") and n.endswith("_vs") for n in names)
+    assert kinds == ["python", "testing"], variant_names
 
 
 def test_variant_profile_overlays_conf(tmp_path):
@@ -1448,9 +1463,11 @@ def test_variant_profile_overlays_conf(tmp_path):
 
     packager.write_profiles(str(tmp_path))
 
-    variant = next(p for p in tmp_path.iterdir() if p.stem.endswith("_vs"))
-    base = next(p for p in tmp_path.iterdir()
-                if p.stem.startswith("windows_testing") and not p.stem.endswith("_vs"))
+    variant = next((p for p in tmp_path.iterdir() if p.stem.endswith("_vs")), None)
+    base = next((p for p in tmp_path.iterdir()
+                 if p.stem.startswith("windows_testing") and not p.stem.endswith("_vs")), None)
+    assert variant is not None, sorted(p.stem for p in tmp_path.iterdir())
+    assert base is not None, sorted(p.stem for p in tmp_path.iterdir())
     assert "generator=Visual Studio 17 2022" in variant.read_text()
     assert "generator=Ninja Multi-Config" in base.read_text()
 
@@ -1460,22 +1477,23 @@ def test_variant_does_not_apply_to_other_platforms(tmp_path):
     packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
     packager.generate_configurations("linux")
 
-    packager.write_profiles(str(tmp_path))
+    written = packager.write_profiles(str(tmp_path))
 
+    assert written, "no profiles written -- the assertion below would pass vacuously"
     assert not any(p.stem.endswith("_vs") for p in tmp_path.iterdir())
 
 
 def test_plan_profiles_matches_write_profiles(tmp_path):
     """The plan is exactly what gets written.
 
-    Regression guard: the dry-run path previously re-derived filenames from
-    profile_name() and so silently omitted variant profiles that a real run
-    would write.
+    The dry-run consumer of this plan is covered by
+    tests/test_profile_generator.py; this pins the plan itself, which is what
+    both consumers read.
     """
     packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
     packager.generate_configurations("windows")
 
-    planned = [entry['filename'] for entry in packager.plan_profiles()]
+    planned = [entry.filename for entry in packager.plan_profiles()]
     written = packager.write_profiles(str(tmp_path))
 
     assert sorted(planned) == sorted(os.path.basename(w) for w in written)
@@ -1526,29 +1544,38 @@ def _recipe_stub(generator, testing=False, pybind=False):
     return _Stub()
 
 
+#: (testing, pybind) -> the kind those options select. Spelled out so the
+#: folder table above states its expectation instead of recomputing it.
+_KIND_FOR_OPTIONS = {(False, False): "library", (True, False): "testing", (False, True): "python"}
+
+
 def test_generator_folder_suffixes_match_recipe():
     """The recipe's standalone copy of the suffix table matches constants."""
     assert _recipe_class()._GENERATOR_FOLDER_SUFFIXES == GENERATOR_FOLDER_SUFFIXES
 
 
-@pytest.mark.parametrize("generator,testing,pybind,kind", [
-    ("Ninja Multi-Config", False, False, "library"),
-    ("Ninja Multi-Config", True, False, "testing"),
-    ("Ninja Multi-Config", False, True, "python"),
-    ("Visual Studio 17 2022", True, False, "testing"),
-    ("Unix Makefiles", False, False, "library"),
-    (None, False, False, "library"),
+@pytest.mark.parametrize("generator,testing,pybind,expected_folder", [
+    ("Ninja Multi-Config", False, False, "build_library_ninja"),
+    ("Ninja Multi-Config", True, False, "build_testing_ninja"),
+    ("Ninja Multi-Config", False, True, "build_python_ninja"),
+    ("Visual Studio 17 2022", True, False, "build_testing_vs"),
+    ("Unix Makefiles", False, False, "build_library_make"),
+    (None, False, False, "build"),
 ])
-def test_recipe_build_folder_matches_constants(generator, testing, pybind, kind):
+def test_recipe_build_folder_matches_constants(generator, testing, pybind, expected_folder):
     """Recipe and generated presets agree on the build folder.
 
     They must: the presets' binaryDir points at the folder the recipe creates,
     and the recipe cannot import from xmsconan (it is copied standalone), so the
-    logic is duplicated and this pins the two together.
+    logic is duplicated and this pins the two together. The expected folder is
+    written out rather than computed, so a change to the naming rule shows up
+    here as a literal diff instead of being reproduced by the expectation.
     """
     recipe_folder = _recipe_stub(generator, testing, pybind)._build_folder_name()
 
-    assert recipe_folder == build_folder_for_generator(generator, kind if generator else None)
+    assert recipe_folder == expected_folder
+    assert build_folder_for_generator(generator, _KIND_FOR_OPTIONS[(testing, pybind)]
+                                      if generator else None) == expected_folder
 
 
 def test_plan_cmake_presets_one_configure_preset_per_kind():
@@ -1597,3 +1624,123 @@ def test_write_cmake_presets_is_valid_json(tmp_path):
     document = json.loads(path.read_text())
     assert document["version"] == 6
     assert document["configurePresets"]
+
+
+# --- single-config generators ---
+
+#: A single-config generator, which Conan's cmake_layout lays out differently
+#: from the Ninja Multi-Config default every other test here exercises.
+NINJA_SINGLE_CONF = {"tools.cmake.cmaketoolchain:generator": "Ninja"}
+
+
+def test_single_config_presets_get_their_own_binary_dir():
+    """Debug and Release are separate presets with separate folders.
+
+    Conan's cmake_layout appends the build type for a single-config generator,
+    so two presets sharing one binaryDir would reconfigure over each other.
+    """
+    document = _linux_packager(profile_conf=NINJA_SINGLE_CONF).plan_cmake_presets()
+
+    library = sorted(p["binaryDir"] for p in document["configurePresets"]
+                     if p["name"].startswith("library"))
+
+    assert library == ["build_library_ninja/Debug", "build_library_ninja/Release"]
+
+
+def test_single_config_preset_toolchain_matches_cmake_layout():
+    """The toolchain path names the file cmake_layout actually writes."""
+    document = _linux_packager(profile_conf=NINJA_SINGLE_CONF).plan_cmake_presets()
+
+    library = next((p for p in document["configurePresets"] if p["name"] == "library-debug"), None)
+
+    assert library is not None, sorted(p["name"] for p in document["configurePresets"])
+    assert library["toolchainFile"] == "build_library_ninja/Debug/generators/conan_toolchain.cmake"
+
+
+def test_single_config_presets_pin_the_build_type():
+    """A single-config preset carries CMAKE_BUILD_TYPE; multi-config does not."""
+    single = _linux_packager(profile_conf=NINJA_SINGLE_CONF).plan_cmake_presets()
+    multi = _linux_packager().plan_cmake_presets()
+
+    single_debug = next(p for p in single["configurePresets"] if p["name"] == "library-debug")
+    multi_library = next(p for p in multi["configurePresets"] if p["name"] == "library")
+
+    assert single_debug["cacheVariables"]["CMAKE_BUILD_TYPE"] == "Debug"
+    assert "CMAKE_BUILD_TYPE" not in multi_library["cacheVariables"]
+
+
+def test_install_prefix_is_anchored_to_the_preset_file():
+    """CMAKE_INSTALL_PREFIX does not depend on the invoking directory."""
+    document = _linux_packager().plan_cmake_presets()
+
+    prefixes = {p["cacheVariables"]["CMAKE_INSTALL_PREFIX"] for p in document["configurePresets"]}
+
+    assert prefixes == {"${sourceDir}/_install"}
+
+
+def test_presets_carry_no_bookkeeping_keys():
+    """Only real preset fields are serialized."""
+    document = _linux_packager().plan_cmake_presets()
+
+    assert not [key for preset in document["configurePresets"]
+                for key in preset if key.startswith("_")]
+
+
+# --- profile_variants validation ---
+
+
+@pytest.mark.parametrize("variant,expected_message", [
+    pytest.param({"conf": {}}, 'must have a non-empty "name"', id="missing-name"),
+    pytest.param({"name": ""}, 'must have a non-empty "name"', id="blank-name"),
+    pytest.param({"name": "vs", "platform": ["windows"]}, "unknown key", id="unknown-key"),
+    pytest.param({"name": "vs", "platforms": ["macos"]}, "unknown platforms", id="unknown-platform"),
+    pytest.param({"name": "vs", "kinds": ["tests"]}, "unknown kinds", id="unknown-kind"),
+    pytest.param({"name": "vs", "conf": "generator=Ninja"}, 'non-table "conf"', id="conf-not-table"),
+    pytest.param("vs", "must be tables", id="not-a-table"),
+])
+def test_profile_variants_are_validated(variant, expected_message):
+    """A malformed variant is rejected where it is declared, not where it is used.
+
+    Both failure modes are otherwise invisible: a missing name raises a bare
+    KeyError deep in plan_profiles, and a misspelled filter raises nothing at
+    all -- the variant is simply never emitted.
+    """
+    with pytest.raises(ValueError, match=expected_message):
+        XmsConanPackager("xmscore", profile_variants=[variant])
+
+
+def test_profile_variants_error_lists_the_accepted_platforms():
+    """The message names the accepted spellings, which appear in no other doc."""
+    with pytest.raises(ValueError, match="linux, mac_os, windows"):
+        XmsConanPackager("xmscore", profile_variants=[{"name": "vs", "platforms": ["macos"]}])
+
+
+def test_valid_profile_variant_is_accepted():
+    """The documented shape passes validation unchanged."""
+    packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
+
+    assert packager._profile_variants == [VS_VARIANT]
+
+
+# --- colliding profile stems ---
+
+
+def test_colliding_stems_are_disambiguated(tmp_path):
+    """Two configurations with the same stem both survive, rather than one overwriting the other.
+
+    profile_name() only names the settings it knows to be discriminating, so a
+    matrix that varies something else collides. The suffix is a safety net: it
+    keeps both profiles on disk, and its presence means profile_name is missing
+    a discriminator.
+    """
+    packager = XmsConanPackager("xmscore")
+    packager.generate_configurations("linux")
+    # Same platform, kind and build type, differing only in a setting that
+    # profile_name does not encode.
+    duplicate = dict(packager.configurations[0])
+    duplicate["compiler.version"] = "13"
+    packager._configurations = [packager.configurations[0], duplicate]
+
+    written = [os.path.basename(path) for path in packager.write_profiles(str(tmp_path))]
+
+    assert sorted(written) == ["linux_library_release.txt", "linux_library_release_2.txt"]

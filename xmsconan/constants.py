@@ -10,6 +10,7 @@ next to each library's generated ``conanfile.py``, where it is imported as a
 top-level ``xms_conan2_file`` module with no ``xmsconan`` package around it,
 so it has to stay standalone and repeat the msvc 192 literal.
 """
+import re
 
 #: Base URL of the Aquaveo Artifactory Conan 2 repositories.  Every remote
 #: URL below is this plus the repository name.
@@ -44,7 +45,7 @@ MSVC_VS2019_VERSION = "192"
 #: :mod:`xmsconan.xms_conan2_file` repeats this mapping for the same reason it
 #: repeats the msvc 192 literal (see the module note above): it is copied next
 #: to each generated ``conanfile.py`` and must stay standalone.  The two copies
-#: are pinned together by ``test_generator_folder_mapping_matches_recipe``.
+#: are pinned together by ``test_generator_folder_suffixes_match_recipe``.
 GENERATOR_FOLDER_SUFFIXES = {
     "ninja multi-config": "ninja",
     "ninja": "ninja",
@@ -77,7 +78,6 @@ def build_folder_for_generator(generator, kind=None):
     key = str(generator).strip().lower()
     suffix = GENERATOR_FOLDER_SUFFIXES.get(key)
     if suffix is None:
-        import re
         suffix = "vs" if key.startswith("visual studio") else re.sub(r"[^a-z0-9]+", "-", key).strip("-")
     # Underscore, not hyphen: every xms repo already ignores `build_*/`, so the
     # generated folders are covered without touching ten .gitignore files.

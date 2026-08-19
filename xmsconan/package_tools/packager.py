@@ -3,6 +3,7 @@ import concurrent.futures
 import copy
 import itertools
 import json
+import logging
 import os
 import platform
 import re
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from xmsconan.constants import (
     build_folder_for_generator,
@@ -20,6 +21,8 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION,
 )
 from xmsconan.package_tools.printer import Printer
+
+LOGGER = logging.getLogger(__name__)
 
 
 def get_current_arch():
@@ -45,6 +48,20 @@ def get_current_arch():
 # The ephemeral profile used by an actual build is unaffected: it keeps the
 # full environment (including AQUAPI_* credentials) because the build needs
 # them, and that file is discarded with its temporary directory.
+class ProfilePlan(NamedTuple):
+    """One profile that :meth:`XmsConanPackager.write_profiles` will write.
+
+    A named tuple rather than a dict so every consumer spells the fields the
+    same way: the dry-run path once unpacked three names from a four-key dict
+    and raised on the first entry, which a plain mapping cannot make obvious.
+    """
+
+    filename: str
+    configuration: dict
+    conf: dict
+    variant: Optional[str]
+
+
 PUBLIC_BUILDENV_KEYS = frozenset({
     'XMS_VERSION',
     'PYTHON_TARGET_VERSION',
@@ -150,8 +167,9 @@ class XmsConanPackager(object):
                 :meth:`write_profiles`. None uses ``DEFAULT_PROFILE_CONF``; an
                 empty dict omits the section.
             profile_variants: Additional generator variants, each a dict with
-                ``name`` plus optional ``platforms`` / ``kinds`` filters and a
-                ``conf`` overlay. A matching configuration is emitted a second
+                ``name`` plus optional ``platforms`` (``linux``, ``mac_os``,
+                ``windows``) / ``kinds`` (``library``, ``python``, ``testing``)
+                filters and a ``conf`` overlay. A matching configuration is emitted a second
                 time under ``<stem>_<name>``. Used for cases like Windows,
                 where the same settings are built with both Ninja and Visual
                 Studio; scoped rather than blanket so a repo does not get
@@ -192,7 +210,7 @@ class XmsConanPackager(object):
         # Only consulted by write_profiles(); the ephemeral build profile has
         # never carried a [conf] section and still does not.
         self._profile_conf = dict(DEFAULT_PROFILE_CONF) if profile_conf is None else dict(profile_conf)
-        self._profile_variants = list(profile_variants or [])
+        self._profile_variants = self._resolve_profile_variants(profile_variants)
         self._python_versions = self._resolve_python_versions(python_versions)
         self._coverage = (
             coverage if coverage is not None
@@ -227,6 +245,76 @@ class XmsConanPackager(object):
 
     DEFAULT_PYTHON_VERSIONS = ["3.13"]
     _PYTHON_VERSION_RE = re.compile(r'^\d+\.\d+$')
+
+    #: Keys a ``conan_profile_variants`` entry may carry.
+    _VARIANT_KEYS = frozenset({'name', 'conf', 'platforms', 'kinds'})
+
+    #: Values ``kinds`` may name; the return values of :meth:`configuration_kind`.
+    _VARIANT_KINDS = frozenset({'library', 'python', 'testing'})
+
+    @classmethod
+    def _resolve_profile_variants(cls, profile_variants):
+        """Validate and normalize the ``conan_profile_variants`` list.
+
+        Checked here rather than where it is used because both failure modes are
+        otherwise invisible: a missing ``name`` raises a bare ``KeyError`` deep
+        in :meth:`plan_profiles`, and a misspelled filter -- ``platforms =
+        ["macos"]`` when the accepted spelling is ``mac_os`` -- raises nothing
+        at all. The variant is simply never emitted, and the omission surfaces
+        much later as a missing binary.
+
+        Raises:
+            ValueError: When an entry is not a mapping, omits ``name``, carries
+                an unknown key, or names a platform or kind outside the
+                accepted vocabulary.
+        """
+        if profile_variants is None:
+            return []
+        if not isinstance(profile_variants, (list, tuple)):
+            raise ValueError(
+                f'conan_profile_variants must be a list, got {type(profile_variants).__name__}'
+            )
+
+        platforms = sorted(set(cls._PLATFORM_KEYS.values()))
+        kinds = sorted(cls._VARIANT_KINDS)
+        resolved = []
+        for variant in profile_variants:
+            if not isinstance(variant, dict):
+                raise ValueError(
+                    f'conan_profile_variants entries must be tables, got {type(variant).__name__}'
+                )
+            name = variant.get('name')
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    f'conan_profile_variants entry {variant!r} must have a non-empty "name"'
+                )
+            unknown = sorted(set(variant) - cls._VARIANT_KEYS)
+            if unknown:
+                raise ValueError(
+                    f'conan_profile_variants entry {name!r} has unknown key(s) '
+                    f'{", ".join(unknown)}. Accepted keys: {", ".join(sorted(cls._VARIANT_KEYS))}.'
+                )
+            conf = variant.get('conf')
+            if conf is not None and not isinstance(conf, dict):
+                raise ValueError(
+                    f'conan_profile_variants entry {name!r} has a non-table "conf"'
+                )
+            for key, accepted in (('platforms', platforms), ('kinds', kinds)):
+                values = variant.get(key)
+                if values is None:
+                    continue
+                if not isinstance(values, (list, tuple)):
+                    raise ValueError(
+                        f'conan_profile_variants entry {name!r} has a non-list "{key}"'
+                    )
+                invalid = sorted(str(v) for v in values if v not in accepted)
+                if invalid:
+                    raise ValueError(
+                        f'conan_profile_variants entry {name!r} names unknown {key} '
+                        f'{", ".join(invalid)}. Accepted values: {", ".join(accepted)}.'
+                    )
+            resolved.append(dict(variant))
+        return resolved
 
     @classmethod
     def _resolve_python_versions(cls, python_versions: Optional[list[str]]):
@@ -972,12 +1060,21 @@ class XmsConanPackager(object):
                     f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
 
             f.write('\n[buildenv]\n')
+            dropped = []
             for k, v in configuration['buildenv'].items():
                 if public_only and k not in PUBLIC_BUILDENV_KEYS:
+                    # Names only: the value is the part that may be a secret.
+                    dropped.append(k)
                     continue
                 if skip_empty and v is None:
                     continue
                 f.write(f'{k}={v}\n')
+            if dropped:
+                LOGGER.debug(
+                    'Omitted %d buildenv key(s) from %s: %s. Add a name to '
+                    'PUBLIC_BUILDENV_KEYS to persist it.',
+                    len(dropped), path, ', '.join(sorted(dropped)),
+                )
 
             if conf:
                 f.write('\n[conf]\n')
@@ -1040,16 +1137,28 @@ class XmsConanPackager(object):
         profiles in xmsvtk so generated profiles are recognizable to anyone who
         has used those.
         """
-        options = configuration.get('options', {})
         parts = [cls.platform_key(configuration), cls.configuration_kind(configuration),
                  str(configuration.get('build_type', '')).lower()]
+        parts.extend(cls._discriminator_parts(configuration))
+        return '_'.join(part for part in parts if part)
+
+    @classmethod
+    def _discriminator_parts(cls, configuration):
+        """Return the name parts that separate otherwise identical configurations.
+
+        Shared by :meth:`profile_name` and :meth:`preset_name`, which differ
+        only in their prefix and separator: two copies of this would let a
+        profile and the preset that consumes it drift apart on a new setting.
+        """
+        options = configuration.get('options', {})
+        parts = []
         if options.get('pybind') and options.get('python_version'):
             parts.append('py' + str(options['python_version']).replace('.', ''))
         if options.get('wchar_t') and options['wchar_t'] != 'builtin':
             parts.append(str(options['wchar_t']))
         if configuration.get('compiler.runtime'):
             parts.append(str(configuration['compiler.runtime']))
-        return '_'.join(part for part in parts if part)
+        return parts
 
     def write_profiles(self, output_dir, system_platform=None):
         """Write one Conan profile per configuration into ``output_dir``.
@@ -1070,18 +1179,15 @@ class XmsConanPackager(object):
         os.makedirs(output_dir, exist_ok=True)
         written = []
         for entry in self.plan_profiles(system_platform):
-            path = os.path.join(output_dir, entry['filename'])
-            self._serialize_profile(entry['configuration'], path, public_only=True, skip_empty=True,
-                                    conf=entry['conf'])
+            path = os.path.join(output_dir, entry.filename)
+            self._serialize_profile(entry.configuration, path, public_only=True, skip_empty=True,
+                                    conf=entry.conf)
             written.append(path)
 
         return sorted(written)
 
     def plan_profiles(self, system_platform=None):
-        """Return ``(filename, configuration, conf)`` for every profile to write.
-
-        Each entry is a dict with ``filename``, ``configuration``, ``conf`` and
-        ``variant`` (None for the base rendering).
+        """Return a :class:`ProfilePlan` for every profile to write.
 
         The single source of truth for what :meth:`write_profiles` and
         :meth:`plan_cmake_presets` produce, so a dry run reports exactly what a
@@ -1112,12 +1218,12 @@ class XmsConanPackager(object):
                 seen = used.get(stem, 0)
                 used[stem] = seen + 1
                 filename = stem if seen == 0 else f'{stem}_{seen + 1}'
-                planned.append({
-                    'filename': f'{filename}.txt',
-                    'configuration': configuration,
-                    'conf': conf,
-                    'variant': variant_name,
-                })
+                planned.append(ProfilePlan(
+                    filename=f'{filename}.txt',
+                    configuration=configuration,
+                    conf=conf,
+                    variant=variant_name,
+                ))
 
         return planned
 
@@ -1130,16 +1236,10 @@ class XmsConanPackager(object):
         would be noise. Build type is omitted for multi-config generators,
         which express it as a build preset instead of a second configure step.
         """
-        options = configuration.get('options', {})
         parts = [cls.configuration_kind(configuration)]
         if include_build_type:
             parts.append(str(configuration.get('build_type', '')).lower())
-        if options.get('pybind') and options.get('python_version'):
-            parts.append('py' + str(options['python_version']).replace('.', ''))
-        if options.get('wchar_t') and options['wchar_t'] != 'builtin':
-            parts.append(str(options['wchar_t']))
-        if configuration.get('compiler.runtime'):
-            parts.append(str(configuration['compiler.runtime']))
+        parts.extend(cls._discriminator_parts(configuration))
         if variant_name:
             parts.append(variant_name)
         return '-'.join(part for part in parts if part)
@@ -1156,40 +1256,55 @@ class XmsConanPackager(object):
         already cover.
         """
         configure_presets = {}
+        # Build types per preset, kept beside the document rather than inside
+        # it: this is bookkeeping for the loop, and a stray key in a preset is
+        # serialized straight into CMakePresets.json.
+        preset_build_types = {}
         build_presets = []
 
         for entry in self.plan_profiles(system_platform):
-            configuration = entry['configuration']
-            generator = (entry['conf'] or {}).get('tools.cmake.cmaketoolchain:generator')
+            configuration = entry.configuration
+            generator = (entry.conf or {}).get('tools.cmake.cmaketoolchain:generator')
             if not generator:
                 continue
 
             multi_config = is_multi_config_generator(generator)
-            folder = build_folder_for_generator(generator, self.configuration_kind(configuration))
-            name = self.preset_name(configuration, entry['variant'], include_build_type=not multi_config)
             build_type = str(configuration.get('build_type', 'Release'))
+            base_folder = build_folder_for_generator(generator, self.configuration_kind(configuration))
+            # Conan's cmake_layout appends the build type for a single-config
+            # generator and only collapses to the bare folder for multi-config
+            # (conan/tools/cmake/layout.py). The preset has to name the same
+            # path, or it points at a conan_toolchain.cmake that was never
+            # written -- and both build types would share one binary dir.
+            folder = base_folder if multi_config else f'{base_folder}/{build_type}'
+            name = self.preset_name(configuration, entry.variant, include_build_type=not multi_config)
             options = configuration.get('options', {})
 
             preset = configure_presets.get(name)
             if preset is None:
+                cache_variables = {
+                    'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON',
+                    'BUILD_TESTING': 'ON' if options.get('testing') else 'OFF',
+                    'IS_PYTHON_BUILD': 'YES' if options.get('pybind') else 'NO',
+                    # Relative to the preset file, not to wherever cmake was
+                    # invoked from.
+                    'CMAKE_INSTALL_PREFIX': '${sourceDir}/_install',
+                }
+                if not multi_config:
+                    cache_variables['CMAKE_BUILD_TYPE'] = build_type
                 preset = {
                     'name': name,
                     'displayName': f'{name} ({generator})',
                     'generator': generator,
                     'binaryDir': folder,
                     'toolchainFile': f'{folder}/generators/conan_toolchain.cmake',
-                    'cacheVariables': {
-                        'CMAKE_EXPORT_COMPILE_COMMANDS': 'ON',
-                        'BUILD_TESTING': 'ON' if options.get('testing') else 'OFF',
-                        'IS_PYTHON_BUILD': 'YES' if options.get('pybind') else 'NO',
-                        'CMAKE_INSTALL_PREFIX': '_install',
-                    },
+                    'cacheVariables': cache_variables,
                 }
                 configure_presets[name] = preset
-                preset['_build_types'] = []
+                preset_build_types[name] = []
 
-            if build_type not in preset['_build_types']:
-                preset['_build_types'].append(build_type)
+            if build_type not in preset_build_types[name]:
+                preset_build_types[name].append(build_type)
                 build_presets.append({
                     'name': f'{name}-{build_type.lower()}' if multi_config else name,
                     'displayName': f'{name} {build_type}',
@@ -1200,9 +1315,9 @@ class XmsConanPackager(object):
         ordered = []
         for name in sorted(configure_presets):
             preset = configure_presets[name]
-            build_types = preset.pop('_build_types')
             if is_multi_config_generator(preset['generator']):
-                preset['cacheVariables']['CMAKE_CONFIGURATION_TYPES'] = ';'.join(sorted(build_types))
+                preset['cacheVariables']['CMAKE_CONFIGURATION_TYPES'] = ';'.join(
+                    sorted(preset_build_types[name]))
             ordered.append(preset)
 
         return {

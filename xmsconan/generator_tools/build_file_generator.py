@@ -10,12 +10,9 @@ import sys
 # 2. Third party modules
 from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
-import toml
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    tomllib = None
+# 3. Aquaveo modules
+from xmsconan.toml_utils import load_toml
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,10 +66,7 @@ def render_template_with_toml(
         raise FileNotFoundError(f"The specified template directory does not exist: {template_dir}")
 
     # Parse the TOML file into a dictionary
-    if tomllib:
-        toml_data = tomllib.loads(toml_file.read_text(encoding="utf-8"))
-    else:
-        toml_data = toml.loads(toml_file.read_text(encoding="utf-8"))
+    toml_data = load_toml(toml_file)
     toml_data["version"] = version
 
     # Set defaults for optional keys to prevent StrictUndefined template errors
@@ -224,19 +218,24 @@ def main():
             )
 
         if not args.no_profiles:
-            # Conan profiles are generated from the same build.toml as everything
-            # else. A failure here must not fail the build-file generation that
-            # already succeeded above, so it degrades to a warning that names the
-            # standalone command for retrying.
+            # Conan profiles come from the same build.toml as everything else.
+            # The build files above are already written and stay written, so the
+            # message says what is on disk -- but the command still exits
+            # non-zero, because a warning is invisible to CI. Only configuration
+            # and I/O errors are caught: anything else is a defect in this tool
+            # and belongs in a traceback, not in a one-line summary.
             from xmsconan.generator_tools.profile_generator import generate_profiles
             try:
                 generate_profiles(toml_file_path=args.toml_file, dry_run=args.dry_run)
-            except Exception as profile_error:
-                LOGGER.warning(
-                    "Build files generated, but Conan profile generation failed: %s. "
-                    "Re-run with `xmsconan_profiles %s` to see the full error.",
-                    profile_error, args.toml_file,
+            except (OSError, ValueError) as profile_error:
+                LOGGER.error(
+                    "Build files were generated, but Conan profile generation failed: %s. "
+                    "Profiles are written one at a time, so conan_profiles/ may hold a mix "
+                    "of fresh and stale files; re-run `xmsconan_profiles %s` once the error "
+                    "above is fixed.",
+                    profile_error, args.toml_file, exc_info=True,
                 )
+                raise SystemExit(1) from profile_error
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         raise SystemExit(1) from e

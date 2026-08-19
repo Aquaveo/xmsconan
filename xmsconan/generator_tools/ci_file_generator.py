@@ -7,12 +7,9 @@ import sys
 
 # 2. Third party modules
 from jinja2 import Environment, StrictUndefined
-import toml
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    tomllib = None
+# 3. Aquaveo modules
+from xmsconan.toml_utils import load_toml
 
 
 LOGGER = logging.getLogger(__name__)
@@ -79,10 +76,7 @@ def generate_ci(
         raise FileNotFoundError(f"The specified TOML file does not exist: {toml_file_path}")
 
     # Parse the TOML file
-    if tomllib:
-        toml_data = tomllib.loads(toml_file.read_text(encoding="utf-8"))
-    else:
-        toml_data = toml.loads(toml_file.read_text(encoding="utf-8"))
+    toml_data = load_toml(toml_file)
 
     ci_type = toml_data.get("ci_type")
     if not ci_type:
