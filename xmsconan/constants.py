@@ -59,7 +59,7 @@ GENERATOR_FOLDER_SUFFIXES = {
 MULTI_CONFIG_GENERATOR_MARKERS = ("multi-config", "visual studio", "xcode")
 
 
-def build_folder_for_generator(generator, kind=None, discriminators=()):
+def build_folder_for_generator(generator, kind, discriminators):
     """Return the build folder name for ``generator``, build ``kind`` and settings.
 
     Three axes, all of which must separate folders:
@@ -69,26 +69,47 @@ def build_folder_for_generator(generator, kind=None, discriminators=()):
     * kind (``testing`` / ``python`` / ``library``) -- each installs a different
       Conan dependency set (gtest, pybind11, neither), so sharing a folder means
       the second install overwrites the first one's generated toolchain.
-    * discriminators -- everything else that changes the package id, currently
-      python version, ``wchar_t`` and MSVC runtime. The Windows matrix fans out
-      over runtime and ``wchar_t``, so without these four library configurations
-      and two testing configurations collapse onto one folder. They configure
-      with the same generator, so CMake does not object the way it does on a
-      generator mismatch: the second install silently overwrites the first one's
-      toolchain and the build links against the wrong runtime.
+    * discriminators -- the remaining package-id axes that vary *within* one
+      platform matrix: python version, ``wchar_t`` and MSVC runtime. The Windows
+      matrix fans out over runtime and ``wchar_t``, so without these four library
+      configurations and two testing configurations collapse onto one folder.
+      They configure with the same generator, so CMake does not object the way it
+      does on a generator mismatch: the second install silently overwrites the
+      first one's toolchain and the build links against the wrong runtime.
+
+    ``compiler.version`` is deliberately not among them, though it is part of the
+    package id. Every matrix in ``XmsConanPackager.configurations`` pins exactly
+    one, so it never separates two configurations in the same generated
+    CMakePresets.json; the only exposure is building ``windows`` (msvc 194) and
+    ``windows_vs2019`` (msvc 192) from one clone, and covering that would put the
+    compiler version into every preset name on every platform.
+
+    All three arguments are required. ``discriminators`` defaulting to empty would
+    be exactly the behavior that let a whole Windows matrix share one folder, and
+    a caller that omits it gets no other signal.
 
     An unset generator keeps the historical ``build`` folder, which is what the
     ephemeral profile used by ``build.py`` produces.
     """
     if not generator:
         return "build"
+    if isinstance(discriminators, str):
+        # `*discriminators` would splat it per character into
+        # `build_library_ninja_s_t_a_t_i_c` rather than raising.
+        raise TypeError("discriminators must be a sequence of strings, not a bare str")
     key = str(generator).strip().lower()
     suffix = GENERATOR_FOLDER_SUFFIXES.get(key)
     if suffix is None:
         suffix = "vs" if key.startswith("visual studio") else re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+    # Slug the discriminators the same way the generator suffix is slugged above.
+    # Every value reaching here today is already path-safe -- fixed matrix enums
+    # plus a python version matched by `_PYTHON_VERSION_RE` -- but this is the one
+    # place that can hold that true for the next axis someone adds.
+    parts = [str(part) for part in discriminators if part]
+    parts = [re.sub(r"[^A-Za-z0-9]+", "-", part).strip("-") for part in parts]
     # Underscore, not hyphen: every xms repo already ignores `build_*/`, so the
     # generated folders are covered without touching ten .gitignore files.
-    parts = ["build", kind, suffix, *discriminators]
+    parts = ["build", kind, suffix, *parts]
     return "_".join(str(part) for part in parts if part) or "build"
 
 

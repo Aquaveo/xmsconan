@@ -1268,8 +1268,8 @@ def test_collect_dependency_libs_skips_non_libraries(mock_run, tmp_path):
 # --- profile generation (write_profiles / profile_name) ---
 
 
-def _linux_packager(**kwargs):
-    """Packager with the deterministic linux matrix already generated.
+def _packager_for(system_platform, **kwargs):
+    """Packager with the deterministic matrix for ``system_platform`` generated.
 
     The two inputs that would otherwise be read from the developer's shell are
     pinned: python_versions falls back to PYTHON_TARGET_VERSION and coverage to
@@ -1281,8 +1281,13 @@ def _linux_packager(**kwargs):
     kwargs.setdefault("python_versions", ["3.13"])
     kwargs.setdefault("coverage", False)
     packager = XmsConanPackager("xmscore", **kwargs)
-    packager.generate_configurations("linux")
+    packager.generate_configurations(system_platform)
     return packager
+
+
+def _linux_packager(**kwargs):
+    """Packager with the deterministic linux matrix already generated."""
+    return _packager_for("linux", **kwargs)
 
 
 @pytest.mark.parametrize("configuration,expected", [
@@ -1596,17 +1601,32 @@ def test_recipe_build_folder_matches_constants(generator, options, settings, kin
     assert build_folder_for_generator(generator, kind, discriminators) == expected_folder
 
 
-def _packager_for(system_platform, **kwargs):
-    """Packager with the deterministic matrix for ``system_platform`` generated.
+def test_build_folder_rejects_a_bare_string_of_discriminators():
+    """A bare str is a sequence, so it would splat one folder segment per char.
 
-    Same pinning as :func:`_linux_packager`, for the platforms whose matrix fans
-    out past one configuration per kind.
+    `build_library_ninja_s_t_a_t_i_c` is a plausible-looking wrong answer, and
+    this function exists because plausible-looking wrong folder names are what
+    the collision it fixes produced.
     """
-    kwargs.setdefault("python_versions", ["3.13"])
-    kwargs.setdefault("coverage", False)
-    packager = XmsConanPackager("xmscore", **kwargs)
-    packager.generate_configurations(system_platform)
-    return packager
+    with pytest.raises(TypeError, match="sequence of strings"):
+        build_folder_for_generator("Ninja Multi-Config", "library", "static")
+
+
+@pytest.mark.parametrize("discriminator,expected_folder", [
+    pytest.param("3.13", "build_library_ninja_3-13", id="dot"),
+    pytest.param("msvc 194", "build_library_ninja_msvc-194", id="space"),
+    pytest.param("../escape", "build_library_ninja_escape", id="separator"),
+])
+def test_build_folder_slugs_discriminators(discriminator, expected_folder):
+    """Discriminators are slugged like the generator suffix, not interpolated raw.
+
+    Nothing reaching this today carries a separator -- the values are matrix
+    enums plus a regex-checked python version -- so this pins the guarantee for
+    whatever axis is added next rather than a bug that exists now.
+    """
+    folder = build_folder_for_generator("Ninja Multi-Config", "library", [discriminator])
+
+    assert folder == expected_folder
 
 
 @pytest.mark.parametrize("system_platform", ["linux", "windows", "darwin"])
@@ -1623,8 +1643,9 @@ def test_every_configure_preset_gets_its_own_binary_dir(system_platform):
     document = _packager_for(system_platform).plan_cmake_presets()
 
     binary_dirs = [p["binaryDir"] for p in document["configurePresets"]]
-    assert len(binary_dirs) == len(document["configurePresets"]) > 0
-    assert len(set(binary_dirs)) == len(binary_dirs)
+    duplicates = sorted({folder for folder in binary_dirs if binary_dirs.count(folder) > 1})
+    assert binary_dirs, "no presets planned"
+    assert duplicates == []
 
 
 def test_windows_matrix_fans_out_past_one_preset_per_kind():
