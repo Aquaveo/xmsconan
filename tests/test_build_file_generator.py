@@ -687,3 +687,78 @@ def test_xms_python_dependencies_stay_out_of_the_conan_graph(tmp_path):
     assert "geopandas" not in content
     assert "data_objects" not in content
     assert "xms_python_dependencies" not in content
+
+
+# --- profile generation is not silently degraded ---
+
+
+def _minimal_build_toml(tmp_path):
+    """A build.toml complete enough for a full xmsconan_gen run."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core library"\n'
+        'python_namespaced_dir = "core"\nci_type = "github"\n',
+        encoding="utf-8",
+    )
+    return toml_file
+
+
+def _run_gen(tmp_path, monkeypatch, *extra_args):
+    """Run xmsconan_gen's main() against a build.toml in tmp_path."""
+    _minimal_build_toml(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["xmsconan_gen", "build.toml", *extra_args])
+    build_file_generator_module.main()
+
+
+def test_gen_exits_nonzero_when_profile_generation_fails(tmp_path, monkeypatch):
+    """A profile failure is a failure, not a warning with exit code 0.
+
+    The broad catch this replaces turned an exception into a green run, so a
+    defect in the dry-run path shipped while CI stayed green.
+    """
+    _minimal_build_toml(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["xmsconan_gen", "build.toml"])
+    monkeypatch.setattr(
+        "xmsconan.generator_tools.profile_generator.generate_profiles",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("no library_name")),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        build_file_generator_module.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_gen_keeps_build_files_when_profile_generation_fails(tmp_path, monkeypatch):
+    """The build files already written stay written, and the message says so."""
+    _minimal_build_toml(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["xmsconan_gen", "build.toml"])
+    monkeypatch.setattr(
+        "xmsconan.generator_tools.profile_generator.generate_profiles",
+        lambda **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(SystemExit):
+        build_file_generator_module.main()
+
+    assert (tmp_path / "CMakeLists.txt").exists()
+    assert (tmp_path / "conanfile.py").exists()
+
+
+def test_gen_generates_profiles_by_default(tmp_path, monkeypatch):
+    """Profiles and presets come out of a plain xmsconan_gen run."""
+    _run_gen(tmp_path, monkeypatch)
+
+    assert (tmp_path / "conan_profiles").is_dir()
+    assert (tmp_path / "CMakePresets.json").exists()
+
+
+def test_gen_no_profiles_skips_them(tmp_path, monkeypatch):
+    """--no-profiles leaves both artifacts alone."""
+    _run_gen(tmp_path, monkeypatch, "--no-profiles")
+
+    assert not (tmp_path / "conan_profiles").exists()
+    assert not (tmp_path / "CMakePresets.json").exists()

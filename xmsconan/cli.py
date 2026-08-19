@@ -32,6 +32,8 @@ class Command(NamedTuple):
 COMMANDS = {
     "gen": Command("Generate build files from templates", "xmsconan.generator_tools.build_file_generator", "main"),
     "ci": Command("Generate CI pipeline files from templates", "xmsconan.generator_tools.ci_file_generator", "main"),
+    "profiles": Command("Generate Conan profiles and CMakePresets.json from build.toml",
+                        "xmsconan.generator_tools.profile_generator", "main"),
     "coverage": Command("Run unified C++/Python coverage", "xmsconan.coverage_tools.coverage_generator", "main"),
     "build": Command("Build XMS libraries", "xmsconan.build_tools.build_library", "main"),
     "vs2019": Command("Build/publish the manual VS2019 (msvc 192) matrix", "xmsconan.build_tools.vs2019_build", "main"),

@@ -28,14 +28,9 @@ import sys
 import traceback
 from typing import Optional
 
-# 2. Third party modules
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import toml as tomllib  # toml.loads is compatible with tomllib.loads
-
 # 3. Aquaveo modules
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
+from xmsconan.toml_utils import load_toml
 
 
 LOGGER = logging.getLogger(__name__)
@@ -92,7 +87,7 @@ def _opt_is_truthy(value) -> bool:
 
 def _load_toml(toml_path: Path) -> dict:
     """Load a TOML file using stdlib tomllib when available."""
-    return tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    return load_toml(toml_path)
 
 
 def _reexec_under_xvfb():

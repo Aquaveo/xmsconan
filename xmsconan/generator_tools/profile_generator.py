@@ -12,32 +12,19 @@ those entry points can use it. The profiles are generated artifacts, regenerated
 from ``build.toml`` alongside CMakeLists.txt and conanfile.py -- not local state,
 and not hand-edited.
 """
+# 1. Standard python modules
 import argparse
 import logging
 import os
 import sys
 
-import toml
-
-try:
-    import tomllib
-except ImportError:  # Python < 3.11
-    tomllib = None
-
-from xmsconan.package_tools.packager import XmsConanPackager
+# 3. Aquaveo modules
+from xmsconan.package_tools.packager import configurations, XmsConanPackager
+from xmsconan.toml_utils import load_toml
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = "conan_profiles"
-
-
-def _load_toml(toml_file_path):
-    """Load a TOML file, preferring the stdlib parser when available."""
-    if tomllib:
-        with open(toml_file_path, "rb") as toml_file:
-            return tomllib.load(toml_file)
-    with open(toml_file_path, "r", encoding="utf-8") as toml_file:
-        return toml.load(toml_file)
 
 
 def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR,
@@ -57,7 +44,7 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
     Returns:
         List of paths (that would be) written.
     """
-    data = _load_toml(toml_file_path)
+    data = load_toml(toml_file_path)
     library_name = data.get("library_name")
     if not library_name:
         raise ValueError(f"{toml_file_path} does not define library_name")
@@ -76,8 +63,8 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
     if dry_run:
         # Reuse the same plan write_profiles executes, so a dry run cannot
         # disagree with a real run.
-        paths = [os.path.join(profiles_dir, filename)
-                 for filename, _configuration, _conf in packager.plan_profiles(system_platform)]
+        paths = [os.path.join(profiles_dir, entry.filename)
+                 for entry in packager.plan_profiles(system_platform)]
         for path in sorted(paths):
             LOGGER.info("[DRY-RUN] Would write profile: %s", path)
         if write_presets and packager.plan_cmake_presets(system_platform)["configurePresets"]:
@@ -121,8 +108,9 @@ def main():
                         help="Path to the TOML file. Defaults to build.toml in the current directory.")
     parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR,
                         help=f"Directory to write profiles into. Defaults to {DEFAULT_OUTPUT_DIR}.")
+    platform_keys = ", ".join(f"'{key}'" for key in sorted(configurations))
     parser.add_argument("--platform", default=None, dest="system_platform",
-                        help="Platform matrix key ('windows', 'linux', 'darwin'). Defaults to auto-detect.")
+                        help=f"Platform matrix key ({platform_keys}). Defaults to auto-detect.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show files that would be generated without writing them.")
     parser.add_argument("--no-presets", action="store_true",
@@ -142,7 +130,7 @@ def main():
             write_presets=not args.no_presets,
         )
     except Exception as exc:  # surfaced to the user, not swallowed
-        LOGGER.error("Profile generation failed: %s", exc)
+        LOGGER.error("Profile generation failed: %s", exc, exc_info=True)
         sys.exit(1)
 
 
