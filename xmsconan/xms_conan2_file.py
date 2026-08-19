@@ -349,10 +349,12 @@ class XmsConan2File(ConanFile):
         else:
             kind = 'library'
 
-        # Everything else that changes the package id. The Windows matrix fans
-        # out over runtime and wchar_t, so without these, configurations that
-        # link against different runtimes would share one binary directory and
-        # silently overwrite each other's toolchain.
+        # The remaining package-id axes that vary within one platform matrix.
+        # The Windows matrix fans out over runtime and wchar_t, so without these,
+        # configurations that link against different runtimes would share one
+        # binary directory and silently overwrite each other's toolchain.
+        # compiler.version is deliberately excluded -- see the rationale in
+        # xmsconan.constants.build_folder_for_generator.
         discriminators = []
         python_version = self.options.get_safe('python_version')
         if self.options.get_safe('pybind') and python_version:
@@ -364,6 +366,10 @@ class XmsConan2File(ConanFile):
         if runtime:
             discriminators.append(str(runtime))
 
+        # Slugged like the generator suffix above, matching what
+        # build_folder_for_generator does on the preset side.
+        discriminators = [re.sub(r'[^A-Za-z0-9]+', '-', str(part)).strip('-')
+                          for part in discriminators if part]
         # Underscore, not hyphen: the xms repos already ignore `build_*/`.
         parts = ['build', kind, suffix, *discriminators]
         return '_'.join(str(part) for part in parts if part) or 'build'
