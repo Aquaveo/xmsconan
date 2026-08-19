@@ -29,33 +29,16 @@ import traceback
 from typing import Optional
 
 # 3. Aquaveo modules
-from xmsconan.generator_tools.ci_file_generator import _coverage_context
+from xmsconan.generator_tools.ci_file_generator import (
+    _coverage_context,
+    _resolve_coverage_python_version,
+)
 from xmsconan.toml_utils import load_toml
 
 
 LOGGER = logging.getLogger(__name__)
 
 _XVFB_REEXEC_FLAG = "XMSCONAN_COVERAGE_XVFB_REEXEC"
-
-_DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
-
-
-def _resolve_coverage_python_version(toml_data: dict) -> str:
-    """Pick the single python_version the coverage build should pin to.
-
-    Precedence: ``[coverage].python_version`` (explicit opt-in) >
-    highest entry in ``[ci].python_versions`` > the global default
-    (``"3.13"``). Coverage runs a single instrumented build, so we must
-    commit to one ABI up front rather than let ``_find_coverage_package``
-    return whichever pybind config happened to finish last (see issue
-    #65).
-    """
-    coverage_cfg = toml_data.get("coverage", {})
-    explicit = coverage_cfg.get("python_version")
-    if explicit:
-        return str(explicit)
-    ci_versions = toml_data.get("ci", {}).get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]
-    return max(ci_versions, key=lambda v: tuple(int(p) for p in str(v).split(".")))
 
 
 def _configure_logging(args):

@@ -130,13 +130,35 @@ def test_ci_config_options_passed_to_template(tmp_path):
     assert ci_file.exists()
 
 
-def test_github_linux_uses_container_image(ci_toml, tmp_path):
-    """Linux job uses the Aquaveo 3.13 Docker container image (Linux is 3.13-only)."""
+def test_github_linux_container_image_tracks_the_matrix_python(ci_toml, tmp_path):
+    """The Linux container image is derived from the job's python-version leg."""
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "ghcr.io/aquaveo/conan-gcc13-py3.13:latest" in content
+    assert "ghcr.io/aquaveo/conan-gcc13-py${{ matrix.python-version }}:latest" in content
+    # The old hard-coded tag must not survive anywhere.
+    assert "conan-gcc13-py3.13:latest" not in content
+
+
+def test_github_explicit_docker_image_overrides_the_derived_one(tmp_path):
+    """[ci].docker_image replaces the image outright, python fan-out or not."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'docker_image = "ghcr.io/aquaveo/custom:latest"\n'
+        'linux_python_versions = ["3.13", "3.14"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    assert "image: ghcr.io/aquaveo/custom:latest" in content
+    assert "conan-gcc13-py" not in content
 
 
 def test_github_default_python_version_is_3_13_only(ci_toml, tmp_path):
@@ -144,11 +166,24 @@ def test_github_default_python_version_is_3_13_only(ci_toml, tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
-    # Flake and Mac use a hard-coded matrix; Windows renders ci_python_versions
-    # via tojson (double-quoted). Linux has no python-version matrix axis.
-    assert content.count("python-version: ['3.13']") == 2  # flake + mac
-    assert content.count('python-version: ["3.13"]') == 1  # windows
+    # Flake keeps a hard-coded lint interpreter; mac, linux and windows each
+    # render their resolved list via tojson (double-quoted).
+    assert content.count("python-version: ['3.13']") == 1  # flake
+    assert content.count('python-version: ["3.13"]') == 3  # mac + linux + windows
     assert '"3.10"' not in content
+
+
+def test_github_single_version_platform_keeps_unsuffixed_artifact_names(ci_toml, tmp_path):
+    """A platform that does not fan out keeps the artifact names it always had.
+
+    Release assets are fetched by exact name, so the ABI suffix must stay off
+    until a platform actually has more than one leg to disambiguate.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    assert "MATRIX_NAME: linux-GCC13-${{ matrix.build_type }}\n" in content
+    assert "name: wheel-${{ runner.os }}\n" in content
 
 
 def test_github_python_versions_opt_in_adds_3_10_only_on_windows(tmp_path):
@@ -166,9 +201,76 @@ def test_github_python_versions_opt_in_adds_3_10_only_on_windows(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
-    # Only Windows matrix expands; mac stays 3.13 only.
+    # Only Windows expands; mac and linux fall back to the highest entry.
     assert content.count('python-version: ["3.10", "3.13"]') == 1
-    assert content.count("python-version: ['3.13']") == 2  # flake + mac
+    assert content.count('python-version: ["3.13"]') == 2  # mac + linux
+    assert content.count("python-version: ['3.13']") == 1  # flake
+
+
+def test_github_mac_python_versions_fans_out_mac_only(tmp_path):
+    """[ci].mac_python_versions expands mac and leaves linux on the default."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.10", "3.13", "3.14"]\n'
+        'mac_python_versions = ["3.13", "3.14"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    assert content.count('python-version: ["3.13", "3.14"]') == 1  # mac
+    assert content.count('python-version: ["3.14"]') == 1  # linux takes the highest
+    # Mac fans out so its names carry the ABI; linux's stay unsuffixed.
+    assert "-${{ matrix.build_type }}-py${{ matrix.python-version }}" in content
+    assert "MATRIX_NAME: linux-GCC13-${{ matrix.build_type }}\n" in content
+
+
+def test_github_linux_python_versions_fans_out_containers(tmp_path):
+    """[ci].linux_python_versions expands linux and linux-arm together."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'linux_arm = true\n'
+        'python_versions = ["3.10", "3.13", "3.14"]\n'
+        'linux_python_versions = ["3.13", "3.14"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    assert content.count('python-version: ["3.13", "3.14"]') == 2  # linux + linux-arm
+    assert "MATRIX_NAME: linux-GCC13-${{ matrix.build_type }}-py${{ matrix.python-version }}" in content
+    assert "MATRIX_NAME: linux-arm-GCC13-${{ matrix.build_type }}-py${{ matrix.python-version }}" in content
+    assert "name: wheel-${{ runner.os }}-py${{ matrix.python-version }}" in content
+    assert "name: wheel-${{ runner.os }}-arm64-py${{ matrix.python-version }}" in content
+
+
+def test_github_highest_python_version_is_numeric_not_lexical(tmp_path):
+    """The implicit mac/linux default sorts 3.9 below 3.10, not above it."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.9", "3.10"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    assert content.count('python-version: ["3.10"]') == 2  # mac + linux
+    assert 'python-version: ["3.9"]' not in content
 
 
 def test_gitlab_default_python_version_is_3_13_only(tmp_path):
@@ -956,3 +1058,108 @@ def test_gitlab_project_gets_no_such_warning(tmp_path, caplog):
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
     jobs = {key for key in parsed if key not in NON_JOB_SHAPE_KEYS}
     assert jobs == {"Conan Build - Windows", "Conan Deploy - Windows", "Lint"}
+
+
+def test_gitlab_linux_image_tracks_linux_python_versions(tmp_path):
+    """A single-entry Linux list still drops the hard-coded 3.13 image tag."""
+    toml_file = write_gitlab_toml(tmp_path, python_versions=["3.10", "3.14"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    # Linux falls back to the highest CI entry, rendered literally because there
+    # is no matrix to interpolate from.
+    assert "conan-docker/conan-gcc13-py3.14" in content
+    assert "conan-gcc13-py3.13" not in content
+    assert "PYTHON_TARGET_VERSION: '3.14'" in content
+
+
+def test_gitlab_linux_fanout_adds_matching_build_and_deploy_matrices(tmp_path):
+    """Multi-entry linux_python_versions fans out the build and its deploy."""
+    toml_file = write_gitlab_toml(
+        tmp_path,
+        python_versions=["3.10", "3.13", "3.14"],
+        linux_python_versions=["3.13", "3.14"],
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    legs = [{"PYTHON_TARGET_VERSION": "3.13"}, {"PYTHON_TARGET_VERSION": "3.14"}]
+    assert parsed["Conan Build"]["parallel"]["matrix"] == legs
+    assert parsed["Conan Deploy - Linux"]["parallel"]["matrix"] == legs
+    # The image interpolates the leg rather than naming a version.
+    assert parsed["Conan Build"]["image"].endswith("conan-gcc13-py${PYTHON_TARGET_VERSION}")
+    # A fanned-out build must not also carry a fixed PYTHON_TARGET_VERSION
+    # variable competing with the one the matrix supplies.
+    assert "PYTHON_TARGET_VERSION" not in parsed["Conan Build"].get("variables", {})
+
+
+def test_gitlab_linux_fanout_gives_each_leg_its_own_export_tarball(tmp_path):
+    """Without a per-ABI name the parallel legs overwrite one another's export."""
+    toml_file = write_gitlab_toml(tmp_path, linux_python_versions=["3.13", "3.14"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert ".export/xmssnap-linux-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz" in content
+    assert ".export/xmssnap-linux-${PACKAGE_VERSION}.tar.gz" not in content
+
+
+def test_gitlab_single_linux_version_keeps_unsuffixed_export_tarball(tmp_path):
+    """The export name only grows the ABI suffix once there is a fan-out."""
+    toml_file = write_gitlab_toml(tmp_path, python_versions=["3.13"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert ".export/xmssnap-linux-${PACKAGE_VERSION}.tar.gz" in content
+    # Windows legitimately carries the suffix; only the Linux name must be bare.
+    assert "xmssnap-linux-py${PYTHON_TARGET_VERSION}" not in content
+
+
+def test_gitlab_split_tests_with_multiple_linux_versions_is_rejected(tmp_path):
+    """The C++ test job takes the build's artifacts by name, so it cannot fan out."""
+    toml_file = write_gitlab_toml(
+        tmp_path, split_tests=True, linux_python_versions=["3.13", "3.14"],
+    )
+    with pytest.raises(ValueError, match="split_tests"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+
+def test_gitlab_split_tests_with_one_linux_version_is_allowed(tmp_path):
+    """The guard is about fan-out, not about split_tests itself."""
+    toml_file = write_gitlab_toml(
+        tmp_path, split_tests=True, linux_python_versions=["3.14"],
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    assert (output_dir / ".gitlab-ci.yml").exists()
+
+
+def test_gitlab_coverage_image_uses_the_coverage_python_version(tmp_path):
+    """Coverage pins one ABI, so it tracks the coverage version, not the fan-out."""
+    toml_file = write_gitlab_toml(
+        tmp_path, coverage=True, linux_python_versions=["3.13", "3.14"],
+    )
+    toml_file.write_text(
+        toml_file.read_text(encoding="utf-8") + '\n[coverage]\npython_version = "3.13"\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert parsed["Coverage"]["image"].endswith("conan-gcc13-py3.13")
+
+
+def test_github_coverage_workflow_sets_up_the_pinned_python(tmp_path):
+    """Coverage.yaml must install the interpreter the coverage build pins to.
+
+    ``xmsconan coverage`` filters its pybind build to the resolved version, so a
+    workflow that set up a different one would hunt for a package the runner
+    never built.
+    """
+    toml_file = write_github_toml(tmp_path, coverage=True, python_versions=["3.10", "3.14"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
+    assert "PYTHON_TARGET_VERSION: '3.14'" in content
+    assert "python-version: '3.14'" in content
+    assert "'3.13'" not in content

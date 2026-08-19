@@ -26,6 +26,8 @@ def _toml_value(value):
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     return f'"{value}"'
 
 

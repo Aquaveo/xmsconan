@@ -38,6 +38,77 @@ def _display_name(library_name: str) -> str:
     return "Xms" + library_name[3:].title()
 
 
+def _version_sort_key(version) -> tuple:
+    """Sort a ``"3.10"``-style version string numerically, not lexically.
+
+    ``"3.9" > "3.10"`` under string comparison, which would pick the wrong
+    "highest" entry the moment a two-digit minor is in play.
+    """
+    return tuple(int(part) for part in str(version).split("."))
+
+
+def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions: list) -> list:
+    """Resolve the Python fan-out for one non-Windows platform.
+
+    ``[ci].python_versions`` fans out Windows only, because Windows is the
+    one platform whose interpreters all come from ``actions/setup-python``
+    and therefore cost nothing but runner minutes. macOS and Linux opt in
+    separately via ``[ci].mac_python_versions`` / ``[ci].linux_python_versions``:
+
+    * macOS, so that adding a Windows-only ABI (3.10 ships in Windows
+      wheels for the desktop products) does not silently triple the mac
+      matrix.
+    * Linux, because each entry needs a matching
+      ``ghcr.io/aquaveo/conan-gcc13-py<version>`` container to exist. Naming
+      a version with no published image yields a job that cannot start, so
+      this list tracks the images that are actually built rather than
+      whatever ``python_versions`` happens to say.
+
+    Defaults to the single highest entry of ``ci_python_versions``, which is
+    the behavior these platforms had when the version was hardcoded.
+    """
+    configured = ci_config.get(f"{platform}_python_versions")
+    if configured:
+        return list(configured)
+    return [max(ci_python_versions, key=_version_sort_key)]
+
+
+def _py_suffix(platform_python_versions: list) -> str:
+    """Return the per-ABI suffix for artifact and release-asset names.
+
+    Empty on a single-version platform. Job names, uploaded artifacts and the
+    release-asset tarball are all keyed off ``MATRIX_NAME``, so a platform that
+    fans out across ABIs needs the version in that name or the legs overwrite
+    each other. Suppressing the suffix when there is nothing to disambiguate
+    keeps the asset names of every project that has not opted in byte-identical
+    to what it published before -- release assets are fetched by exact name.
+    """
+    if len(platform_python_versions) > 1:
+        return "-py${{ matrix.python-version }}"
+    return ""
+
+
+_DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
+
+
+def _resolve_coverage_python_version(toml_data: dict) -> str:
+    """Pick the single python_version the coverage build should pin to.
+
+    Precedence: ``[coverage].python_version`` (explicit opt-in) >
+    highest entry in ``[ci].python_versions`` > the global default
+    (``"3.13"``). Coverage runs a single instrumented build, so we must
+    commit to one ABI up front rather than let ``_find_coverage_package``
+    return whichever pybind config happened to finish last (see issue
+    #65).
+    """
+    coverage_cfg = toml_data.get("coverage", {})
+    explicit = coverage_cfg.get("python_version")
+    if explicit:
+        return str(explicit)
+    ci_versions = toml_data.get("ci", {}).get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]
+    return max(ci_versions, key=_version_sort_key)
+
+
 def _coverage_context(coverage_config: dict, library_name: str) -> dict:
     """Build the coverage template context, applying sensible defaults."""
     default_filters = [f"{library_name}/"]
@@ -124,6 +195,20 @@ def generate_ci(
                 "them" if len(ignored) > 1 else "it",
             )
 
+    ci_python_versions = list(ci_config.get("python_versions", ["3.13"]))
+    ci_mac_python_versions = _platform_python_versions(ci_config, "mac", ci_python_versions)
+    ci_linux_python_versions = _platform_python_versions(ci_config, "linux", ci_python_versions)
+
+    gitlab_split_tests = ci_type == "gitlab" and ci_config.get("split_tests", False)
+    if gitlab_split_tests and len(ci_linux_python_versions) > 1:
+        raise ValueError(
+            "build.toml combines [ci].split_tests with more than one "
+            "[ci].linux_python_versions. The GitLab C++ test job consumes the "
+            "build job's artifacts by name, so a multi-ABI build would leave it "
+            "testing an indeterminate one. Drop split_tests or keep "
+            "linux_python_versions to a single entry."
+        )
+
     coverage_config = toml_data.get("coverage", {})
 
     from xmsconan import __version__ as xmsconan_version
@@ -144,8 +229,22 @@ def generate_ci(
         "docker_image": ci_config.get("docker_image", ""),
         "ci_split_tests": ci_config.get("split_tests", False),
         "ci_test_shards": ci_config.get("test_shards", 0),
-        "ci_python_versions": list(ci_config.get("python_versions", ["3.13"])),
+        "ci_python_versions": ci_python_versions,
+        "ci_mac_python_versions": ci_mac_python_versions,
+        "ci_linux_python_versions": ci_linux_python_versions,
+        "ci_mac_py_suffix": _py_suffix(ci_mac_python_versions),
+        "gitlab_linux_fanout": len(ci_linux_python_versions) > 1,
+        "gitlab_linux_image_py": (
+            "${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1
+            else ci_linux_python_versions[0]
+        ),
+        "gitlab_linux_single_py": max(ci_linux_python_versions, key=_version_sort_key),
+        "gitlab_linux_py_suffix": (
+            "-py${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1 else ""
+        ),
+        "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "coverage": _coverage_context(coverage_config, library_name),
+        "coverage_python_version": _resolve_coverage_python_version(toml_data),
     }
 
     # Select templates and output paths

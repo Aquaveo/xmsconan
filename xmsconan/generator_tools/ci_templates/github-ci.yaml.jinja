@@ -63,11 +63,11 @@ jobs:
       fail-fast: false
       matrix:
         platform: [macos-15]
-        python-version: ['3.13']
+        python-version: << ci_mac_python_versions | tojson >>
         build_type: [Release, Debug]
 
     env:
-      MATRIX_NAME: ${{ matrix.platform }}-Clang${{ matrix.compiler-version }}-${{ matrix.build_type }}
+      MATRIX_NAME: ${{ matrix.platform }}-Clang${{ matrix.compiler-version }}-${{ matrix.build_type }}<< ci_mac_py_suffix >>
       # Library Variables
       LIBRARY_NAME: << library_name >>
       XMS_VERSION: '0.0.0'
@@ -164,7 +164,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ runner.os }}
+          name: wheel-${{ runner.os }}<< ci_mac_py_suffix >>
           path: wheelhouse/*.whl
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
@@ -213,16 +213,17 @@ jobs:
       image: << docker_image >>
 <% else %>
     container:
-      image: ghcr.io/aquaveo/conan-gcc13-py3.13:latest
+      image: ghcr.io/aquaveo/conan-gcc13-py${{ matrix.python-version }}:latest
 <% endif %>
 
     strategy:
       fail-fast: false
       matrix:
         build_type: [Release, Debug]
+        python-version: << ci_linux_python_versions | tojson >>
 
     env:
-      MATRIX_NAME: linux-GCC13-${{ matrix.build_type }}
+      MATRIX_NAME: linux-GCC13-${{ matrix.build_type }}<< ci_linux_py_suffix >>
       # Library Variables
       LIBRARY_NAME: << library_name >>
       XMS_VERSION: '0.0.0'
@@ -240,7 +241,7 @@ jobs:
       AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
       AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
       # Python Variables
-      PYTHON_TARGET_VERSION: '3.13'
+      PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
       CTEST_PARALLEL_LEVEL: '8'
 
@@ -306,7 +307,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ runner.os }}
+          name: wheel-${{ runner.os }}<< ci_linux_py_suffix >>
           path: wheelhouse/*.whl
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
@@ -356,16 +357,17 @@ jobs:
       image: << docker_image >>
 <% else %>
     container:
-      image: ghcr.io/aquaveo/conan-gcc13-py3.13:latest
+      image: ghcr.io/aquaveo/conan-gcc13-py${{ matrix.python-version }}:latest
 <% endif %>
 
     strategy:
       fail-fast: false
       matrix:
         build_type: [Release, Debug]
+        python-version: << ci_linux_python_versions | tojson >>
 
     env:
-      MATRIX_NAME: linux-arm-GCC13-${{ matrix.build_type }}
+      MATRIX_NAME: linux-arm-GCC13-${{ matrix.build_type }}<< ci_linux_py_suffix >>
       # Library Variables
       LIBRARY_NAME: << library_name >>
       XMS_VERSION: '0.0.0'
@@ -383,7 +385,7 @@ jobs:
       AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
       AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
       # Python Variables
-      PYTHON_TARGET_VERSION: '3.13'
+      PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
       CTEST_PARALLEL_LEVEL: '8'
 
@@ -449,7 +451,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ runner.os }}-arm64
+          name: wheel-${{ runner.os }}-arm64<< ci_linux_py_suffix >>
           path: wheelhouse/*.whl
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
