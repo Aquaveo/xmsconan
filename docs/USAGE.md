@@ -176,7 +176,9 @@ These drive the CI templates. All optional.
 | `[ci].split_tests` | `false` | Split build and C++ test into two stages so testing artifacts can be reused. |
 | `[ci].test_shards` | `0` | When >1 (and `split_tests=true`), shard C++ tests over N parallel jobs using gtest sharding. |
 | `[ci].docker_image` | `""` | Override the build container image (skips the default Aquaveo images). |
-| `[ci].python_versions` | `["3.13"]` | Python versions to build. **Only the Windows matrix fans out across multiple versions** — Linux and macOS always use the highest entry (default `3.13`). Set to `["3.10", "3.13"]` to build a Windows 3.10 wheel + Conan binary in addition to 3.13. See §8. |
+| `[ci].python_versions` | `["3.13"]` | Python versions to build **on Windows**. macOS and Linux take the highest entry unless they are given their own list below. Set to `["3.10", "3.13"]` to build a Windows 3.10 wheel + Conan binary in addition to 3.13. See §8. |
+| `[ci].mac_python_versions` | highest of `[ci].python_versions` | Python versions the macOS matrix fans out across. Separate from `python_versions` so a Windows-only ABI (3.10 ships in Windows wheels for the desktop products) does not silently multiply the mac matrix. See §8. |
+| `[ci].linux_python_versions` | highest of `[ci].python_versions` | Python versions the Linux and Linux-ARM matrices fan out across. Every entry needs a matching `conan-gcc13-py<version>` container to exist, which is why this tracks the published images rather than `python_versions`. See §8. |
 
 ### 5.7 Coverage thresholds (`[coverage]` table)
 
@@ -259,7 +261,7 @@ Standard Conan: `os`, `compiler`, `build_type`, `arch`.
 | `wchar_t` | `"builtin"` / `"typedef"` | `"builtin"` | MSVC `/Zc:wchar_t-` toggle. Only `"typedef"` is built on MSVC (and is excluded from non-MSVC). |
 | `pybind` | `True` / `False` | `False` | Build the Python binding module + wheel. Allowed for any `build_type`. |
 | `testing` | `True` / `False` | `False` | Build the test runner. Mutually exclusive with `pybind=True` in the standard packager fan-out — the coverage runner instruments each shape in a separate Conan create rather than combining them. |
-| `python_version` | `"3.10"` / `"3.13"` | `"3.13"` | Which Python ABI to target when `pybind=True`. **Dropped from `package_id` when `pybind=False`**, so non-Python builds remain a single binary regardless. |
+| `python_version` | `"3.10"` / `"3.13"` / `"3.14"` | `"3.13"` | Which Python ABI to target when `pybind=True`. **Dropped from `package_id` when `pybind=False`**, so non-Python builds remain a single binary regardless. |
 
 ### 7.3 Required CMake variables (set by the recipe via `tc.variables`)
 
@@ -312,27 +314,71 @@ One more msvc-192-only behavior, which needs no configuration: the recipe propag
 
 ---
 
-## 8. Python version support (3.10 + 3.13)
+## 8. Python version support (3.10, 3.13, 3.14)
 
-xmsconan defaults to **Python 3.13 only** everywhere. Some downstream Aquaveo projects (currently Windows-only) need a Python 3.10 build, so the matrix can opt in **just on Windows** to keep the rest of CI simple:
+xmsconan defaults to **Python 3.13 only** everywhere. Each platform opts in to more
+versions through its own list, because what limits the fan-out differs per platform:
 
 ```toml
 [ci]
-python_versions = ["3.10", "3.13"]
+python_versions       = ["3.10", "3.13", "3.14"]   # Windows
+mac_python_versions   = ["3.13", "3.14"]           # macOS
+linux_python_versions = ["3.13", "3.14"]           # Linux + Linux-ARM
 ```
 
-What this turns on:
+Both `mac_python_versions` and `linux_python_versions` default to the **highest**
+entry of `python_versions`, which is the behavior those platforms had when the
+version was hardcoded — so a project that sets none of them generates the same CI
+it did before.
 
-- **Windows CI matrix expands to both versions.** GitHub Actions: `python-version: ["3.10", "3.13"]` on the Windows job only. GitLab: `parallel:matrix` over `PYTHON_TARGET_VERSION` (and the derived `PY_TAG`) on `Conan Build - Windows` and `Conan Deploy - Windows`.
-- **Linux, Linux-ARM, and macOS stay 3.13 only.** Their containers stay on `conan-gcc13-py3.13`, the manylinux wheel-repair stays on `cp313-cp313`, and `Wheel Deploy` / `Conan Deploy - Linux` run as single jobs. No 3.10 docker image is needed.
-- **Conan binaries.** Each Windows pybind variant carries the `python_version` option in its `package_id`, so consumers select `xmscore/X.Y.Z@... pybind=True python_version=3.10` vs `=3.13`. Non-pybind builds drop `python_version` from `package_id`, so testing/plain-library binaries remain a single shared binary regardless.
-- **Wheel output.** Windows produces both `cp310-cp310-win_amd64.whl` and `cp313-cp313-win_amd64.whl`; pip on the consumer side picks the right one.
+Why three lists instead of one:
 
-For local builds (`python build.py`), the matrix is single-version: it uses `PYTHON_TARGET_VERSION` from the environment if set, otherwise `3.13`. Per-`python_version` fan-out is currently a CI/Windows-only feature; to build both wheels locally you'd need to invoke `python build.py` once per version (or construct `XmsConanPackager` directly with `python_versions=["3.10", "3.13"]`).
+- **Windows** interpreters all come from `actions/setup-python` (GitHub) or a
+  `GLR-pyXYZ` runner tag (GitLab), so a version costs only runner minutes. 3.10
+  lives here because the desktop products (GMS/SMS/WMS) consume a 3.10 Windows
+  wheel; nothing else needs it.
+- **macOS** is cheap to fan out too, but inherits nothing from the Windows list —
+  adding 3.10 for the desktop products should not triple the mac matrix.
+- **Linux** runs in a container, and each version needs a published
+  `conan-gcc13-py<version>` image. Only **3.13 and 3.14** images exist; there is
+  no `conan-gcc13-py3.10/3.11/3.12`. Naming a version with no image yields a job
+  that cannot start, which is exactly why this list is not derived from
+  `python_versions`.
+
+What opting in turns on:
+
+- **CI matrices expand.** GitHub Actions: `python-version` on the mac, linux,
+  linux-arm and windows jobs from their respective lists. GitLab: `parallel:matrix`
+  over `PYTHON_TARGET_VERSION` on `Conan Build` / `Conan Deploy - Linux` (from
+  `linux_python_versions`) and on `Conan Build - Windows` / `Conan Deploy - Windows`
+  (from `python_versions`, which also derives `PY_TAG`).
+- **Linux container images follow the matrix leg** —
+  `ghcr.io/aquaveo/conan-gcc13-py${{ matrix.python-version }}:latest` on GitHub and
+  `…/conan-gcc13-py${PYTHON_TARGET_VERSION}` on GitLab. An explicit
+  `[ci].docker_image` still overrides both outright.
+- **Artifact names grow an ABI suffix, but only where a platform actually fans
+  out.** A platform left on one version keeps the exact `MATRIX_NAME`, wheel-artifact
+  and release-asset names it published before, since release assets are fetched by
+  exact name.
+- **Conan binaries.** Each pybind variant carries the `python_version` option in its
+  `package_id`, so consumers select `xmscore/X.Y.Z@… pybind=True python_version=3.14`.
+  Non-pybind builds drop `python_version` from `package_id`, so testing/plain-library
+  binaries remain a single shared binary regardless.
+- **Wheel output.** Each version produces its own `cp3XY` wheel; pip on the consumer
+  side picks the right one.
+
+Wheel repair is unaffected: `xmsconan_wheel_repair` only hosts `auditwheel`, which
+keys off each wheel's own tags, so the manylinux `cp313-cp313` interpreter repairs a
+`cp314` wheel fine.
+
+For local builds (`python build.py`), the matrix is single-version: it uses
+`PYTHON_TARGET_VERSION` from the environment if set, otherwise `3.13`. To build
+several wheels locally, invoke `python build.py` once per version (or construct
+`XmsConanPackager` directly with `python_versions=["3.13", "3.14"]`).
 
 Either way, a local pybind build only works **from an interpreter of the version being built**: the recipe points CMake at `sys.executable` and the generated `CMakeLists.txt` requires that exact version. CI never notices because `actions/setup-python` supplies a matching interpreter; on a workstation you supply it, which is why the VS2019 wheel workflow is one run per Python version from a virtual environment of that version (§16.8).
 
-> **Runner / image expectations.** Opt-in assumes the `GLR-py310` GitLab Windows runner tag exists. The Linux/Mac side keeps using existing `conan-gcc13-py3.13` images, so no new images are required.
+> **Runner / image expectations.** A Windows opt-in assumes the matching `GLR-pyXYZ` GitLab runner tag exists (`GLR-py310`, `GLR-py314`). A Linux opt-in assumes the matching `conan-gcc13-py<version>` image exists **and is readable by CI** — on GHCR the 3.13 image is public while 3.14 is private, and the generated `container:` block pulls anonymously, so a private image needs its visibility flipped (or a `credentials:` stanza added) before its leg can start.
 
 ---
 
@@ -406,16 +452,20 @@ The generated jobs follow the pattern:
 
 ### 10.1 GitHub specifics
 
-- Mac / Linux / Linux-ARM matrices: `build_type × python-version=['3.13']` (single version).
-- **Windows** matrix: `build_type × compiler-version × python-version=ci_python_versions` — only this job expands when you opt in to 3.10.
-- Wheel artifacts: `wheel-${{ runner.os }}` for mac/linux/arm, `wheel-${{ runner.os }}-py${{ matrix.python-version }}` for Windows so the two Python ABIs don't collide.
-- Linux containers stay on `conan-gcc13-py3.13:latest`.
+- Mac matrix: `build_type × python-version=ci_mac_python_versions`.
+- Linux / Linux-ARM matrices: `build_type × python-version=ci_linux_python_versions`.
+- **Windows** matrix: `build_type × compiler-version × python-version=ci_python_versions`.
+- Wheel artifacts carry `-py${{ matrix.python-version }}` on any platform that fans out; a single-version platform keeps its bare `wheel-${{ runner.os }}` name.
+- Linux containers resolve to `conan-gcc13-py${{ matrix.python-version }}:latest`.
+- `flake` deliberately stays on a single hardcoded interpreter — linting is ABI-independent, and pinning it keeps lint results identical across repos.
 - The `flake` job installs xmsconan, runs `xmsconan_gen build.toml` to render `.flake8`, then runs plain `flake8 _package`. It deliberately does **not** pass flake8 settings on the command line: that duplicates `.flake8.jinja`, and the two copies drift apart silently (CI once used a different `ignore` list and a stale `conf.py` exclude, so a clean local run did not imply a clean CI run). Change lint settings in `.flake8.jinja` only.
 
 ### 10.2 GitLab specifics
 
-- `Conan Build`, `Repair Wheel`, `Wheel Deploy`, `Conan Deploy - Linux`: single-version jobs running on 3.13. No `parallel:matrix`.
-- `Conan Build - Windows`, `Conan Deploy - Windows`: `parallel:matrix` over `PYTHON_TARGET_VERSION`. The matrix also sets `PY_TAG` (`py310` / `py313`) which selects the runner via `image: GLR-${PY_TAG}`.
+- `Conan Build` and `Conan Deploy - Linux`: `parallel:matrix` over `PYTHON_TARGET_VERSION` from `linux_python_versions`, each leg saving/restoring its own `-py<version>` export tarball. With a single version they stay plain jobs with no `parallel:matrix`, exactly as before.
+- `Repair Wheel` and `Wheel Deploy` stay single jobs: they collect every leg's wheels and act on all of them at once.
+- `[ci].split_tests` cannot be combined with a multi-version `linux_python_versions` — the C++ test job takes the build job's artifacts by name, so a multi-ABI build would leave it testing an indeterminate one. `xmsconan ci` rejects that combination at generation time.
+- `Conan Build - Windows`, `Conan Deploy - Windows`: `parallel:matrix` over `PYTHON_TARGET_VERSION` from `python_versions`. The matrix also sets `PY_TAG` (`py310` / `py313` / `py314`) which selects the runner via `image: GLR-${PY_TAG}`.
 - Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
 - `[ci].linux = false` yields a **Windows-only pipeline**: `Conan Build - Windows`, `Lint`, and (on tags) `Conan Deploy - Windows`. Two combinations are rejected at generation time rather than producing a pipeline that fails opaquely later — `linux = false` together with `windows = false` (nothing would build), and `linux = false` with `coverage = true` (coverage compiles with `--coverage` under gcc, and the generated `CMakeLists.txt` rejects MSVC when `XMS_COVERAGE` is set).
@@ -858,7 +908,8 @@ Wheels are tagged `cp310-cp310-...` or `cp313-cp313-...`; pip picks the right on
 - **`PYTHON_TARGET_VERSION` mismatch in CMake.** The recipe sets it from the `python_version` Conan option. If you're poking CMake directly, pass `-DPYTHON_TARGET_VERSION=3.13`.
 - **`No pybind package found to extract`.** Means `build.py` ran but no pybind config was built. Check `build.py --preview` to see the matrix; common causes are `--filter` excluding the pybind variant, or every pybind variant having failed.
 - **Dual wheel uploads colliding on devpi.** With `python_versions=["3.10","3.13"]`, wheels carry distinct `cp3XY` tags, so devpi treats them as separate uploads of the same release. No special config required.
-- **Generated CI references a runner that doesn't exist.** Opt-in only matrices Windows, so the only new runner you need is `GLR-py310` (GitLab). If it isn't available, set `python_versions = ["3.13"]` until it is. The Linux/Mac side keeps using the existing 3.13 images.
+- **Generated CI references a runner or image that doesn't exist.** A Windows opt-in needs the matching `GLR-pyXYZ` GitLab runner tag; a Linux opt-in needs the matching `conan-gcc13-py<version>` container. If one isn't available, drop that version from the relevant list until it is — the platforms are independent, so Windows can carry a version Linux cannot.
+- **Linux job fails pulling its container.** The generated `container:` block pulls without credentials, which only works for a public image. On GHCR `conan-gcc13-py3.13` is public but `conan-gcc13-py3.14` is not, so a 3.14 Linux leg fails at pull until the package visibility is changed or a `credentials:` stanza is added.
 - **`xmsconan vs2019 build` stops at preflight with "outside the pinned `~=2.31.0` series".** Intentional (§16.3). Install the pinned client — `pip install "conan~=2.31.0"` — rather than working around the check; a different minor can change package_ids and detach your build from what's already published.
 - **VS2019 build fails on a boost option Conan says no recipe defines.** The legacy `boost/1.74.0.3` doesn't declare the conan-center 1.86 options. The driver already passes `apply_boost_defaults=False`; if you're constructing `XmsConanPackager` yourself for msvc 192, pass it too (§16.6).
 - **VS2019 packages don't show up for consumers.** They go to `aquaveo-vs2019`, not `aquaveo` — the consuming machine needs that remote configured too. Note that `xmsconan_vs2019 setup` *appends* the remote rather than putting it first (§16.2), so it does not shadow `aquaveo` for your other work.

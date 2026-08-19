@@ -29,17 +29,17 @@ jobs:
       AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
       AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
       AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
-      PYTHON_TARGET_VERSION: '3.13'
+      PYTHON_TARGET_VERSION: '<< coverage_python_version >>'
       CTEST_PARALLEL_LEVEL: '8'
 
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.13
+      - name: Setup Python << coverage_python_version >>
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '<< coverage_python_version >>'
 
 <% if ci_xvfb %>
       - name: Install xvfb

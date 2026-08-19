@@ -36,7 +36,7 @@ class XmsConan2File(ConanFile):
         "wchar_t": ["builtin", "typedef"],
         "pybind": [True, False],
         "testing": [True, False],
-        "python_version": ["3.10", "3.13"],
+        "python_version": ["3.10", "3.13", "3.14"],
     }
     xms_dependencies = []
     extra_dependencies = []
