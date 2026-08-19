@@ -169,7 +169,7 @@ class LibrarySpec:
 
     name: str
     enabled: bool
-    note: str = ""
+    note: str
 
 
 PUBLISHED = "Conan 2 recipe; msvc 192 packages on aquaveo-vs2019."

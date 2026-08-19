@@ -675,10 +675,15 @@ def test_xms_python_dependencies_stay_out_of_the_conan_graph(tmp_path):
     content = _render_conanfile(
         'library_name = "xmscore"\n'
         'description = "desc"\n'
+        'xms_dependencies = [{ name = "xmscore", version = "7.0.0" }]\n'
         'xms_python_dependencies = ["geopandas", "data_objects>=4.0.0"]\n',
         tmp_path,
     )
 
+    # Positive control: an XMS dependency in the same render DOES reach the
+    # recipe, so the negatives above cannot pass merely because nothing
+    # rendered at all.
+    assert "xmscore/7.0.0" in content
     assert "geopandas" not in content
     assert "data_objects" not in content
     assert "xms_python_dependencies" not in content

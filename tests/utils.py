@@ -28,9 +28,3 @@ def patch_env(values=(), clear=False, **kwargs):
     if _IS_WINDOWS:
         values_dict['USERPROFILE'] = os.environ['USERPROFILE']
     return patch.dict(os.environ, values_dict, clear=clear, **kwargs)
-
-
-#: Top-level keys in a generated .gitlab-ci.yml that are not jobs.  Shared so
-#: test_ci_file_generator and test_ci_yaml_validation cannot drift apart on what
-#: counts as a job -- they previously carried different sets.
-GITLAB_NON_JOB_KEYS = frozenset({"stages", "variables", "pages", "include"})

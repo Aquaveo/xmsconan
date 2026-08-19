@@ -26,8 +26,8 @@ FOREIGN_PYTHON = "3.7"
 PYTHON_CHECK_OK = vs.CheckResult("python interpreter", True, "ok")
 
 #: The specs the loop in build() hands to build_library.
-XMSCORE = vs.LibrarySpec("xmscore", True)
-XMSGRID = vs.LibrarySpec("xmsgrid", False)
+XMSCORE = vs.LibrarySpec("xmscore", True, "synthetic")
+XMSGRID = vs.LibrarySpec("xmsgrid", False, "synthetic")
 
 
 def fake_packager(configurations=None, run_result=0):
@@ -60,6 +60,21 @@ def vswhere_installed(tmp_path, monkeypatch):
 # --- library table / selection ------------------------------------------
 
 
+#: Synthetic tables for selection tests. The real LIBRARIES table is not used:
+#: every entry in it is enabled today, so the enabled filter alone would
+#: satisfy assertions meant to exercise --only and --from.
+MIXED_TABLE = (
+    vs.LibrarySpec("first", True, "synthetic"),
+    vs.LibrarySpec("second", False, "synthetic"),
+    vs.LibrarySpec("third", True, "synthetic"),
+)
+ALL_ENABLED_TABLE = (
+    vs.LibrarySpec("first", True, "synthetic"),
+    vs.LibrarySpec("second", True, "synthetic"),
+    vs.LibrarySpec("third", True, "synthetic"),
+)
+
+
 def test_library_table_is_in_dependency_order():
     """The stack is listed in dependency order and every entry explains itself.
 
@@ -85,28 +100,8 @@ def test_select_libraries_defaults_to_enabled():
     Run against a synthetic table for the same reason: the behavior under
     test is the filtering, not which libraries happen to be on today.
     """
-    table = (
-        vs.LibrarySpec("first", True),
-        vs.LibrarySpec("second", False),
-        vs.LibrarySpec("third", True),
-    )
-    with mock.patch(f"{MODULE}.LIBRARIES", table):
+    with mock.patch(f"{MODULE}.LIBRARIES", MIXED_TABLE):
         assert [library.name for library in vs.select_libraries()] == ["first", "third"]
-
-
-def test_select_libraries_returns_every_entry_when_all_enabled():
-    """A table with nothing disabled selects the whole stack.
-
-    That is the shape the real table has today, asserted generically so this
-    test does not have to change as libraries migrate on and off the flag.
-    """
-    table = (
-        vs.LibrarySpec("first", True),
-        vs.LibrarySpec("second", True),
-        vs.LibrarySpec("third", True),
-    )
-    with mock.patch(f"{MODULE}.LIBRARIES", table):
-        assert [library.name for library in vs.select_libraries()] == ["first", "second", "third"]
 
 
 def test_select_libraries_only_overrides_enabled_flag():
@@ -117,12 +112,7 @@ def test_select_libraries_only_overrides_enabled_flag():
     alone satisfies the assertion, so the bypass this test exists for would go
     unexercised and the test would still pass if it were removed.
     """
-    table = (
-        vs.LibrarySpec("first", True),
-        vs.LibrarySpec("second", False),
-        vs.LibrarySpec("third", True),
-    )
-    with mock.patch(f"{MODULE}.LIBRARIES", table):
+    with mock.patch(f"{MODULE}.LIBRARIES", MIXED_TABLE):
         selected = vs.select_libraries(only=["second", "first"])
     # order follows the dependency order of LIBRARIES, not the flag order
     assert [library.name for library in selected] == ["first", "second"]
@@ -131,15 +121,10 @@ def test_select_libraries_only_overrides_enabled_flag():
 def test_select_libraries_from_truncates_the_stack():
     """--from drops everything before the named library.
 
-    Synthetic table for the same reason as above: the truncation must be what
-    drops the earlier entry, not its enabled flag.
+    Every entry in the table is enabled, so the truncation must be what drops
+    the earlier entry -- not its enabled flag.
     """
-    table = (
-        vs.LibrarySpec("first", True),
-        vs.LibrarySpec("second", True),
-        vs.LibrarySpec("third", True),
-    )
-    with mock.patch(f"{MODULE}.LIBRARIES", table):
+    with mock.patch(f"{MODULE}.LIBRARIES", ALL_ENABLED_TABLE):
         selected = vs.select_libraries(only=["first", "third"], start_from="second")
     assert [library.name for library in selected] == ["third"]
 
@@ -566,7 +551,7 @@ def _table_rows(out):
 def test_preview_generates_the_verified_matrix(capsys):
     """The VS2019 matrix is 14 configs: 4 base + 4 wchar_t + 4 testing + 2 pybind."""
     exit_code = vs.preview(
-        [vs.LibrarySpec("xmscore", True)], python_versions=vs.DEFAULT_PYTHON_VERSIONS,
+        [vs.LibrarySpec("xmscore", True, "synthetic")], python_versions=vs.DEFAULT_PYTHON_VERSIONS,
     )
 
     assert exit_code == 0
@@ -586,7 +571,7 @@ def test_preview_applies_filter(capsys):
     Debug keeps half of each non-pybind group and drops pybind entirely
     (it is Release-only): 2 base + 2 wchar_t + 2 testing + 0 pybind = 6.
     """
-    vs.preview([vs.LibrarySpec("xmscore", True)], config_filter={"build_type": "Debug"})
+    vs.preview([vs.LibrarySpec("xmscore", True, "synthetic")], config_filter={"build_type": "Debug"})
 
     out = capsys.readouterr().out
     assert "==> xmscore: 6 configuration(s)" in out

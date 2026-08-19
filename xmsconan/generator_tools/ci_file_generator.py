@@ -113,18 +113,21 @@ def generate_ci(
                 "Coverage builds with --coverage under gcc; the generated "
                 "CMakeLists rejects MSVC when XMS_COVERAGE is set."
             )
-    # [ci].linux and [ci].windows are GitLab-only (docs/USAGE.md:169). The
-    # GitHub templates ignore both, so a project that sets one here gets the
-    # full matrix and no indication its setting did nothing. Documented is not
-    # the same as discoverable -- say so at generation time. Both flags are
-    # named, not just linux, so the two stay consistent.
+    # [ci].linux and [ci].windows are GitLab-only (see docs/USAGE.md, "CI
+    # options"). The GitHub templates ignore both, so a project that sets
+    # either here gets the full matrix and no indication its setting did
+    # nothing. Documented is not the same as discoverable -- say so at
+    # generation time. Warn on any explicit setting, not just false: setting
+    # one to true is equally inert and equally worth knowing.
     if ci_type == "github":
-        ignored = [key for key in ("linux", "windows") if ci_config.get(key, True) is False]
+        ignored = [key for key in ("linux", "windows") if key in ci_config]
         if ignored:
             LOGGER.warning(
-                "build.toml sets [ci].%s = false, but these are GitLab-only options; "
-                "the generated GitHub workflow ignores them and emits the full matrix.",
-                " and [ci].".join(ignored),
+                "build.toml sets %s, but %s GitLab-only; the generated GitHub "
+                "workflow ignores %s and emits the full matrix.",
+                " and ".join(f"[ci].{key}" for key in ignored),
+                "these are" if len(ignored) > 1 else "this is",
+                "them" if len(ignored) > 1 else "it",
             )
 
     coverage_config = toml_data.get("coverage", {})
