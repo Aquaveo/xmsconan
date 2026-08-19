@@ -2,12 +2,13 @@
 import logging
 
 import pytest
+import yaml
 
 from xmsconan.generator_tools.ci_file_generator import (
     _display_name,
     generate_ci,
 )
-from .utils import GITLAB_NON_JOB_KEYS
+from .ci_helpers import NON_JOB_SHAPE_KEYS, write_github_toml, write_gitlab_toml
 
 
 @pytest.mark.parametrize("input_name,expected", [
@@ -847,18 +848,6 @@ def test_gitlab_linux_defaults_on(tmp_path):
     assert "  - Package" in content
 
 
-def _write_gitlab_toml(tmp_path, **ci_flags):
-    """Write a minimal GitLab build.toml carrying the given [ci] flags."""
-    body = "".join(f"{key} = {str(value).lower()}\n" for key, value in ci_flags.items())
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmssnap"\ndescription = "Snap"\nci_type = "gitlab"\n'
-        f'\n[ci]\n{body}',
-        encoding="utf-8",
-    )
-    return toml_file
-
-
 def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
     """[ci].linux = false removes the Linux jobs and the wheel chain they feed.
 
@@ -871,14 +860,12 @@ def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
     over the job names catches a job that should have gone and one that should
     have stayed, and does not pass vacuously when a job is merely renamed.
     """
-    import yaml
-
-    toml_file = _write_gitlab_toml(tmp_path, linux=False)
+    toml_file = write_gitlab_toml(tmp_path, linux=False)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
 
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
-    jobs = {key for key in parsed if key not in GITLAB_NON_JOB_KEYS}
+    jobs = {key for key in parsed if key not in NON_JOB_SHAPE_KEYS}
     assert jobs == {"Conan Build - Windows", "Conan Deploy - Windows", "Lint"}
     assert parsed["stages"] == ["Test", "Deploy"]
 
@@ -886,7 +873,7 @@ def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
 @pytest.mark.parametrize("ci_flags,expected_message", [
     ({"linux": False, "windows": False}, r"\[ci\]\.linux and \[ci\]\.windows to false"),
     ({"linux": False, "coverage": True}, r"\[ci\]\.coverage = true with \[ci\]\.linux = false"),
-])
+], ids=["no-platform", "coverage-without-linux"])
 def test_gitlab_rejects_impossible_flag_combinations(tmp_path, ci_flags, expected_message):
     """Combinations that cannot produce a working pipeline fail at generation.
 
@@ -894,7 +881,7 @@ def test_gitlab_rejects_impossible_flag_combinations(tmp_path, ci_flags, expecte
     patterns name the offending keys rather than a bare word, so a different
     ValueError mentioning "coverage" cannot satisfy the test.
     """
-    toml_file = _write_gitlab_toml(tmp_path, **ci_flags)
+    toml_file = write_gitlab_toml(tmp_path, **ci_flags)
 
     with pytest.raises(ValueError, match=expected_message):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
@@ -918,32 +905,54 @@ def test_github_is_unaffected_by_linux_flag(tmp_path):
     assert "\n  linux:" in content
 
 
-def test_github_warns_when_a_gitlab_only_platform_flag_is_set(tmp_path, caplog):
-    """A GitHub project setting [ci].linux is told the flag does nothing.
+@pytest.mark.parametrize("ci_flags,expected", [
+    ({"linux": False}, ["[ci].linux"]),
+    ({"windows": False}, ["[ci].windows"]),
+    ({"linux": False, "windows": False}, ["[ci].linux", "[ci].windows"]),
+    ({"linux": True}, ["[ci].linux"]),
+], ids=["linux", "windows", "both", "explicit-true"])
+def test_github_warns_for_any_explicit_gitlab_only_flag(tmp_path, caplog, ci_flags, expected):
+    """A GitHub project setting either GitLab-only flag is told it does nothing.
 
-    The behavior is documented (USAGE.md, "GitLab only"), but documented is not
-    discoverable: without this the setting is accepted in silence and the full
-    matrix is emitted anyway.
+    The behavior is documented, but documented is not discoverable: without
+    this the setting is accepted in silence and the full matrix is emitted
+    anyway. Setting one to true is as inert as setting it to false, so both
+    are warned about.
     """
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\nci_type = "github"\n'
-        '\n[ci]\nlinux = false\n',
-        encoding="utf-8",
-    )
+    toml_file = write_github_toml(tmp_path, **ci_flags)
 
     with caplog.at_level(logging.WARNING):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
 
     assert "GitLab-only" in caplog.text
-    assert "[ci].linux" in caplog.text
+    for flag in expected:
+        assert flag in caplog.text
 
 
-def test_gitlab_project_gets_no_such_warning(tmp_path, caplog):
-    """The warning is GitHub-specific; on GitLab the flag is honored."""
-    toml_file = _write_gitlab_toml(tmp_path, linux=False)
+def test_github_does_not_warn_when_the_flags_are_absent(tmp_path, caplog):
+    """No [ci] platform flags means nothing to warn about."""
+    toml_file = write_github_toml(tmp_path, xvfb=True)
 
     with caplog.at_level(logging.WARNING):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
 
     assert "GitLab-only" not in caplog.text
+
+
+def test_gitlab_project_gets_no_such_warning(tmp_path, caplog):
+    """The warning is GitHub-specific, and on GitLab the flag is actually honored.
+
+    Asserting the absence of the warning alone would pass even if the flag were
+    ignored on GitLab too, which is the opposite of the documented behavior --
+    so assert the Linux jobs really are gone.
+    """
+    output_dir = tmp_path / "output"
+    toml_file = write_gitlab_toml(tmp_path, linux=False)
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    assert "GitLab-only" not in caplog.text
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    jobs = {key for key in parsed if key not in NON_JOB_SHAPE_KEYS}
+    assert jobs == {"Conan Build - Windows", "Conan Deploy - Windows", "Lint"}
