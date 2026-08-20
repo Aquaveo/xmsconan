@@ -949,12 +949,15 @@ def test_gitlab_linux_defaults_on(tmp_path):
 
 
 def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
-    """[ci].linux = false removes the Linux jobs and the wheel chain they feed.
+    """[ci].linux = false removes the Linux jobs and the Linux wheel chain.
 
-    The Linux job owns ``wheelhouse``; Repair Wheel and Wheel Deploy consume it
-    through ``dependencies:``. Dropping the producer while keeping the consumers
-    would leave a pipeline that fails at run time on a missing artifact, so they
-    go together -- as does the Package stage that would otherwise be empty.
+    The Linux build owns the ``wheelhouse`` that the Package-stage Repair Wheel
+    job and the "Wheel Deploy" job consume through ``dependencies:``. Dropping
+    the producer while keeping those consumers would leave a pipeline that fails
+    at run time on a missing artifact, so they go together -- as does the Package
+    stage that would otherwise be empty. The Windows wheel chain is independent:
+    that build repairs its own wheel in place and "Wheel Deploy - Windows"
+    uploads it, so it survives here.
 
     Asserted on the parsed document rather than raw substrings: a set equality
     over the job names catches a job that should have gone and one that should
@@ -966,7 +969,9 @@ def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
 
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
     jobs = {key for key in parsed if key not in NON_JOB_SHAPE_KEYS}
-    assert jobs == {"Conan Build - Windows", "Conan Deploy - Windows", "Lint"}
+    assert jobs == {
+        "Conan Build - Windows", "Wheel Deploy - Windows", "Conan Deploy - Windows", "Lint",
+    }
     assert parsed["stages"] == ["Test", "Deploy"]
 
 
@@ -1055,7 +1060,9 @@ def test_gitlab_project_gets_no_such_warning(tmp_path, caplog):
     assert "GitLab-only" not in caplog.text
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
     jobs = {key for key in parsed if key not in NON_JOB_SHAPE_KEYS}
-    assert jobs == {"Conan Build - Windows", "Conan Deploy - Windows", "Lint"}
+    assert jobs == {
+        "Conan Build - Windows", "Wheel Deploy - Windows", "Conan Deploy - Windows", "Lint",
+    }
 
 
 def test_gitlab_linux_image_tracks_the_implicit_linux_default(tmp_path):
@@ -1173,3 +1180,71 @@ def test_version_sort_key_orders_numerically_not_lexically():
     """
     assert max(["3.9", "3.10"], key=version_sort_key) == "3.10"
     assert sorted(["3.14", "3.9", "3.10"], key=version_sort_key) == ["3.9", "3.10", "3.14"]
+
+
+def _gitlab_jobs(tmp_path, **ci_flags):
+    """Render a GitLab pipeline and return its parsed YAML."""
+    toml_file = write_gitlab_toml(tmp_path, **ci_flags)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    return yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+
+def test_gitlab_windows_build_stages_a_wheel(tmp_path):
+    """The Windows build job asks build.py for a wheel and keeps it as an artifact.
+
+    Without both halves the wheel is built and then discarded when the job ends,
+    which is what left Windows with no publishable wheel.
+    """
+    job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
+    assert "wheelhouse/" in job["artifacts"]["paths"]
+    assert any("--wheel-dir wheelhouse" in step for step in job["script"])
+
+
+def test_gitlab_windows_build_repairs_its_own_wheel(tmp_path):
+    """The Windows build job repairs in place, naming the windows platform.
+
+    delvewheel reads the DLL imports of a win_amd64 .pyd, so the repair cannot be
+    delegated to the manylinux container that repairs the Linux wheel.
+    """
+    job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
+    assert any(
+        "xmsconan_wheel_repair" in step and "--platform windows" in step
+        for step in job["script"]
+    )
+
+
+def test_gitlab_windows_wheel_deploy_exists_and_is_tag_only(tmp_path):
+    """A Windows wheel reaches devpi, and only from a tag."""
+    job = _gitlab_jobs(tmp_path, windows=True)["Wheel Deploy - Windows"]
+    assert any("xmsconan_wheel_deploy" in step for step in job["script"])
+    assert job["only"] == ["tags"]
+    assert job["needs"] == [{"job": "Conan Build - Windows", "artifacts": True}]
+
+
+def test_gitlab_windows_wheel_deploy_absent_without_windows(tmp_path):
+    """No Windows jobs at all when the platform is switched off."""
+    pipeline = _gitlab_jobs(tmp_path, windows=False)
+    assert "Wheel Deploy - Windows" not in pipeline
+    assert "Conan Build - Windows" not in pipeline
+
+
+def test_gitlab_windows_wheel_deploy_absent_without_deploy(tmp_path):
+    """Setting deploy = false suppresses the Windows wheel upload with every other deploy."""
+    pipeline = _gitlab_jobs(tmp_path, windows=True, deploy=False)
+    assert "Wheel Deploy - Windows" not in pipeline
+    assert "Conan Build - Windows" in pipeline
+
+
+def test_gitlab_windows_only_pipeline_publishes_a_wheel(tmp_path):
+    """A Windows-only pipeline publishes a wheel.
+
+    The direct inverse of the old documented gap, where dropping Linux dropped
+    the only path that staged and uploaded a wheel.
+    """
+    pipeline = _gitlab_jobs(tmp_path, linux=False, windows=True)
+    assert "Repair Wheel" not in pipeline  # the Linux-only Package-stage job
+    assert "Wheel Deploy" not in pipeline  # the Linux-only deploy job
+    deploy = pipeline["Wheel Deploy - Windows"]
+    assert any("xmsconan_wheel_deploy" in step for step in deploy["script"])
+    assert deploy["stage"] in pipeline["stages"]
