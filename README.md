@@ -189,11 +189,12 @@ xmsconan wheel-repair --wheel-dir wheelhouse
 xmsconan wheel-repair --wheel-dir wheelhouse --platform macos
 ```
 
-On Windows, `[ci].windows_wheel_repair = false` in `build.toml` drops the repair
-step from the generated CI and from `xmsconan publish`. delvewheel does not
-ignore `msvcp140.dll`, so a `.pyd` that imports nothing third-party still gets a
-mangled CRT vendored beside it — bad news where the host application supplies
-the runtime itself. See `docs/USAGE.md` §12.1.
+Windows repair can be switched off per library with
+`[ci].windows_wheel_repair`, which drops the step from the **Windows job** of the
+generated CI, from `xmsconan publish`, and from the `xmsconan vs2019` track. The
+default follows `ci_type` — on for `github` (public wheels need their DLLs
+bundled), off for `gitlab` (internal wheels are loaded by a host that supplies
+the C++ runtime itself). See `docs/USAGE.md` §12.1.
 
 #### Wheel Deploy
 

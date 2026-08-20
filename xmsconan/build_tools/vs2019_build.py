@@ -95,10 +95,11 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
+from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials
 from xmsconan.constants import (
-    MSVC_VS2019_VERSION, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
+    MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
 from xmsconan.toml_utils import load_toml
@@ -633,7 +634,53 @@ def setup(password_file=None, username=None,
 # --- build ---------------------------------------------------------------
 
 
-def _library_matrix(library_dir):
+def _library_build_toml(library_dir: str) -> dict:
+    """Parse a library's ``build.toml``, or return an empty table if it has none.
+
+    A malformed file is re-raised naming the path. ``load_toml`` raises
+    ``TOMLDecodeError`` -- which is a ``ValueError`` -- and the CLI's top-level
+    handler catches ``ValueError`` as a bad ``--only`` / ``--from`` / ``--filter``
+    argument, so an unreported decode error here surfaced as advice about flags
+    the developer never typed.
+
+    Args:
+        library_dir: Directory holding the library's ``build.toml``.
+
+    Returns:
+        The parsed table, or an empty dict when the file is absent.
+
+    Raises:
+        ValueError: When the file exists but does not parse, naming it.
+    """
+    toml_path = os.path.join(library_dir, "build.toml")
+    if not os.path.isfile(toml_path):
+        return {}
+    try:
+        return load_toml(toml_path)
+    except ValueError as exc:
+        raise ValueError(f"could not parse {toml_path}: {exc}") from exc
+
+
+def _library_repairs_wheel(library_dir: str) -> bool:
+    """Whether this library's Windows wheel should be repaired.
+
+    Read from the library's own ``build.toml`` through the shared resolver, so
+    this track agrees with the generated CI and with ``xmsconan publish``. A
+    library with no ``build.toml`` here keeps the historical behavior.
+
+    Args:
+        library_dir: Directory holding the library's ``build.toml``.
+
+    Returns:
+        True when the wheel should be repaired.
+    """
+    data = _library_build_toml(library_dir)
+    if not data:
+        return True
+    return repairs_windows_wheel(data)
+
+
+def _library_matrix(library_dir: str) -> dict:
     """Read the ``[matrix]`` table out of a library's ``build.toml``.
 
     The VS2019 driver builds each library from its own checkout rather than
@@ -647,13 +694,12 @@ def _library_matrix(library_dir):
 
     Returns:
         The ``[matrix]`` table, or an empty dict when the file or the table is
-        absent. A malformed file is left to the ``xmsconan_gen`` step, which
-        reports it far more usefully than this would.
+        absent.
+
+    Raises:
+        ValueError: When the file exists but does not parse.
     """
-    toml_path = os.path.join(library_dir, "build.toml")
-    if not os.path.isfile(toml_path):
-        return {}
-    return load_toml(toml_path).get("matrix", {})
+    return _library_build_toml(library_dir).get("matrix", {})
 
 
 def _new_packager(library, conanfile_path, python_versions, matrix=None):
@@ -672,6 +718,9 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
     Returns:
         An :class:`~xmsconan.package_tools.packager.XmsConanPackager` with no
         configurations generated yet.
+
+    Raises:
+        ValueError: When ``matrix`` is malformed, from ``_resolve_matrix``.
     """
     return XmsConanPackager(
         library,
@@ -679,7 +728,11 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         build_missing=True,
         apply_boost_defaults=False,
         python_versions=python_versions,
-        matrix=matrix or None,
+        # Passed through rather than `matrix or None`: a falsey non-dict
+        # (matrix = []) has to reach _resolve_matrix and be rejected, the way it
+        # is on every other entry point, instead of being read as "no
+        # restriction" and quietly restoring the full fan-out.
+        matrix=matrix,
     )
 
 
@@ -721,7 +774,7 @@ def _pybind_python_versions(configurations):
     return sorted(versions, key=lambda v: tuple(int(part) for part in v.split(".")))
 
 
-def check_python_versions(libraries, python_versions=None, config_filter=None, root=None):
+def check_python_versions(libraries, python_versions=None, config_filter=None, root="."):
     """Check the interpreter running conan against the pybind configurations.
 
     The recipe hands CMake ``Python3_EXECUTABLE = sys.executable`` while the
@@ -746,9 +799,9 @@ def check_python_versions(libraries, python_versions=None, config_filter=None, r
             must not be empty (the caller rejects an empty selection first).
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
-        root: Directory holding the library checkouts, used to find the first
-            library's ``build.toml``. None falls back to the working directory,
-            and a missing file simply means the full fan-out.
+        root: Directory holding the library checkouts, used to find each
+            library's ``build.toml``. Defaults to the working directory, matching
+            the ``--root`` default; a missing file means the full fan-out.
 
     Returns:
         A :class:`CheckResult`.  ``ok`` is True when the filtered matrix has
@@ -761,11 +814,21 @@ def check_python_versions(libraries, python_versions=None, config_filter=None, r
     """
     name = "python interpreter"
     running = f"{sys.version_info.major}.{sys.version_info.minor}"
-    packager = _new_packager(
-        libraries[0].name, ".", python_versions,
-        matrix=_library_matrix(os.path.join(root or ".", libraries[0].name)),
-    )
-    requested = _pybind_python_versions(_configure(packager, config_filter))
+    # Every selected library is asked, not just the first. Each one's [matrix]
+    # decides whether it has pybind configurations at all, so answering from
+    # libraries[0] alone would report "nothing to check" for the whole run
+    # whenever the first library happened to restrict them away -- while the
+    # rest went on to build against the wrong interpreter.
+    requested = []
+    for library in libraries:
+        packager = _new_packager(
+            library.name, ".", python_versions,
+            matrix=_library_matrix(os.path.join(root, library.name)),
+        )
+        for version in _pybind_python_versions(_configure(packager, config_filter)):
+            if version not in requested:
+                requested.append(version)
+    requested.sort(key=version_sort_key)
     if not requested:
         return CheckResult(
             name, True, f"Python {running} (no pybind configuration in this matrix)",
@@ -786,7 +849,7 @@ def check_python_versions(libraries, python_versions=None, config_filter=None, r
     )
 
 
-def preview(libraries, python_versions=None, config_filter=None, root=None):
+def preview(libraries, python_versions=None, config_filter=None, root="."):
     """Print the configuration matrix for each library without building.
 
     Args:
@@ -795,8 +858,9 @@ def preview(libraries, python_versions=None, config_filter=None, root=None):
         config_filter: Filter dict for ``filter_configurations``, or None.
         root: Directory holding the library checkouts, used to read each
             library's ``[matrix]`` table so the preview matches what a build
-            would produce. None falls back to the working directory; a library
-            with no ``build.toml`` there previews the full fan-out.
+            would produce. Defaults to the working directory, matching the
+            ``--root`` default; a library with no ``build.toml`` there previews
+            the full fan-out.
 
     Returns:
         Process exit code (always 0 -- nothing was built).
@@ -804,7 +868,7 @@ def preview(libraries, python_versions=None, config_filter=None, root=None):
     for library in libraries:
         packager = _new_packager(
             library.name, ".", python_versions,
-            matrix=_library_matrix(os.path.join(root or ".", library.name)),
+            matrix=_library_matrix(os.path.join(root, library.name)),
         )
         configurations = _configure(packager, config_filter)
         print(f"==> {library.name}: {len(configurations)} configuration(s)")
@@ -812,7 +876,7 @@ def preview(libraries, python_versions=None, config_filter=None, root=None):
     return 0
 
 
-def extract_wheels(packager, configurations, wheel_dir, version=None):
+def extract_wheels(packager, configurations, wheel_dir, version=None, repair=True):
     """Copy the pybind wheels out of the Conan cache and stage the repair libs.
 
     Both halves are what the generated ``build.py`` does in CI, in the same
@@ -824,10 +888,13 @@ def extract_wheels(packager, configurations, wheel_dir, version=None):
       controls ``--python-versions``, so a partial result means the developer
       asked for two wheels and is about to publish one.
     * ``collect_dependency_libs`` fills ``<wheel_dir>/libs``, which is not
-      optional on Windows: ``xmsconan_wheel_repair --platform windows`` hands
-      ``delvewheel repair --add-path <wheel_dir>/libs`` unconditionally, and a
-      repair that finds nothing there produces a wheel that imports on the
-      build box and fails everywhere else.
+      optional for a library that *is* repaired: ``xmsconan_wheel_repair
+      --platform windows`` hands ``delvewheel repair --add-path
+      <wheel_dir>/libs`` unconditionally, and a repair that finds nothing there
+      produces a wheel that imports on the build box and fails everywhere else.
+      A library whose ``build.toml`` turns Windows repair off gets neither: the
+      staging exists only to feed the repair, and this track must not hand back
+      the vendored CRT that the option exists to avoid.
 
     An empty pybind set short-circuits: ``extract_wheel`` searches the whole
     local cache, so on a machine that built a wheel last week it would happily
@@ -840,6 +907,9 @@ def extract_wheels(packager, configurations, wheel_dir, version=None):
         configurations: The configurations that were built.
         wheel_dir: Directory to copy the ``.whl`` files into.
         version: Package version, or None to match any version in the cache.
+        repair: Whether this library's wheel gets repaired, from
+            ``[ci].windows_wheel_repair``. False skips the dependency-libs
+            staging, which exists only to feed the repair.
 
     Returns:
         True when a wheel was extracted for every requested Python version.
@@ -852,7 +922,13 @@ def extract_wheels(packager, configurations, wheel_dir, version=None):
         return False
     if not packager.extract_wheel(wheel_dir, version=version or "*"):
         return False
-    packager.collect_dependency_libs(os.path.join(wheel_dir, "libs"))
+    if repair:
+        packager.collect_dependency_libs(os.path.join(wheel_dir, "libs"))
+    else:
+        print(
+            "==> [ci].windows_wheel_repair is false: not staging dependency "
+            "libraries, and the wheel should not be repaired."
+        )
     return True
 
 
@@ -932,7 +1008,10 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
     failed = packager.run(log_dir=log_dir)
     wheels = None
     if wheel_dir and not failed:
-        wheels = extract_wheels(packager, configurations, wheel_dir, version)
+        wheels = extract_wheels(
+            packager, configurations, wheel_dir, version,
+            repair=_library_repairs_wheel(library_dir),
+        )
     return LibraryResult(
         name,
         "failed" if failed else "ok",
@@ -1388,20 +1467,24 @@ def _run_build(args):
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        if args.preview:
-            return preview(
-                libraries, python_versions=args.python_versions,
-                config_filter=config_filter, root=args.root,
-            )
         if not os.path.isdir(args.root):
             # A missing *library* is a skip, because the stack is only
             # partially migrated.  A missing *root* is a typo -- no library
             # could possibly be found under it.
+            #
+            # Checked before --preview, not after: the preview reads each
+            # library's [matrix] from under --root, so a mistyped root would
+            # otherwise print a confident unrestricted fan-out and exit 0.
             print(
                 f"error: --root directory not found: {args.root}",
                 file=sys.stderr,
             )
             return EXIT_USAGE
+        if args.preview:
+            return preview(
+                libraries, python_versions=args.python_versions,
+                config_filter=config_filter, root=args.root,
+            )
         # The interpreter check runs after the matrix exists and --filter has
         # been applied -- the answer depends on what is actually going to be
         # built, not on the flag values -- and prints into the same block.

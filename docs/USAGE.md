@@ -189,8 +189,8 @@ These drive the CI templates. All optional.
 |---|---|---|
 | `ci_type` | — | `"github"` or `"gitlab"`. **Required** for `xmsconan ci`. (Lives at the top level, not under `[ci]`.) |
 | `[ci].windows` | `true` | Emit a Windows job. |
-| `[ci].linux` | `true` | Emit the Linux jobs. **GitLab only**, like `[ci].windows` — the GitHub templates ignore both. Setting it to `false` also removes `Repair Wheel`, `Wheel Deploy`, `Conan Deploy - Linux` and the `Package` stage, because the Linux job is what produces `wheelhouse/` and the others consume it through `dependencies:`. Intended for libraries that cannot build on Linux at all; see the note below. |
-| `[ci].windows_wheel_repair` | `true` | Repair the Windows wheel. `false` drops `xmsconan_wheel_repair --platform windows` from the Windows job on **both** GitLab and GitHub, drops the same step from `xmsconan publish` when it runs on Windows, and passes `--skip-dependency-libs` to `build.py` so the Conan cache's DLLs are not staged for a repair that no longer happens. The unrepaired wheel is still built, uploaded as an artifact, and deployed. Windows-scoped by design — see §12.1. |
+| `[ci].linux` | `true` | Emit the Linux jobs. **GitLab only**, like `[ci].windows` — the GitHub templates ignore both. Setting it to `false` also removes `Repair Wheel`, `Wheel Deploy`, `Conan Deploy - Linux` and the `Package` stage: those three jobs are Linux-specific and consume the Linux job's artifacts through `dependencies:`. The Windows wheel jobs are unaffected — each platform stages and publishes its own wheel (§10.2). Intended for libraries that cannot build on Linux at all; see the note below. |
+| `[ci].windows_wheel_repair` | **derived from `ci_type`**: `true` on `github`, `false` on `gitlab` | Repair the Windows wheel. `false` drops `xmsconan_wheel_repair --platform windows` from the Windows job on **both** GitLab and GitHub, drops the same step from `xmsconan publish` when it runs on Windows and from the `xmsconan vs2019` track, and passes `--skip-dependency-libs` to `build.py` so the Conan cache's DLLs are not staged for a repair that no longer happens. The unrepaired wheel is still built, uploaded as an artifact, and deployed. Windows-scoped by design — see §12.1 for the default's rationale. |
 | `[ci].linux_arm` | `false` | Emit a Linux ARM job (GitHub only). |
 | `[ci].deploy` | `true` | Emit deploy jobs (only run on tag pushes). |
 | `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
@@ -618,12 +618,21 @@ delvewheel's default ignore lists excuse `vcruntime140.dll` and `vcruntime140_1.
 
 For a library whose `.pyd` statically links everything and imports nothing third-party there is nothing legitimate to bundle, so the entire outcome of repair is a second C++ runtime inside the process. That matters where the host application supplies the runtime itself — GMS/SMS/WMS scrub `PATH` in `dmGetScriptEnvironment` and point it at their own shipped `ms_redist_*` DLLs precisely so one CRT is in play.
 
-Set the key to `false` in that situation:
+**The default is derived from `ci_type`, not hardcoded**, because `ci_type` is a proxy for who installs the wheel:
+
+| `ci_type` | Default | Why |
+|---|---|---|
+| `github` | `true` | Those wheels are published for installation into arbitrary Python environments, which have no XMS runtime on `PATH`. The DLLs a module needs must travel with it. |
+| `gitlab` | `false` | Those wheels are internal, and the only thing that loads them supplies the C++ runtime itself. Repairing them vendors a private mangled copy of the runtime the host is deliberately controlling. |
+
+A flat default would be wrong in one direction or the other: `true` everywhere would start the GitLab repos repairing wheels they previously never even staged, and `false` everywhere would stop the GitHub repos bundling DLLs their users need. Set the key explicitly to override either way:
 
 ```toml
 [ci]
 windows_wheel_repair = false
 ```
+
+Every reader — the CI generator, `xmsconan publish`, and the `xmsconan vs2019` driver — resolves this through one function, and the whole `[ci]` table is validated against a key allowlist with per-key types at generation time. A misspelled key (`windows_repair_wheel`) or a quoted boolean (`"false"`) is rejected rather than falling back to the default, because for a switch that turns work *off* the default means the work keeps happening and the only symptom is the harm the switch exists to prevent.
 
 That removes the repair step from the generated GitLab and GitHub Windows jobs, skips it in `xmsconan publish` when it runs on Windows, and passes `--skip-dependency-libs` to `build.py` so the hundreds of cache DLLs are not staged for a step that no longer runs. The wheel is still built, still uploaded as an artifact, and still deployed — unrepaired, which for such a library is what it already was in substance.
 

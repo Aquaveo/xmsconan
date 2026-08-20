@@ -686,8 +686,10 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
         apply_boost_defaults=False,
         python_versions=["3.10", "3.13"],
         # This checkout's build.toml declares no [matrix], so the fan-out is
-        # unrestricted -- the table is read per library, not per run.
-        matrix=None,
+        # unrestricted -- the table is read per library, not per run. Passed
+        # through as the empty table rather than coerced to None, so a malformed
+        # value would reach _resolve_matrix and be rejected.
+        matrix={},
     )
     packager.generate_configurations.assert_called_once_with("windows_vs2019")
     packager.filter_configurations.assert_not_called()
@@ -1274,3 +1276,56 @@ def test_main_upload(mock_upload):
 def test_main_rejects_incomplete_invocations(argv):
     """Argparse refuses an upload without both --library and --version."""
     assert run_main(argv) == 2
+
+
+def test_extract_wheels_skips_the_libs_staging_when_repair_is_off(capsys):
+    """A library that does not repair its wheel does not stage the repair libs.
+
+    collect_dependency_libs copies every DLL in the Conan cache purely so
+    delvewheel can resolve imports. With repair off it is hundreds of files of
+    pure cost, and staging them invites someone to run the repair anyway -- which
+    is what the option exists to prevent on this track.
+    """
+    packager = fake_packager()
+    packager.extract_wheel.return_value = True
+
+    assert vs.extract_wheels(
+        packager, [PLAIN_CONFIG, PYBIND_CONFIG], "wheelhouse", "7.0.0", repair=False
+    ) is True
+
+    packager.collect_dependency_libs.assert_not_called()
+    assert "windows_wheel_repair is false" in capsys.readouterr().out
+
+
+def test_library_repairs_wheel_follows_the_libraries_own_build_toml(tmp_path):
+    """The VS2019 driver reads the same key the generated CI and publish read.
+
+    This is the track the opted-out libraries actually use, so ignoring the key
+    here would hand them back exactly the vendored CRT it exists to avoid.
+    """
+    (tmp_path / "build.toml").write_text(
+        'library_name = "xmssnap"\nci_type = "gitlab"\n', encoding="utf-8"
+    )
+    assert vs._library_repairs_wheel(str(tmp_path)) is False
+
+    (tmp_path / "build.toml").write_text(
+        'library_name = "xmscore"\nci_type = "github"\n', encoding="utf-8"
+    )
+    assert vs._library_repairs_wheel(str(tmp_path)) is True
+
+
+def test_library_repairs_wheel_defaults_to_true_without_a_build_toml(tmp_path):
+    """No build.toml in the checkout keeps the historical staging behavior."""
+    assert vs._library_repairs_wheel(str(tmp_path)) is True
+
+
+def test_malformed_build_toml_names_the_file(tmp_path):
+    """A decode error names the path instead of being blamed on a CLI flag.
+
+    load_toml raises TOMLDecodeError, a ValueError, and the CLI's top-level
+    handler reads a bare ValueError as a bad --only / --from / --filter -- so an
+    unwrapped decode error produced advice about flags nobody typed.
+    """
+    (tmp_path / "build.toml").write_text("library_name = \n", encoding="utf-8")
+    with pytest.raises(ValueError, match="could not parse"):
+        vs._library_matrix(str(tmp_path))
