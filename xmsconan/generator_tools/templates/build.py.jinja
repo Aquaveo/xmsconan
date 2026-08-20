@@ -19,6 +19,10 @@ parser.add_argument("--filter", help="Filter dictionary in JSON format")
 parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
 parser.add_argument("--python-only", help="Only build the Python (pybind) configuration", action="store_true")
 parser.add_argument("--wheel-dir", help="Extract pre-built wheel from pybind package to this directory")
+parser.add_argument("--skip-dependency-libs", action="store_true",
+                    help="Do not stage the Conan cache's shared libraries next to the wheel. "
+                         "They exist only so the repair tools can resolve imports, so this is "
+                         "for a build whose wheel is not repaired.")
 parser.add_argument("--repair", help="Repair Linux wheel for manylinux using Docker", action="store_true")
 parser.add_argument("--artifacts-dir", help="Save test artifacts to this directory")
 parser.add_argument("--test-shards", help="Run tests in N parallel shards (use 'auto' for half CPU count)", default="0")
@@ -56,8 +60,9 @@ if __name__ == "__main__":
 
     if args.wheel_dir:
         if builder.extract_wheel(args.wheel_dir, version=args.version):
-            libs_dir = os.path.join(args.wheel_dir, 'libs')
-            builder.collect_dependency_libs(libs_dir)
+            if not args.skip_dependency_libs:
+                libs_dir = os.path.join(args.wheel_dir, 'libs')
+                builder.collect_dependency_libs(libs_dir)
             if args.repair:
                 builder.repair_linux_wheel(args.wheel_dir)
         else:

@@ -1214,6 +1214,53 @@ def test_gitlab_windows_build_repairs_its_own_wheel(tmp_path):
     )
 
 
+def test_gitlab_windows_repair_can_be_switched_off(tmp_path):
+    """windows_wheel_repair = false drops the repair step and the libs collection.
+
+    delvewheel's ignore list excuses vcruntime140 for a cp3xx wheel but not
+    msvcp140, so a .pyd with no third-party imports still gets a mangled CRT
+    vendored beside it -- overriding the runtime XMS deliberately supplies to
+    the Python process. A library with nothing to vendor skips the step, and
+    with it the ~800-DLL collect_dependency_libs pass that only feeds it.
+    """
+    job = _gitlab_jobs(tmp_path, windows=True, windows_wheel_repair=False)["Conan Build - Windows"]
+
+    assert not any("xmsconan_wheel_repair" in step for step in job["script"])
+    # The wheel is still staged and still deployed; only the repair is gone.
+    assert any("--wheel-dir wheelhouse" in step for step in job["script"])
+    assert any("--skip-dependency-libs" in step for step in job["script"])
+
+
+def test_gitlab_windows_repair_is_on_by_default(tmp_path):
+    """Omitting the key leaves every existing pipeline repairing as before."""
+    job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
+
+    assert any("xmsconan_wheel_repair" in step for step in job["script"])
+    assert not any("--skip-dependency-libs" in step for step in job["script"])
+
+
+def test_gitlab_windows_wheel_deploy_survives_a_skipped_repair(tmp_path):
+    """The unrepaired wheel is what gets uploaded; the deploy job stays."""
+    pipeline = _gitlab_jobs(tmp_path, windows=True, windows_wheel_repair=False)
+
+    assert any("xmsconan_wheel_deploy" in step
+               for step in pipeline["Wheel Deploy - Windows"]["script"])
+
+
+def test_github_windows_repair_can_be_switched_off(tmp_path):
+    """The GitHub windows job honors the same key, for the same reason."""
+    toml_file = write_github_toml(tmp_path, windows_wheel_repair=False)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+
+    assert "--platform windows" not in content
+    assert "--skip-dependency-libs" in content
+    # Linux and macOS repair is untouched: a manylinux wheel has to be repaired.
+    assert "--platform linux" in content
+    assert "--platform macos" in content
+
+
 def test_gitlab_windows_wheel_deploy_exists_and_is_tag_only(tmp_path):
     """A Windows wheel reaches devpi, and only from a tag."""
     job = _gitlab_jobs(tmp_path, windows=True)["Wheel Deploy - Windows"]
