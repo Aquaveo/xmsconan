@@ -1347,3 +1347,41 @@ def test_gitlab_windows_only_pipeline_publishes_a_wheel(tmp_path):
     deploy = pipeline["Wheel Deploy - Windows"]
     assert any("xmsconan_wheel_deploy" in step for step in deploy["script"])
     assert deploy["stage"] in pipeline["stages"]
+
+
+def test_github_pybind_build_types_without_release_is_rejected(tmp_path):
+    """A GitHub library that excludes Release from pybind publishes no wheel.
+
+    Every wheel step in the GitHub workflow is gated on
+    ``matrix.build_type == 'Release'``, so the Debug leg builds a wheel and
+    discards it while the Release leg dies inside xmsconan_wheel_repair with
+    "No .whl files found". Rejected at generation, like the other impossible
+    combinations.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "github"\n'
+        '[matrix]\n'
+        'pybind_build_types = ["Debug"]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="pybind_build_types"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+
+def test_github_pybind_build_types_with_release_is_allowed(tmp_path):
+    """Adding Debug alongside Release is fine -- the Release leg still publishes."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "github"\n'
+        '[matrix]\n'
+        'pybind_build_types = ["Release", "Debug"]\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    assert (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").exists()

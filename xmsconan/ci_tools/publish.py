@@ -12,7 +12,9 @@ Steps:
   1. ``xmsconan_conan_setup``
   2. ``xmsconan_gen --version VERSION build.toml``
   3. ``python build.py --version VERSION --wheel-dir DIR [--filter ...]``
-  4. ``xmsconan_wheel_repair --wheel-dir DIR``
+     (plus ``--skip-dependency-libs`` when step 4 is skipped)
+  4. ``xmsconan_wheel_repair --wheel-dir DIR`` -- skipped on Windows when
+     ``[ci].windows_wheel_repair`` resolves to false
   5. ``xmsconan_wheel_deploy --wheel-dir DIR``
   6. ``xmsconan_conan_deploy LIBRARY VERSION --upload``
 

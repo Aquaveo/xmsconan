@@ -39,7 +39,7 @@ a workstation does not, so a 3.12 virtualenv building
 ``--python-versions 3.10`` fails every pybind configuration at configure
 time.  :func:`check_python_versions` catches that before anything is
 compiled, and only when the *filtered* matrix actually contains a pybind
-configuration -- the other twelve configurations do not care which
+configuration -- the non-pybind configurations do not care which
 interpreter is running.
 
 Process exit codes are the contract with whatever wrapper script drives

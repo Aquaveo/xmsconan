@@ -12,6 +12,7 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
+from xmsconan.package_tools.packager import XmsConanPackager
 from xmsconan.toml_utils import load_toml
 
 LOGGER = logging.getLogger(__name__)
@@ -179,6 +180,12 @@ def render_template_with_toml(
         for dep in toml_data["xms_dependencies"]:
             if isinstance(dep, dict):
                 dep.setdefault("no_python", False)
+
+    # Validated here rather than only where it is consumed: this function writes
+    # [matrix] verbatim into the generated conanfile.py, so a caller that renders
+    # templates without going on to generate profiles would otherwise produce an
+    # artifact from unvalidated input. XmsConanPackager owns the vocabulary.
+    XmsConanPackager._resolve_matrix(toml_data["matrix"])
 
     toml_data["extra_cmake_dependencies"] = _extra_cmake_dependencies(
         toml_data["extra_dependencies"],
