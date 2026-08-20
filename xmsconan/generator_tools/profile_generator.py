@@ -58,6 +58,12 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
         profile_options=data.get("conan_profile_options") or None,
         profile_conf=data.get("conan_profile_conf"),
         profile_variants=data.get("conan_profile_variants"),
+        # Profiles and presets describe the configurations that get built, so
+        # they have to read the same [matrix] table build.py does. Otherwise a
+        # library that trims its matrix still gets profiles and IDE presets for
+        # configurations nothing builds, and one that adds Debug+pybind gets no
+        # profile for the configuration it just asked for.
+        matrix=data.get("matrix"),
     )
 
     if dry_run:

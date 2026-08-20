@@ -154,6 +154,31 @@ def test_variant_keys_reach_the_packager(tmp_path):
     assert [path for path in written if path.endswith("_vs.txt")]
 
 
+@patch_env(clear=True)
+def test_matrix_table_narrows_the_generated_profiles(tmp_path):
+    """Profiles describe what gets built, so they follow the [matrix] table.
+
+    Without this, a library that trims its matrix still gets profiles and IDE
+    presets for configurations nothing builds, and one that asks for
+    Debug+pybind gets no profile for the configuration it just enabled.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        '[matrix]\n'
+        'compiler_runtime = ["dynamic"]\n'
+        'pybind_build_types = ["Release", "Debug"]\n',
+        encoding="utf-8",
+    )
+
+    written = generate_profiles(toml_file_path=str(toml_file), system_platform="windows")
+    names = [os.path.basename(path) for path in written if path.endswith(".txt")]
+
+    assert not [name for name in names if "static" in name]
+    assert [name for name in names if name.startswith("windows_python_debug")]
+
+
 def test_malformed_variant_is_rejected_by_name(tmp_path):
     """A misspelled platform fails generation instead of silently emitting nothing."""
     toml_file = tmp_path / "build.toml"
