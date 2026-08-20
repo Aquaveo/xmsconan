@@ -731,6 +731,7 @@ class TestRequirements:
         if overrides is not None:
             obj.vs2019_dependency_overrides = overrides
         obj.requires = MagicMock()
+        obj.output = MagicMock()
         return obj
 
     @staticmethod
@@ -808,6 +809,57 @@ class TestRequirements:
         assert "xmscore/[>=7.0.0 <8.0.0]" in required, "overrides must be VS2019-only"
         assert "xmsgrid/1.2.3" not in required
         assert "fmt/10.2.1" in required
+
+    @pytest.mark.parametrize("extra", ["pybind11/3.0.1", "pybind11/2.9.1"])
+    def test_extra_dependency_duplicating_a_recipe_requirement_is_skipped(self, extra):
+        """An extra_dependencies entry the recipe already requires is dropped.
+
+        Conan's duplicate check is by package name -- ``Requirement.__hash__``
+        is ``(ref.name, build)`` -- so naming a different version does not dodge
+        it. A library whose static half needs pybind11 must list it to keep the
+        ``pybind=False`` configurations compiling, and that listing used to
+        abort every ``pybind=True`` build with "Duplicated requirement:
+        pybind11/3.0.1".
+        """
+        obj = self._make_obj(pybind=True, extra_dependencies=[extra])
+        obj.requirements()
+        required = self._required(obj)
+        assert [r for r in required if r.startswith("pybind11/")] == ["pybind11/3.0.1"]
+        assert obj.output.info.called, "a dropped dependency must not be silent"
+
+    def test_extra_dependency_is_kept_when_nothing_else_requires_it(self):
+        """The same entry survives on a configuration that does not require it itself.
+
+        The mirror of the test above: with ``pybind=False`` the recipe adds no
+        pybind11, so the library's own entry is the only thing keeping
+        ``find_package(pybind11)`` satisfied for its cxxtest configurations.
+        """
+        obj = self._make_obj(pybind=False, extra_dependencies=["pybind11/3.0.1"])
+        obj.requirements()
+        assert "pybind11/3.0.1" in self._required(obj)
+        assert not obj.output.info.called
+
+    def test_extra_dependencies_are_deduplicated_against_each_other(self):
+        """Two entries naming one package collapse to the first.
+
+        Same Conan constraint reached from a different direction -- a repeated
+        name inside ``extra_dependencies`` aborts graph computation exactly as a
+        clash with the recipe's own requires does.
+        """
+        obj = self._make_obj(extra_dependencies=["fmt/10.2.1", "fmt/11.0.0"])
+        obj.requirements()
+        required = self._required(obj)
+        assert [r for r in required if r.startswith("fmt/")] == ["fmt/10.2.1"]
+
+    def test_extra_dependency_duplicating_an_xms_dependency_is_skipped(self):
+        """The dedupe covers xms_dependencies, not just the third-party stack."""
+        obj = self._make_obj(
+            xms_dependencies=["xmscore/[>=7.0.0 <8.0.0]"],
+            extra_dependencies=["xmscore/7.1.0"],
+        )
+        obj.requirements()
+        required = self._required(obj)
+        assert [r for r in required if r.startswith("xmscore/")] == ["xmscore/[>=7.0.0 <8.0.0]"]
 
     def test_vs2019_dependency_override_replaces_matching_reference(self):
         """On VS2019 an override replaces its dep, matched on the name before '/'."""

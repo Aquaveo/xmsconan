@@ -39,6 +39,8 @@ class XmsConan2File(ConanFile):
         "python_version": ["3.10", "3.13", "3.14"],
     }
     xms_dependencies = []
+    # Non-XMS Conan deps, "name/version". Deduplicated by package name against
+    # the recipe's own requires and against itself; see requirements().
     extra_dependencies = []
     extra_exports = []
     extra_export_sources = []
@@ -202,27 +204,52 @@ class XmsConan2File(ConanFile):
         ]
 
     def requirements(self):
-        """Requirements."""
+        """Requirements.
+
+        ``extra_dependencies`` is deduplicated against everything the recipe
+        requires on its own, and against itself.  Conan's duplicate check is by
+        package name -- ``Requirement.__hash__`` is ``(ref.name, build)`` -- so
+        a second entry naming the same package aborts graph computation no
+        matter which version it carries.  A library whose static half needs
+        Python has to list ``pybind11`` to keep its ``pybind=False``
+        configurations compiling, and without this the same listing made every
+        ``pybind=True`` build unbuildable.  The recipe's own reference wins,
+        because that is the one the generated CMake and ``package_id`` agree
+        with.
+        """
         # VS2019 resolves the legacy third-party stack the desktop products are
         # built against; everything else gets the modern one.
-        for requirement in (self.vs2019_requirements if self._is_vs2019()
-                            else self.default_requirements):
-            self.requires(requirement)
+        references = list(self.vs2019_requirements if self._is_vs2019()
+                          else self.default_requirements)
         if self.options.testing:
             if self.testing_framework == "cxxtest":
-                self.requires('cxxtest/4.4')
+                references.append('cxxtest/4.4')
             elif self.testing_framework == "gtest":
-                self.requires('gtest/1.17.0')
+                references.append('gtest/1.17.0')
         if self.options.pybind and self.python_binding_type == "pybind11":
             # Intentionally 3.0.1 on VS2019 too — an upgrade from the
             # Conan-1-era pybind11/2.9.1.  Do not "fix" this back to 2.9.1.
-            self.requires("pybind11/3.0.1")
+            references.append("pybind11/3.0.1")
 
-        for dependency in self._resolved_xms_dependencies():
-            self.requires(dependency)
+        references += self._resolved_xms_dependencies()
 
+        required_names = {reference.split('/')[0] for reference in references}
         for dependency in self.extra_dependencies:
-            self.requires(dependency)
+            name = dependency.split('/')[0]
+            if name in required_names:
+                # Reported rather than dropped silently: the entry may name a
+                # version that is not the one being used, and that is worth
+                # seeing in the build log.
+                self.output.info(
+                    f"Skipping extra_dependencies entry '{dependency}': "
+                    f"{name} is already required by the recipe."
+                )
+                continue
+            required_names.add(name)
+            references.append(dependency)
+
+        for reference in references:
+            self.requires(reference)
 
     def configure(self):
         """The configure method."""
