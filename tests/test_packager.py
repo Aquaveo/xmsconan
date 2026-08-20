@@ -2024,9 +2024,14 @@ def test_extract_wheel_warns_when_only_a_debug_build_exists(tmp_path, capsys):
 
     Preferring Release must not turn into dropping the only wheel there is --
     that would be a green build with an empty wheelhouse.
+
+    Tagged manylinux, not win_amd64: a Windows Debug pybind build produces no
+    wheel at all, so that artifact cannot exist. The packager copies ``*.whl``
+    and never parses the tag, so this only keeps the fixture describing a state
+    that is reachable.
     """
     cache_root = str(tmp_path / "cache")
-    _seed_package(cache_root, "ddd", "xmscore-1.0-cp313-cp313-win_amd64.whl")
+    _seed_package(cache_root, "ddd", "xmscore-1.0-cp313-cp313-manylinux_2_28_x86_64.whl")
     list_json = _conan_list_json(("ddd", "Debug", "3.13"))
 
     packager = XmsConanPackager("xmscore", python_versions=["3.13"])

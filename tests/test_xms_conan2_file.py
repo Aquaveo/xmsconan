@@ -797,7 +797,7 @@ class TestBuildsWheel:
     """Verify which pybind configurations build and test a wheel."""
 
     @staticmethod
-    def _make_obj(build_type, os_name="Windows"):
+    def _make_obj(build_type: str, os_name: str = "Windows") -> XmsConan2File:
         """Create a recipe stub whose _builds_wheel can be called in isolation."""
         obj = object.__new__(XmsConan2File)
         obj.settings = MagicMock()
@@ -806,29 +806,47 @@ class TestBuildsWheel:
         obj.output = MagicMock()
         return obj
 
+    @staticmethod
+    def _skip_messages(obj: XmsConan2File) -> list[str]:
+        """Return the logged lines that announce the wheel being skipped.
+
+        Matched on the skip's own wording rather than "was output.info called at
+        all", so an unrelated log line added to ``_builds_wheel`` later does not
+        fail these tests, and so a skip that stops naming Windows does.
+        """
+        return [call.args[0] for call in obj.output.info.call_args_list
+                if "skipping the wheel" in call.args[0]]
+
     @pytest.mark.parametrize("os_name", ["Windows", "Linux", "Macos"])
-    def test_release_builds_the_wheel(self, os_name):
+    def test_release_builds_the_wheel(self, os_name: str) -> None:
         """Release is the configuration that ships to an index, on every platform."""
-        assert self._make_obj("Release", os_name)._builds_wheel() is True
+        obj = self._make_obj("Release", os_name)
+        assert obj._builds_wheel() is True
+        assert self._skip_messages(obj) == []
 
-    def test_windows_debug_does_not_build_a_wheel(self):
-        """A Windows Debug wheel would declare a module name that does not exist in it.
+    def test_windows_debug_does_not_build_a_wheel(self) -> None:
+        """A Windows Debug wheel would install a module the shipped Python cannot import.
 
-        The generated CMakeLists re-asserts ``DEBUG_POSTFIX "_d"`` on the module
-        target -- pybind11 having cleared it -- so the Windows Debug build
-        produces ``_<name>_d.<abi>.pyd`` while the generated
-        ``_package/pyproject.toml`` declares ``xms.<dir>._<name>``. The wheel
-        would install a module ``import`` cannot find, and ``run_python_tests``
-        would fail on it. Renaming the module is not an option -- consumers link
-        ``_<name>_d`` by that exact name -- so the Windows Debug configuration
-        ships the Conan package only.
+        For an opted-in library the generated CMakeLists re-asserts
+        ``DEBUG_POSTFIX "_d"`` on the module target -- pybind11 having
+        overwritten it -- so the Windows Debug build produces
+        ``_<name>_d.<abi>.pyd`` while the shipped Python imports
+        ``xms.<dir>._<name>``. Renaming the module is not an option: consumers
+        link ``_<name>_d`` by that exact name. The skip is deliberately broader
+        than the rename, since no wheel step in the generated CI publishes a
+        Debug leg.
         """
         obj = self._make_obj("Debug")
         assert obj._builds_wheel() is False
-        assert obj.output.info.called, "skipping a deliverable must be stated"
+
+        messages = self._skip_messages(obj)
+        assert len(messages) == 1, "skipping a deliverable must be stated, once"
+        # The old message stated a Windows-specific reason on every platform.
+        # Pinning the platform stops it drifting back to a bare "Debug".
+        assert "Windows Debug" in messages[0]
 
     @pytest.mark.parametrize("os_name", ["Linux", "Macos"])
-    def test_debug_builds_the_wheel_off_windows(self, os_name):
+    def test_debug_builds_the_wheel_off_windows(self, os_name: str) -> None:
         """The Debug pybind build off Windows is what coverage instruments.
 
         ``xmsconan coverage`` runs its Python half as
@@ -840,7 +858,7 @@ class TestBuildsWheel:
         """
         obj = self._make_obj("Debug", os_name)
         assert obj._builds_wheel() is True
-        assert not obj.output.info.called, "nothing was skipped, so nothing to report"
+        assert self._skip_messages(obj) == []
 
 
 class TestRequirements:
