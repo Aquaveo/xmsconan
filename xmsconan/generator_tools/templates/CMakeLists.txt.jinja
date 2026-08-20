@@ -381,6 +381,32 @@ if (IS_PYTHON_BUILD)
             LIBRARY DESTINATION "_package/xms/{{ python_namespaced_dir }}"
     )
 
+    # Consumable module install
+    #
+    # The install above builds the wheel; this one makes the module consumable
+    # as a C++ package. A pybind package's linkable artifact is the module
+    # itself, not the static library -- consumers link the .pyd dynamically so
+    # an msvc 192 application can consume an msvc 194 build -- and Conan's
+    # generators only look in lib/ and bin/, never under _package/. Without
+    # this the module is present but unreachable, and cpp_info.libs points at a
+    # file no consumer wants.
+    #
+    # A MODULE library's artifact is LIBRARY on every platform (the import
+    # library is the ARCHIVE), so Windows splits the pair across bin/ and lib/
+    # while everywhere else the module itself lives in lib/.
+    if (WIN32)
+        install(
+                TARGETS _{{ library_name }}
+                ARCHIVE DESTINATION "lib"
+                LIBRARY DESTINATION "bin"
+        )
+    else ()
+        install(
+                TARGETS _{{ library_name }}
+                LIBRARY DESTINATION "lib"
+        )
+    endif ()
+
     install(DIRECTORY "_package/" DESTINATION "_package"
             FILES_MATCHING PATTERN "*.py"
             PATTERN "_package/tests" EXCLUDE)

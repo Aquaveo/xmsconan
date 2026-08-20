@@ -518,14 +518,24 @@ class XmsConan2File(ConanFile):
                  dst=os.path.join(self.package_folder, "dist"))
 
     def package_info(self):
-        """The package_info method of the conan class."""
+        """The package_info method of the conan class.
+
+        A ``pybind=True`` package advertises the *module's* import library
+        (``_<name>``), not the static library (``<name>lib``).  Both are in the
+        package, but a C++ consumer of a pybind package links the .pyd
+        dynamically -- that is what lets an msvc 192 application consume an msvc
+        194 build, since the compatibility guarantee only runs
+        newer-consumes-older and a static link across that boundary is not
+        supported.  ``CMAKE_DEBUG_POSTFIX`` supplies the ``_d`` on both names.
+        """
         if self.options.pybind:
             self.runenv_info.append('PYTHONPATH', os.path.join(self.package_folder, "_package"))
 
+        lib_name = f'_{self.name}' if self.options.pybind else f'{self.name}lib'
         if self.settings.build_type == 'Debug':
-            self.cpp_info.libs = [f'{self.name}lib_d']
+            self.cpp_info.libs = [f'{lib_name}_d']
         else:
-            self.cpp_info.libs = [f'{self.name}lib']
+            self.cpp_info.libs = [lib_name]
 
         self.cpp_info.includedirs = [os.path.join(self.package_folder, 'include')]
         self.cpp_info.bindirs = [os.path.join(self.package_folder, 'bin')]
