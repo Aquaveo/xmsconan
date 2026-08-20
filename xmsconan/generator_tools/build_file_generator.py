@@ -38,6 +38,35 @@ def _write_text_lf(path: Path, content: str, encoding: str = "utf-8") -> None:
         f.write(content)
 
 
+def _extra_cmake_dependencies(toml_data: dict) -> list[dict]:
+    """Resolve which ``extra_dependencies`` the generated CMakeLists should find.
+
+    ``extra_dependencies`` entries are Conan references (``"cereal/1.3.0"``), and
+    the generated ``CMakeLists.txt`` needs the *CMake* package name to call
+    ``find_package`` with. That is the reference name for most packages, so it is
+    the default; ``[extra_dependency_cmake_names]`` overrides an entry whose
+    CMake config uses something else, and an empty override keeps a dependency in
+    the Conan graph while leaving it out of the CMake file entirely -- for a
+    package that ships no CMake config, or one the template already finds on its
+    own.
+
+    Args:
+        toml_data: The parsed ``build.toml``, with defaults already applied.
+
+    Returns:
+        One ``{"name": <cmake package name>}`` entry per dependency to find, in
+        declaration order, with opted-out entries dropped.
+    """
+    overrides = toml_data["extra_dependency_cmake_names"]
+    dependencies = []
+    for reference in toml_data["extra_dependencies"]:
+        conan_name = reference.split("/")[0]
+        cmake_name = overrides.get(conan_name, conan_name)
+        if cmake_name:
+            dependencies.append({"name": cmake_name})
+    return dependencies
+
+
 def render_template_with_toml(
     toml_file_path: str,
     version: str,
@@ -85,6 +114,7 @@ def render_template_with_toml(
     toml_data.setdefault("pybind_sources", [])
     toml_data.setdefault("pybind_headers", [])
     toml_data.setdefault("xms_dependency_options", {})
+    toml_data.setdefault("extra_dependency_cmake_names", {})
     toml_data.setdefault("vs2019_dependency_overrides", {})
     toml_data.setdefault("xms_dependencies", [])
     toml_data.setdefault("xms_python_dependencies", [])
@@ -97,6 +127,8 @@ def render_template_with_toml(
         for dep in toml_data["xms_dependencies"]:
             if isinstance(dep, dict):
                 dep.setdefault("no_python", False)
+
+    toml_data["extra_cmake_dependencies"] = _extra_cmake_dependencies(toml_data)
 
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)

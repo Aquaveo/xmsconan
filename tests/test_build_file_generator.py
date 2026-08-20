@@ -327,6 +327,81 @@ def test_pybind_module_still_installs_into_the_wheel_tree(build_toml, tmp_path):
     assert 'LIBRARY DESTINATION "_package/xms/core"' in content
 
 
+def _write_extra_dependency_toml(tmp_path, extra_lines=""):
+    """Write a build.toml declaring two extra_dependencies, plus optional extra lines."""
+    toml_file = tmp_path / "build.toml"
+    base = (
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'python_namespaced_dir = "core"\n'
+        'extra_dependencies = ["cereal/1.3.0", "xmdf/2.0.1"]\n'
+    )
+    toml_file.write_text(base + extra_lines, encoding="utf-8")
+    return toml_file
+
+
+def test_extra_dependencies_reach_cmake(tmp_path):
+    """A declared extra dependency is found and put on the compile line.
+
+    extra_dependencies reached the Conan graph but never the CMake template, so
+    a package was downloaded, CMakeDeps generated its config, and the headers
+    were still missing at compile time with nothing pointing at the cause.
+    """
+    content = _render_cmakelists(_write_extra_dependency_toml(tmp_path), tmp_path)
+
+    for name in ("cereal", "xmdf"):
+        assert f"find_package({name} REQUIRED)" in content
+        assert f"list(APPEND EXT_INCLUDE_DIRS ${{{name}_INCLUDE_DIRS}})" in content
+        assert f"list(APPEND EXT_LIB_DIRS ${{{name}_LIBRARY_DIRS}})" in content
+        assert f"list(APPEND EXT_LIBS ${{{name}_LIBRARIES}})" in content
+
+
+def test_extra_dependency_cmake_name_override_is_used(tmp_path):
+    """A Conan reference whose CMake config uses a different name is findable.
+
+    Not every Conan package's CMake package name matches its reference name, and
+    find_package is what the generated file actually calls.
+    """
+    content = _render_cmakelists(
+        _write_extra_dependency_toml(
+            tmp_path, '\n[extra_dependency_cmake_names]\nxmdf = "Xmdf"\n'
+        ),
+        tmp_path,
+    )
+
+    assert "find_package(Xmdf REQUIRED)" in content
+    assert "list(APPEND EXT_INCLUDE_DIRS ${Xmdf_INCLUDE_DIRS})" in content
+    assert "find_package(xmdf REQUIRED)" not in content
+    # The untouched entry keeps its own name.
+    assert "find_package(cereal REQUIRED)" in content
+
+
+def test_extra_dependency_can_opt_out_of_cmake(tmp_path):
+    """An empty CMake name keeps the dep in the graph but out of the CMake file.
+
+    For a dependency that ships no CMake config, or one the template already
+    finds on its own -- find_package(pybind11) inside the IS_PYTHON_BUILD block,
+    for instance -- a second unconditional find_package is wrong.
+    """
+    content = _render_cmakelists(
+        _write_extra_dependency_toml(
+            tmp_path, '\n[extra_dependency_cmake_names]\nxmdf = ""\n'
+        ),
+        tmp_path,
+    )
+
+    assert "find_package(xmdf REQUIRED)" not in content
+    assert "xmdf_INCLUDE_DIRS" not in content
+    assert "find_package(cereal REQUIRED)" in content
+
+
+def test_no_extra_dependencies_leaves_the_conan_block_alone(tmp_path, build_toml):
+    """A library declaring none renders exactly the Boost/ZLIB block it always did."""
+    content = _render_cmakelists(build_toml, tmp_path)
+    conan_block = content.split("# Conan 2 setup")[1].split("endif ()")[0]
+    assert conan_block.count("find_package(") == 2  # Boost and ZLIB only
+
+
 def test_conan_profile_options_reaches_template_context(tmp_path):
     """Nested TOML tables for conan_profile_options reach the template as a dict."""
     toml_file = tmp_path / "build.toml"
