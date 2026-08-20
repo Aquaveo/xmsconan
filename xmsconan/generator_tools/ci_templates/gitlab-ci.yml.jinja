@@ -170,7 +170,10 @@ Conan Build:
     paths:
       - .export
       - test_artifacts/
-      - wheelhouse/
+<# The wheels only, not the whole directory: with `when: always`, a failed
+   repair would otherwise upload the several hundred DLLs collect_dependency_libs
+   stages in wheelhouse/libs. Wheel Deploy - Windows only needs the .whl files. #>
+      - wheelhouse/*.whl
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
@@ -185,8 +188,8 @@ Conan Build:
 <# Windows repairs in place rather than in a separate Package-stage job the way
    Linux does: delvewheel resolves the DLL imports of a win_amd64 .pyd and can
    only run on a Windows host, so a manylinux container cannot stand in. Keeping
-   it here also avoids a second WinVM allocation for a step that takes seconds.
-   This mirrors the GitHub workflow, which repairs inside its windows job.
+   it here also avoids a second WinVM allocation. This mirrors the GitHub
+   workflow, which repairs inside its windows job.
 
    [ci].windows_wheel_repair = false removes this step, and with it the
    dependency-libs staging above that exists only to feed it. delvewheel's
@@ -276,8 +279,9 @@ Repair Wheel:
 "Wheel Deploy - Windows":
   stage: Deploy
 <# Runs on a plain Linux image, not a WinVM: xmsconan_wheel_deploy is a devpi
-   upload of an already-repaired wheel, so it needs no MSVC toolchain and no
-   Windows host. The wheels arrive as artifacts from the build job. #>
+   upload of a wheel the build job already finished with -- repaired there or
+   not, depending on [ci].windows_wheel_repair -- so it needs no MSVC toolchain
+   and no Windows host. The wheels arrive as artifacts from the build job. #>
   image: python:3.13
 <# Depend on the whole build job rather than one parallel instance, for the same
    reason spelled out on "Conan Deploy - Windows" below. Every matrix instance

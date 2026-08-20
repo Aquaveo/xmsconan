@@ -9,6 +9,7 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
+from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.toml_utils import load_toml
 
@@ -178,6 +179,11 @@ def generate_ci(
     # CI-specific options (for GitLab conditional sections)
     ci_config = toml_data.get("ci", {})
 
+    # A misspelled key or a quoted boolean here is otherwise invisible: the
+    # reader falls back to a default, and for a switch that turns work off the
+    # work simply keeps happening.
+    validate_ci_table(ci_config)
+
     # A GitLab pipeline with neither platform builds nothing, and coverage runs
     # only under gcc.  Reject the impossible combinations here rather than
     # emitting a pipeline that fails opaquely in CI.  Each platform now stages
@@ -255,8 +261,9 @@ def generate_ci(
         "python_namespaced_dir": toml_data.get("python_namespaced_dir", library_name[3:]),
         "ci_windows": ci_config.get("windows", True),
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
-        # installable, so there is no equivalent switch for Linux or macOS.
-        "ci_windows_wheel_repair": ci_config.get("windows_wheel_repair", True),
+        # installable, so there is no equivalent switch for Linux or macOS. The
+        # default follows ci_type -- see repairs_windows_wheel.
+        "ci_windows_wheel_repair": repairs_windows_wheel(toml_data),
         "ci_linux": ci_config.get("linux", True),
         "ci_deploy": ci_config.get("deploy", True),
         "ci_coverage": ci_config.get("coverage", False),

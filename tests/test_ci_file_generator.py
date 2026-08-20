@@ -1197,17 +1197,23 @@ def test_gitlab_windows_build_stages_a_wheel(tmp_path):
     which is what left Windows with no publishable wheel.
     """
     job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
-    assert "wheelhouse/" in job["artifacts"]["paths"]
+    # The wheels alone: `when: always` on the whole directory would upload the
+    # several hundred DLLs the repair staging leaves in wheelhouse/libs.
+    assert "wheelhouse/*.whl" in job["artifacts"]["paths"]
+    assert "wheelhouse/" not in job["artifacts"]["paths"]
     assert any("--wheel-dir wheelhouse" in step for step in job["script"])
 
 
 def test_gitlab_windows_build_repairs_its_own_wheel(tmp_path):
-    """The Windows build job repairs in place, naming the windows platform.
+    """An opted-in Windows build job repairs in place, naming the windows platform.
 
     delvewheel reads the DLL imports of a win_amd64 .pyd, so the repair cannot be
-    delegated to the manylinux container that repairs the Linux wheel.
+    delegated to the manylinux container that repairs the Linux wheel. GitLab
+    libraries do not repair by default, so this asks for it explicitly.
     """
-    job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
+    job = _gitlab_jobs(
+        tmp_path, windows=True, windows_wheel_repair=True
+    )["Conan Build - Windows"]
     assert any(
         "xmsconan_wheel_repair" in step and "--platform windows" in step
         for step in job["script"]
@@ -1231,12 +1237,20 @@ def test_gitlab_windows_repair_can_be_switched_off(tmp_path):
     assert any("--skip-dependency-libs" in step for step in job["script"])
 
 
-def test_gitlab_windows_repair_is_on_by_default(tmp_path):
-    """Omitting the key leaves every existing pipeline repairing as before."""
+def test_gitlab_windows_repair_is_off_by_default(tmp_path):
+    """A GitLab library does not repair its Windows wheel unless it asks to.
+
+    GitLab wheels are internal, published to AquaPi, and loaded only by the XMS
+    Python, which supplies the C++ runtime on PATH deliberately. delvewheel does
+    not ignore msvcp140.dll, so repairing such a wheel vendors a private mangled
+    copy of the very runtime the host is controlling. These pipelines also staged
+    no Windows wheel at all before this feature, so there is no prior repairing
+    behavior to preserve.
+    """
     job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
 
-    assert any("xmsconan_wheel_repair" in step for step in job["script"])
-    assert not any("--skip-dependency-libs" in step for step in job["script"])
+    assert not any("xmsconan_wheel_repair" in step for step in job["script"])
+    assert any("--skip-dependency-libs" in step for step in job["script"])
 
 
 def test_gitlab_windows_wheel_deploy_survives_a_skipped_repair(tmp_path):

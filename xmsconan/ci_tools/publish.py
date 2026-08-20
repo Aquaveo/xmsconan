@@ -29,6 +29,7 @@ import sys
 
 import toml
 
+from xmsconan.ci_options import repairs_windows_wheel_for
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
@@ -45,20 +46,23 @@ def _read_library_name(toml_path="build.toml"):
     return name
 
 
-def _repairs_wheel(toml_path="build.toml"):
+def _repairs_wheel(toml_path: str = "build.toml") -> bool:
     """Whether this platform's wheel should be repaired for *toml_path*.
 
-    Only Windows is switchable, through ``ci.windows_wheel_repair``.
-    delvewheel's ignore list excuses ``vcruntime140.dll`` for a CPython wheel
-    but not ``msvcp140.dll``, so a ``.pyd`` with no third-party imports still
-    gets a mangled CRT vendored beside it -- which then overrides the runtime
-    XMS deliberately supplies to the Python process. Linux and macOS have no
-    such switch: an unrepaired manylinux wheel is not installable.
+    Only Windows is switchable, and the decision -- key name, type and
+    ``ci_type``-derived default -- lives in :mod:`xmsconan.ci_options` so this
+    reader and the CI generator cannot disagree about it. Linux and macOS have
+    no such switch: an unrepaired manylinux wheel is not installable.
+
+    Args:
+        toml_path: Path to the library's ``build.toml``.
+
+    Returns:
+        True when the wheel should be repaired on this platform.
     """
     if sys.platform != "win32":
         return True
-    data = toml.load(toml_path)
-    return data.get("ci", {}).get("windows_wheel_repair", True)
+    return repairs_windows_wheel_for(toml_path)
 
 
 def _read_ci_xvfb(toml_path="build.toml"):
