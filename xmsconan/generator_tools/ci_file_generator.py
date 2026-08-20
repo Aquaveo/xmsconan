@@ -178,11 +178,12 @@ def generate_ci(
     # CI-specific options (for GitLab conditional sections)
     ci_config = toml_data.get("ci", {})
 
-    # A GitLab pipeline with neither platform builds nothing, and the Linux
-    # jobs are load-bearing in a way the Windows ones are not: they own the
-    # wheelhouse that Repair Wheel and Wheel Deploy consume, and coverage runs
+    # A GitLab pipeline with neither platform builds nothing, and coverage runs
     # only under gcc.  Reject the impossible combinations here rather than
-    # emitting a pipeline that fails opaquely in CI.
+    # emitting a pipeline that fails opaquely in CI.  Each platform now stages
+    # and deploys its own wheel -- Linux through the Package-stage Repair Wheel
+    # job, Windows in place inside its build job -- so a Windows-only pipeline
+    # publishes wheels and only the coverage rule below still needs Linux.
     if ci_type == "gitlab":
         if not ci_config.get("linux", True) and not ci_config.get("windows", True):
             raise ValueError(
