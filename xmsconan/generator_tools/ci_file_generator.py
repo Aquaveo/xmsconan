@@ -9,6 +9,7 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
+from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.toml_utils import load_toml
 
 
@@ -38,13 +39,20 @@ def _display_name(library_name: str) -> str:
     return "Xms" + library_name[3:].title()
 
 
-def _version_sort_key(version) -> tuple:
-    """Sort a ``"3.10"``-style version string numerically, not lexically.
+def _job_name_py(platform_python_versions: list) -> str:
+    """Return the ``name:`` fragment that keeps fanned-out legs distinguishable.
 
-    ``"3.9" > "3.10"`` under string comparison, which would pick the wrong
-    "highest" entry the moment a two-digit minor is in play.
+    Empty on a single-version platform. GitHub uses an explicit ``name:``
+    verbatim and only auto-appends matrix values when none is given, so legs
+    differing solely by ABI would otherwise share one status-check name --
+    ambiguous both in the checks list and in branch-protection matching. Held
+    to the fan-out case for the same reason as :func:`_py_suffix`: adding it
+    unconditionally would rename the required check in every repo that has not
+    opted in.
     """
-    return tuple(int(part) for part in str(version).split("."))
+    if len(platform_python_versions) > 1:
+        return ", ${{ matrix.python-version }}"
+    return ""
 
 
 def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions: list) -> list:
@@ -70,7 +78,7 @@ def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions
     configured = ci_config.get(f"{platform}_python_versions")
     if configured:
         return list(configured)
-    return [max(ci_python_versions, key=_version_sort_key)]
+    return [max(ci_python_versions, key=version_sort_key)]
 
 
 def _py_suffix(platform_python_versions: list) -> str:
@@ -94,19 +102,28 @@ _DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
 def _resolve_coverage_python_version(toml_data: dict) -> str:
     """Pick the single python_version the coverage build should pin to.
 
-    Precedence: ``[coverage].python_version`` (explicit opt-in) >
-    highest entry in ``[ci].python_versions`` > the global default
-    (``"3.13"``). Coverage runs a single instrumented build, so we must
-    commit to one ABI up front rather than let ``_find_coverage_package``
-    return whichever pybind config happened to finish last (see issue
-    #65).
+    Precedence: ``[coverage].python_version`` (explicit opt-in) > highest
+    entry in the resolved Linux list > the global default (``"3.13"``).
+    Coverage runs a single instrumented build, so we must commit to one ABI up
+    front rather than let ``_find_coverage_package`` return whichever pybind
+    config happened to finish last (see issue #65).
+
+    The fallback reads the *Linux* list rather than ``[ci].python_versions``
+    because coverage only ever runs on Linux, and on GitLab the resolved
+    version also selects the container image. Taking the highest Windows entry
+    would pick a version with no published ``conan-gcc13-py<version>`` image --
+    3.10 through 3.12 have none -- and the job would die pulling its container.
     """
     coverage_cfg = toml_data.get("coverage", {})
     explicit = coverage_cfg.get("python_version")
     if explicit:
         return str(explicit)
-    ci_versions = toml_data.get("ci", {}).get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]
-    return max(ci_versions, key=_version_sort_key)
+    ci_config = toml_data.get("ci", {})
+    linux_versions = _platform_python_versions(
+        ci_config, "linux",
+        list(ci_config.get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
+    )
+    return max(linux_versions, key=version_sort_key)
 
 
 def _coverage_context(coverage_config: dict, library_name: str) -> dict:
@@ -199,8 +216,23 @@ def generate_ci(
     ci_mac_python_versions = _platform_python_versions(ci_config, "mac", ci_python_versions)
     ci_linux_python_versions = _platform_python_versions(ci_config, "linux", ci_python_versions)
 
+    for key, versions in (("python_versions", ci_python_versions),
+                          ("mac_python_versions", ci_mac_python_versions),
+                          ("linux_python_versions", ci_linux_python_versions)):
+        unsupported = [str(v) for v in versions if str(v) not in SUPPORTED_PYTHON_VERSIONS]
+        if unsupported:
+            raise ValueError(
+                f"build.toml [ci].{key} names Python {', '.join(unsupported)}, which "
+                f"the conanfile's python_version option does not allow (supported: "
+                f"{', '.join(SUPPORTED_PYTHON_VERSIONS)}). Generating that matrix leg "
+                "would only defer the failure to conan configure time in CI."
+            )
+
+    # This guard is about the Linux fan-out, so it is moot when Linux is
+    # switched off entirely -- the list is inert in that case.
     gitlab_split_tests = ci_type == "gitlab" and ci_config.get("split_tests", False)
-    if gitlab_split_tests and len(ci_linux_python_versions) > 1:
+    linux_enabled = ci_config.get("linux", True)
+    if gitlab_split_tests and linux_enabled and len(ci_linux_python_versions) > 1:
         raise ValueError(
             "build.toml combines [ci].split_tests with more than one "
             "[ci].linux_python_versions. The GitLab C++ test job consumes the "
@@ -238,11 +270,12 @@ def generate_ci(
             "${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1
             else ci_linux_python_versions[0]
         ),
-        "gitlab_linux_single_py": max(ci_linux_python_versions, key=_version_sort_key),
+        "gitlab_linux_single_py": max(ci_linux_python_versions, key=version_sort_key),
         "gitlab_linux_py_suffix": (
             "-py${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1 else ""
         ),
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
+        "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
         "coverage": _coverage_context(coverage_config, library_name),
         "coverage_python_version": _resolve_coverage_python_version(toml_data),
     }

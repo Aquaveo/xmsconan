@@ -31,7 +31,7 @@ _conan_stubs["conan.errors"].ConanException = type("ConanException", (Exception,
 sys.modules["conan.errors"].ConanException = _conan_stubs["conan.errors"].ConanException
 
 from conan.errors import ConanException  # noqa: E402,I100,I202
-from xmsconan.constants import MSVC_VS2019_VERSION  # noqa: E402,I201
+from xmsconan.constants import MSVC_VS2019_VERSION, SUPPORTED_PYTHON_VERSIONS  # noqa: E402,I201
 from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402
 
 
@@ -931,3 +931,15 @@ class TestGetPythonCmakeHints:
         obj = object.__new__(XmsConan2File)
         hints = obj._get_python_cmake_hints()
         assert hints["Python3_FIND_FRAMEWORK"] == "NEVER"
+
+
+def test_supported_python_versions_matches_the_recipe():
+    """Constants must agree with the conanfile's closed option set.
+
+    ``xms_conan2_file`` cannot import from ``constants`` -- it is copied next to
+    each generated conanfile and has to stand alone -- so the list is duplicated
+    by design and pinned here instead. This lives in this module rather than the
+    CI-generator tests because importing the recipe requires the conan stubs
+    installed at the top of this file.
+    """
+    assert set(SUPPORTED_PYTHON_VERSIONS) == set(XmsConan2File.options["python_version"])

@@ -325,3 +325,44 @@ def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
             f"floor without --upgrade is a no-op when the runner image "
             f"already carries a satisfying xmsconan: {line}"
         )
+
+
+#: Python fan-out shapes to YAML-validate. The boolean sweep above cannot reach
+#: these -- it only varies flags -- so a template bug that only appears once a
+#: platform has more than one ABI leg would otherwise go unparsed. The xvfb pair
+#: is included because it is the only route to the xvfb ``Repair Wheel`` image,
+#: which resolves a single version even while the build fans out.
+_FANOUT_CASES = [
+    pytest.param({"python_versions": ["3.10", "3.13", "3.14"]}, id="windows-only"),
+    pytest.param({"mac_python_versions": ["3.13", "3.14"]}, id="mac"),
+    pytest.param({"linux_python_versions": ["3.13", "3.14"]}, id="linux"),
+    pytest.param({"linux_arm": True, "linux_python_versions": ["3.13", "3.14"]}, id="linux-arm"),
+    pytest.param({"xvfb": True, "linux_python_versions": ["3.13", "3.14"]}, id="xvfb-linux"),
+    pytest.param(
+        {
+            "python_versions": ["3.10", "3.13", "3.14"],
+            "mac_python_versions": ["3.13", "3.14"],
+            "linux_python_versions": ["3.13", "3.14"],
+            "linux_arm": True,
+            "coverage": True,
+            "deploy": True,
+        },
+        id="everything",
+    ),
+]
+
+
+@pytest.mark.parametrize("ci_type", ["github", "gitlab"])
+@pytest.mark.parametrize("ci_flags", _FANOUT_CASES)
+def test_python_fanout_renders_valid_yaml(tmp_path, ci_type, ci_flags):
+    """Every fan-out shape must parse as YAML on both templates."""
+    toml_file = write_build_toml(tmp_path, ci_type, **ci_flags)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    rendered = list((output_dir / ".github" / "workflows").glob("*.yaml"))
+    rendered += [path for path in [output_dir / ".gitlab-ci.yml"] if path.exists()]
+    assert rendered, "generate_ci produced no CI file"
+    for path in rendered:
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(parsed, dict) and parsed

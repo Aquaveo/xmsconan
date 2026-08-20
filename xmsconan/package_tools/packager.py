@@ -19,6 +19,7 @@ from xmsconan.constants import (
     DEFAULT_REMOTE_NAME,
     is_multi_config_generator,
     MSVC_VS2019_VERSION,
+    version_sort_key,
 )
 from xmsconan.package_tools.printer import Printer
 
@@ -357,7 +358,7 @@ class XmsConanPackager(object):
     @staticmethod
     def _highest_python_version(versions):
         """Return the version string with the largest (major, minor) tuple."""
-        return max(versions, key=lambda v: tuple(int(p) for p in v.split('.')))
+        return max(versions, key=version_sort_key)
 
     @property
     def python_versions(self):
