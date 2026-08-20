@@ -716,14 +716,16 @@ class TestPackageInfo:
     """Verify package_info advertises the library a consumer should link."""
 
     @staticmethod
-    def _make_obj(pybind, build_type):
+    def _make_obj(pybind, build_type, advertises=True, os_name="Windows"):
         """Create a recipe stub whose package_info can be called in isolation."""
         obj = object.__new__(XmsConan2File)
         obj.name = "data_objects"
         obj.settings = MagicMock()
         obj.settings.build_type = build_type
+        obj.settings.os = MagicMock(__str__=lambda _s: os_name)
         obj.options = MagicMock()
         obj.options.pybind = pybind
+        obj.pybind_advertises_module = advertises
         obj.package_folder = os.path.join("fake", "package")
         obj.cpp_info = MagicMock()
         obj.runenv_info = MagicMock()
@@ -738,19 +740,47 @@ class TestPackageInfo:
             (False, "Debug", "data_objectslib_d"),
         ],
     )
-    def test_linked_library_follows_the_pybind_option(self, pybind, build_type, expected):
-        """A pybind package advertises the module's import library, not the static one.
+    def test_opted_in_library_advertises_the_module(self, pybind, build_type, expected):
+        """An opted-in Windows pybind package names the module's import library.
 
-        XMS dynamically links the .pyd, which is what lets a v142 consumer keep
-        consuming a v143 build -- the guarantee only runs
+        XMS dynamically links the .pyd, which is what lets an msvc 192 consumer
+        keep consuming an msvc 194 build -- the guarantee only runs
         newer-consumes-older, so handing it the static library instead is an
-        unsupported link. Both prior recipes (Conan 1 data_objects, the
-        hand-ported Conan 2 xmsapi) selected on this option; xmsconan named the
-        static library unconditionally.
+        unsupported link. ``CMAKE_DEBUG_POSTFIX`` reaches the module target, so
+        the Debug name carries ``_d`` as well.
         """
         obj = self._make_obj(pybind, build_type)
         obj.package_info()
         assert obj.cpp_info.libs == [expected]
+
+    @pytest.mark.parametrize("build_type,expected", [
+        ("Release", "data_objectslib"),
+        ("Debug", "data_objectslib_d"),
+    ])
+    def test_library_that_does_not_opt_in_keeps_the_static_library(self, build_type, expected):
+        """Without the opt-in, a pybind package advertises what it always did.
+
+        ``pybind`` propagates down the dependency graph -- ``configure()`` sets
+        it on every ``xms_dependencies`` entry -- so keying off the option alone
+        would redirect every sister library in a pybind graph to a module its
+        consumers never asked for.
+        """
+        obj = self._make_obj(pybind=True, build_type=build_type, advertises=False)
+        obj.package_info()
+        assert obj.cpp_info.libs == [expected]
+
+    @pytest.mark.parametrize("os_name", ["Linux", "Macos"])
+    def test_module_is_never_advertised_off_windows(self, os_name):
+        """Off Windows the module is not a linkable artifact, opt-in or not.
+
+        A macOS ``MODULE`` target is a bundle that cannot be linked at all, and
+        a Linux module is ``_<name>.cpython-313-x86_64-linux-gnu.so``, which the
+        ``find_library(NAMES _<name>)`` CMakeDeps emits does not match -- so
+        advertising it there turns a working package into a configure error.
+        """
+        obj = self._make_obj(pybind=True, build_type="Release", os_name=os_name)
+        obj.package_info()
+        assert obj.cpp_info.libs == ["data_objectslib"]
 
     def test_pybind_package_still_exports_pythonpath(self):
         """Selecting the module's lib must not disturb the _package PYTHONPATH entry."""
@@ -759,6 +789,38 @@ class TestPackageInfo:
         obj.runenv_info.append.assert_called_once_with(
             "PYTHONPATH", os.path.join("fake", "package", "_package")
         )
+
+
+class TestBuildsWheel:
+    """Verify which pybind configurations build and test a wheel."""
+
+    @staticmethod
+    def _make_obj(build_type):
+        """Create a recipe stub whose _builds_wheel can be called in isolation."""
+        obj = object.__new__(XmsConan2File)
+        obj.settings = MagicMock()
+        obj.settings.build_type = MagicMock(__str__=lambda _s: build_type)
+        obj.output = MagicMock()
+        return obj
+
+    def test_release_builds_the_wheel(self):
+        """Release is the configuration that ships to an index."""
+        assert self._make_obj("Release")._builds_wheel() is True
+
+    def test_debug_does_not_build_a_wheel(self):
+        """A Debug wheel would declare a module name that does not exist in it.
+
+        ``CMAKE_DEBUG_POSTFIX`` reaches the pybind module target, so the Debug
+        build produces ``_<name>_d.<abi>.pyd`` while the generated
+        ``_package/pyproject.toml`` declares ``xms.<dir>._<name>``. The wheel
+        would install a module ``import`` cannot find, and ``run_python_tests``
+        would fail on it. Renaming the module is not an option -- consumers link
+        ``_<name>_d`` by that exact name -- so the Debug configuration ships the
+        Conan package only.
+        """
+        obj = self._make_obj("Debug")
+        assert obj._builds_wheel() is False
+        assert obj.output.info.called, "skipping a deliverable must be stated"
 
 
 class TestRequirements:

@@ -152,6 +152,7 @@ Boost (`1.86.0`) and zlib (`1.3.1`) are added automatically by the recipe. On a 
 | `python_binding_type` | `"pybind11"` | `"pybind11"` or `"vtk_wrap"`. |
 | `python_namespaced_dir` | derived | The submodule under `xms.<...>`. e.g. `"core"` produces `xms.core`. Defaults to `library_name` minus the `xms` prefix when omitted. |
 | `pybind_root` | `false` | Whether this library hosts the root `xms` namespace. |
+| `pybind_advertises_module` | `false` | Advertise the pybind module's import library (`_<name>`) to C++ consumers instead of the static library, and install the module to `bin/` + `lib/`. Windows-only in effect, and only for `pybind = True` packages. Opt-in because a consumer of the module sees only its exported symbols, and because `pybind` propagates down the dependency graph. See §7.5. |
 
 ### 5.4.1 Which configurations get built (`[matrix]` table)
 
@@ -337,18 +338,30 @@ One more msvc-192-only behavior, which needs no configuration: the recipe propag
 
 ### 7.5 What a package exposes to a C++ consumer
 
-`cpp_info.libs` names **one** library, and which one depends on the `pybind` option:
+`cpp_info.libs` names **one** library. By default it is always the static library:
 
-| Option | `cpp_info.libs` | Where it is installed |
-|---|---|---|
-| `pybind = False` | `<name>lib` (`<name>lib_d` on Debug) | `lib/` |
-| `pybind = True` | `_<name>` (`_<name>_d` on Debug) — the *module's* import library | Windows: `bin/` holds the `.pyd`, `lib/` its import library. Elsewhere the module itself is in `lib/`. |
+| `pybind_advertises_module` | Platform | `cpp_info.libs` | Where it is installed |
+|---|---|---|---|
+| `false` (default) | any | `<name>lib` (`<name>lib_d` on Debug) | `lib/` |
+| `true` | Windows, `pybind = True` | `_<name>` (`_<name>_d` on Debug) — the *module's* import library | `bin/` holds the `.pyd`, `lib/` its import library |
+| `true` | Windows, `pybind = False` | `<name>lib` — there is no module to advertise | `lib/` |
+| `true` | Linux / macOS | `<name>lib` | `lib/` |
 
-Both libraries are in a `pybind=True` package; only the module is advertised. A consumer of a pybind package links the module dynamically, which is what lets an msvc 192 application consume an msvc 194 build — the MSVC compatibility guarantee runs newer-consumes-older, so a static link across that boundary is unsupported. The `_d` suffix comes from `set(CMAKE_DEBUG_POSTFIX _d)` in the generated `CMakeLists.txt`, so the names in `cpp_info` and on disk cannot drift apart.
+**`pybind_advertises_module` is opt-in per library, and Windows-only.** Three reasons it is not a default:
 
-The module is installed twice on purpose: once under `_package/xms/<python_namespaced_dir>/`, which is the tree the wheel is built from, and once into `bin/` + `lib/`, because Conan's generators look only there.
+- A consumer that links the module gets only the symbols the module *exports* — `PyInit__<name>` plus anything explicitly `__declspec(dllexport)`. The static library gives it everything. Redirecting a consumer to the module is a deliberate trade, made by the one library whose consumers want it.
+- `pybind` propagates down the dependency graph (`configure()` sets it on every `xms_dependencies` entry), so keying off the option alone would redirect every sister library in a pybind graph.
+- Off Windows there is nothing to advertise. A macOS `MODULE` target is a bundle that cannot be linked, and a Linux module is `_<name>.cpython-313-x86_64-linux-gnu.so`, which the `find_library(NAMES _<name>)` that CMakeDeps emits does not match — so advertising it turns a working package into a configure error.
 
-**Naming note for anything migrating off Conan 1.** The static library is `<name>lib`, not Conan 1's `lib<name>` — e.g. `data_objectslib`, where the Conan 1 recipe produced `libdata_objects`. Anything reading `cpp_info` is unaffected; a consumer hard-coding the old file name is not.
+Where it does apply, the point is msvc-version skew: the consumer links the `.pyd` dynamically, which is what lets an msvc 192 application consume an msvc 194 build. The MSVC compatibility guarantee runs newer-consumes-older, so a static link across that boundary is unsupported.
+
+Both libraries are in the package either way. An opted-in library installs the module twice on purpose: once under `_package/xms/<python_namespaced_dir>/`, the tree the wheel is built from, and once into `bin/` + `lib/`, because Conan's generators look only there. The import library is installed **by file name**, not through `install(TARGETS ... ARCHIVE)`: CMake tracks no `ARCHIVE` artifact for a `MODULE` target, so an `ARCHIVE` clause installs nothing and reports nothing — verified against CMake 3.28 and MSVC v143, with and without `ENABLE_EXPORTS`.
+
+The `_d` suffix comes from `set(CMAKE_DEBUG_POSTFIX _d)`, which does reach the pybind module target (same verification), so the Debug artifacts are `bin/_<name>_d.<abi>.pyd` and `lib/_<name>_d.lib`.
+
+**A Debug pybind configuration produces no wheel.** Because the postfix reaches the module, the Debug module is `_<name>_d.<abi>.pyd` while the generated `_package/pyproject.toml` declares the extension module as `xms.<dir>._<name>`. A Debug wheel would install a module `import` cannot find, and the Python tests would fail on it; renaming the module is not an option, since consumers link `_<name>_d` by that exact name. So `build()` skips the wheel and the Python tests for Debug — that configuration exists to produce the Conan package a C++ consumer links, and `Release` is what ships to an index. The skip is logged.
+
+**Naming note for anything migrating off Conan 1.** The static library is `<name>lib`, not Conan 1's `lib<name>`. Anything reading `cpp_info` is unaffected; a consumer hard-coding the old file name is not.
 
 ---
 
