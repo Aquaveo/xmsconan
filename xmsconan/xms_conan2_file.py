@@ -545,20 +545,32 @@ class XmsConan2File(ConanFile):
             copy(self, "*.whl", src=os.path.join(self.build_folder, "dist"),
                  dst=os.path.join(self.package_folder, "dist"))
 
-    def _builds_wheel(self):
+    def _builds_wheel(self) -> bool:
         """Whether this pybind configuration should build and test a wheel.
 
-        Everything but a Windows Debug build.  There the module is named
-        ``_<name>_d``: ``pybind11_add_module`` clears the debug postfix and the
-        generated CMakeLists re-asserts it, because ``_<name>_d`` is what
-        ``package_info()`` advertises and what a C++ consumer links.  The
-        generated ``_package/pyproject.toml`` names the extension module
-        exactly once, as ``xms.<dir>._<name>``, so a Windows Debug wheel would
-        install a module ``import`` cannot find and ``run_python_tests`` would
-        fail on it.  That configuration exists to produce the Conan package a
+        Everything but a Windows Debug build.  For a library that sets
+        ``pybind_advertises_module`` the module there is named ``_<name>_d``:
+        ``pybind11_add_module`` overwrites the debug postfix with the
+        interpreter's value -- empty for a release interpreter -- and the
+        generated CMakeLists re-asserts ``_d``, because that is the name
+        ``package_info()`` advertises and the name a C++ consumer links.  The
+        shipped Python imports the module as ``xms.<dir>._<name>``, so a wheel
+        built from that tree installs a module ``import`` cannot find and
+        ``run_python_tests`` fails on it.  (The generated
+        ``_package/pyproject.toml`` does not catch this: its ``ext-modules``
+        entry carries ``sources = []`` and ``optional = true``, so setuptools
+        neither compiles nor validates the name, and its package-data glob is
+        ``*.pyd``.)  That configuration exists to produce the Conan package a
         C++ consumer links (``bin/_<name>_d.<abi>.pyd`` plus
         ``lib/_<name>_d.lib``), not a wheel; ``Release`` is what ships to an
         index.
+
+        The skip is deliberately broader than the rename.  It also covers a
+        Windows Debug pybind build that has *not* opted in, and a ``vtk_wrap``
+        library, which has no ``_<name>`` module target at all -- neither is
+        renamed, but a Windows Debug wheel is not a deliverable for either
+        (every wheel step in the generated CI is gated on ``Release``), so
+        building one only to discard it buys nothing.
 
         Off Windows the postfix is never re-asserted, so a Debug module keeps
         its importable name -- and a Debug pybind build is exactly what
@@ -571,9 +583,10 @@ class XmsConan2File(ConanFile):
         """
         if str(self.settings.build_type) == 'Debug' and str(self.settings.os) == 'Windows':
             self.output.info(
-                "Windows Debug pybind build: skipping the wheel and the Python tests. The "
-                "module is named _<name>_d, which the wheel's pyproject.toml cannot "
-                "declare; this configuration ships the Conan package only."
+                "Windows Debug pybind build: skipping the wheel and the Python tests. An "
+                "opted-in library's module is named _<name>_d here, which the shipped "
+                "Python cannot import, and no wheel step in CI publishes a Debug leg; "
+                "this configuration ships the Conan package only."
             )
             return False
         return True
@@ -618,9 +631,10 @@ class XmsConan2File(ConanFile):
         way.  ``CMAKE_DEBUG_POSTFIX`` supplies the ``_d`` on the static
         library.  The module target takes more work: ``pybind11_add_module``
         overwrites ``DEBUG_POSTFIX`` with the interpreter's value, which is
-        empty for a release interpreter, so the generated CMakeLists
-        re-asserts ``_d`` on Windows.  That is what keeps the Debug module
-        ``_<name>_d`` on disk as well as here.
+        empty for a release interpreter, so the generated CMakeLists re-asserts
+        ``_d`` -- under the same three conditions this method appends it, the
+        opt-in included, so the advertised name and the name on disk cannot
+        diverge.
         """
         if self.options.pybind:
             self.runenv_info.append('PYTHONPATH', os.path.join(self.package_folder, "_package"))

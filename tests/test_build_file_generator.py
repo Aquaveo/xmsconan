@@ -376,51 +376,90 @@ def test_module_install_is_absent_unless_the_library_opts_in(build_toml, tmp_pat
     assert 'LIBRARY DESTINATION "_package/xms/core"' in content
 
 
-def _debug_postfix_guard(content):
-    """Return the guarded block that re-asserts the module's Debug postfix.
+_REASSERT = 'set_target_properties(_xmscore PROPERTIES DEBUG_POSTFIX "_d")'
+_GUARD = "if (WIN32 AND NOT PYTHON_MODULE_DEBUG_POSTFIX)"
 
-    Sliced to the ``if`` that owns the ``set_target_properties`` call: an
-    assertion over the whole file passes just as happily when the call sits
-    outside its guard, which is the case that would produce ``_<name>_d_d``
-    against a debug Python build.
+
+def _debug_postfix_guard(content: str) -> str:
+    """Return the body of the ``if (WIN32)`` that owns the Debug postfix re-assert.
+
+    Sliced to that one branch, so a re-assert moved out of the guard, or into an
+    ``else``/``elseif`` that would apply ``_d`` off Windows, is not swallowed by
+    an assertion over the whole file. The ``endif`` is matched by regex rather
+    than the literal ``"endif ()"``: the two blocks below it in the template
+    spell it ``endif()``, so a literal split silently widens the slice from
+    three lines to twenty-nine and the protection evaporates with no failure.
     """
-    guard = "if (WIN32 AND NOT PYTHON_MODULE_DEBUG_POSTFIX)"
-    assert guard in content, "the module's Debug postfix is re-asserted unguarded"
-    return content.split(guard, 1)[1].split("endif ()", 1)[0]
+    head = "# Debug postfix re-assert"
+    assert head in content, "the Debug postfix re-assert block is gone"
+    body = content.split(head, 1)[1]
+    opener = re.search(r"^\s*if\s*\((.*?)\)\s*$", body, re.MULTILINE)
+    assert opener, "the re-assert is not inside an if ()"
+    condition = opener.group(1).strip()
+    assert condition == "WIN32", f"the re-assert guard is `{condition}`, not WIN32"
+    return re.split(r"^\s*endif\s*\(\s*\)", body[opener.end():], maxsplit=1, flags=re.MULTILINE)[0]
 
 
-def test_debug_pybind_module_keeps_the_d_postfix(build_toml, tmp_path):
-    """The module target's Debug postfix is re-asserted after pybind11 clears it.
+def test_debug_pybind_module_keeps_the_d_postfix(tmp_path: Path) -> None:
+    """The module target's Debug postfix is re-asserted after pybind11 overwrites it.
 
-    ``pybind11_add_module`` calls ``pybind11_extension``, which sets the
-    target's ``DEBUG_POSTFIX`` to ``PYTHON_MODULE_DEBUG_POSTFIX`` -- the
+    ``pybind11_add_module`` calls ``pybind11_extension``, which overwrites the
+    target's ``DEBUG_POSTFIX`` with ``PYTHON_MODULE_DEBUG_POSTFIX`` -- the
     ``NAME_WE`` of a release interpreter's ``.cp313-win_amd64.pyd``, i.e. the
     empty string -- overriding the directory-scope ``CMAKE_DEBUG_POSTFIX _d``.
     Without the re-assert the Debug module and its import library are named
     ``_<name>``, while ``package_info()`` advertises ``_<name>_d``, and the
     consumer fails with LNK1104 on a file that was never built.
     """
-    content = _render_cmakelists(build_toml, tmp_path)
-    reassert = 'set_target_properties(_xmscore PROPERTIES DEBUG_POSTFIX "_d")'
+    content = _render_cmakelists(_advertising_toml(tmp_path), tmp_path)
 
-    assert reassert in _debug_postfix_guard(content)
+    assert _REASSERT in _debug_postfix_guard(content)
+    # Exactly once: a second, unguarded copy anywhere in the file would apply
+    # _d off Windows too, which the slice above cannot see.
+    assert content.count(_REASSERT) == 1, "the postfix is re-asserted more than once"
     # The directory-scope default must stay: it is what suffixes the static library.
     assert "set(CMAKE_DEBUG_POSTFIX _d)" in content
 
 
-def test_debug_postfix_reassert_is_windows_only(build_toml, tmp_path):
-    """Off Windows the module must keep the name the wheel's pyproject.toml declares.
+def test_debug_postfix_is_not_reasserted_without_the_opt_in(build_toml: Path, tmp_path: Path) -> None:
+    """Only an opted-in library gets the rename, because only it is linked by that name.
 
-    A Linux Debug pybind build is the Python half of ``xmsconan coverage``, and
-    it builds and imports its own wheel. There is also no import library off
-    Windows, so nothing links the module by name there.
+    ``package_info()`` advertises ``_<name>_d`` under exactly these conditions.
+    Renaming a module nothing links would leave a Windows Debug ``_package``
+    tree whose shipped Python still imports ``xms.<dir>._<name>`` -- and that
+    tree is on ``PYTHONPATH`` for every pybind package -- so the rename would
+    break the import for no benefit.
     """
-    branch = _debug_postfix_guard(_render_cmakelists(build_toml, tmp_path))
+    content = _render_cmakelists(build_toml, tmp_path)
 
-    assert "else ()" not in branch
+    assert "# Debug postfix re-assert" not in content
+    assert 'DEBUG_POSTFIX "_d"' not in content
+    # The module target itself is still configured; only the rename is absent.
+    assert "pybind11_add_module(_xmscore MODULE" in content
 
 
-def test_debug_postfix_reassert_yields_the_advertised_import_library(tmp_path):
+def test_debug_postfix_guard_does_not_test_the_postfix_value(tmp_path: Path) -> None:
+    """The guard is ``WIN32`` alone -- deliberately, not by omission.
+
+    ``set_target_properties`` assigns rather than appends, so re-asserting
+    ``_d`` over a postfix that is already ``_d`` is idempotent. A guard that
+    tested the value would skip the re-assert for any *other* non-empty
+    ``PYTHON_MODULE_DEBUG_POSTFIX`` -- which a cross-compiling build must set
+    and anyone can pass on the command line -- leaving the module named
+    something ``cpp_info`` does not advertise, with nothing failing until the
+    consumer's link.
+    """
+    content = _render_cmakelists(_advertising_toml(tmp_path), tmp_path)
+
+    # _debug_postfix_guard already asserts the condition is exactly WIN32; pin
+    # the shipped regression by name too. The variable still appears in the
+    # comment that explains why it is not tested, so match the guard, not the
+    # bare name.
+    assert _GUARD not in content
+    assert "NOT PYTHON_MODULE_DEBUG_POSTFIX" not in content
+
+
+def test_debug_postfix_reassert_yields_the_advertised_import_library(tmp_path: Path) -> None:
     """The re-asserted postfix is what makes the installed .lib match ``cpp_info``.
 
     The import library is installed through
@@ -429,9 +468,8 @@ def test_debug_postfix_reassert_yields_the_advertised_import_library(tmp_path):
     together rather than in separate tests that could drift apart.
     """
     content = _render_cmakelists(_advertising_toml(tmp_path), tmp_path)
-    reassert = 'set_target_properties(_xmscore PROPERTIES DEBUG_POSTFIX "_d")'
 
-    assert reassert in _debug_postfix_guard(content)
+    assert _REASSERT in _debug_postfix_guard(content)
     assert "$<TARGET_FILE_BASE_NAME:_xmscore>.lib" in _module_install_branch(content)
 
 

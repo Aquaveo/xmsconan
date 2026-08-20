@@ -368,28 +368,6 @@ if (IS_PYTHON_BUILD)
         LINKER_LANGUAGE CXX
     )
 
-    # pybind11_add_module -> pybind11_extension sets DEBUG_POSTFIX on the module
-    # target to PYTHON_MODULE_DEBUG_POSTFIX, which is the NAME_WE of the
-    # interpreter's EXT_SUFFIX -- the empty string for a release interpreter,
-    # whose suffix is ".cp313-win_amd64.pyd". That silently overrides the
-    # directory-scope CMAKE_DEBUG_POSTFIX, so without re-asserting it here the
-    # Debug module and its import library are named _<name> while
-    # package_info() advertises _<name>_d, and the consumer fails to link.
-    # CMake composes the file name as PREFIX + OUTPUT_NAME + DEBUG_POSTFIX +
-    # SUFFIX, so this yields _<name>_d.<abi>.pyd and _<name>_d.lib.
-    #
-    # Windows only. The import library -- and therefore the whole
-    # consumer-links-the-module story -- exists only there, and off Windows the
-    # module must keep the importable name the wheel's pyproject.toml declares,
-    # since a Debug pybind build is what coverage instruments.
-    #
-    # Guarded on the postfix being empty: against a genuine debug Python build
-    # PYTHON_MODULE_DEBUG_POSTFIX is already "_d", and setting it again would
-    # produce _<name>_d_d.
-    if (WIN32 AND NOT PYTHON_MODULE_DEBUG_POSTFIX)
-        set_target_properties(_{{ library_name }} PROPERTIES DEBUG_POSTFIX "_d")
-    endif ()
-
     if (APPLE)
         set_target_properties(_{{ library_name }} PROPERTIES
             INSTALL_RPATH "@loader_path"
@@ -410,6 +388,45 @@ if (IS_PYTHON_BUILD)
     )
 
 {% if pybind_advertises_module %}
+    # Debug postfix re-assert (Windows only)
+    #
+    # pybind11_add_module -> pybind11_extension *overwrites* the module target's
+    # DEBUG_POSTFIX with PYTHON_MODULE_DEBUG_POSTFIX (pybind11 3.0.1,
+    # pybind11NewTools.cmake:313 -> :346-352; the classic pybind11Tools.cmake
+    # path does the same, and 2.9.1 set no DEBUG_POSTFIX at all). That value is
+    # the NAME_WE of the interpreter's EXT_SUFFIX, which is the empty string for
+    # a release interpreter -- NAME_WE of e.g. ".cp313-win_amd64.pyd" -- so it
+    # overrides the directory-scope CMAKE_DEBUG_POSTFIX and the Debug module and
+    # its import library come out named _<name>, while package_info() advertises
+    # _<name>_d and the consumer fails to link. CMake composes the file name as
+    # PREFIX + OUTPUT_NAME + DEBUG_POSTFIX + SUFFIX, so re-asserting the postfix
+    # gives _<name>_d.<abi>.pyd and _<name>_d.lib.
+    #
+    # Unconditional within this block, deliberately. set_target_properties
+    # assigns rather than appends, so re-asserting "_d" over a postfix that is
+    # already "_d" -- a genuine debug Python build, whose EXT_SUFFIX is
+    # "_d.<abi>.pyd" -- is idempotent. Testing the value first would instead
+    # skip the re-assert for any *other* non-empty PYTHON_MODULE_DEBUG_POSTFIX,
+    # which a cross-compiling build is required to set
+    # (pybind11NewTools.cmake:189-203) and anyone can pass on the command line.
+    # The module would then carry a postfix package_info() does not advertise,
+    # and nothing here would notice: the install below names the file through
+    # TARGET_FILE_BASE_NAME, so it finds whatever the target is actually called.
+    # The first failure would be the consumer's LNK1104.
+    #
+    # Windows only: the import library, and so the whole
+    # consumer-links-the-module story, exists only there. Off Windows the module
+    # must keep the name the shipped Python imports it by, because a Debug
+    # pybind build is what coverage instruments.
+    #
+    # Gated on pybind_advertises_module, exactly like package_info(): the opt-in
+    # is what makes _<name>_d a name anything links. A library that has not
+    # opted in keeps pybind11's name, so its Windows Debug _package tree stays
+    # importable.
+    if (WIN32)
+        set_target_properties(_{{ library_name }} PROPERTIES DEBUG_POSTFIX "_d")
+    endif ()
+
     # Consumable module install (Windows only)
     #
     # The install above builds the wheel; this one makes the module consumable
@@ -425,7 +442,7 @@ if (IS_PYTHON_BUILD)
     # without ENABLE_EXPORTS.) The import library is a real file the linker
     # emits, since the module exports PyInit__<name>, so it is installed by
     # name. TARGET_FILE_BASE_NAME carries the target's DEBUG_POSTFIX -- the one
-    # re-asserted above, since pybind11 clears the directory-scope value --
+    # re-asserted above, since pybind11 overwrites the directory-scope value --
     # giving _<name>.lib in Release and _<name>_d.lib in Debug, the names
     # package_info() advertises.
     #

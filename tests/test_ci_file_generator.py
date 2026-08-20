@@ -1353,10 +1353,10 @@ def test_github_pybind_build_types_without_release_is_rejected(tmp_path):
     """A GitHub library that excludes Release from pybind publishes no wheel.
 
     Every wheel step in the GitHub workflow is gated on
-    ``matrix.build_type == 'Release'``, so the Debug leg builds a wheel and
-    discards it while the Release leg dies inside xmsconan_wheel_repair with
-    "No .whl files found". Rejected at generation, like the other impossible
-    combinations.
+    ``matrix.build_type == 'Release'``. On Linux and macOS the Debug leg builds
+    a wheel and discards it; on Windows it builds none at all. Either way the
+    Release leg dies inside xmsconan_wheel_repair with "No .whl files found".
+    Rejected at generation, like the other impossible combinations.
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
