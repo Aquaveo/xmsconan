@@ -287,6 +287,46 @@ def test_cmakelists_has_no_emscripten_branch(build_toml, tmp_path):
     assert "condabuildinfo.cmake" in content
 
 
+def _render_cmakelists(build_toml, tmp_path):
+    """Render the real CMakeLists template for a build.toml and return its text."""
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("CMakeLists.txt.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(build_toml),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+    return (output_dir / "CMakeLists.txt").read_text(encoding="utf-8")
+
+
+def test_pybind_module_is_installed_where_a_cpp_consumer_can_find_it(build_toml, tmp_path):
+    """The module and its import library land in the standard Conan layout.
+
+    Installing the module only under ``_package/`` parks it where no Conan
+    generator looks, so a C++ consumer of a ``pybind=True`` package was handed
+    the static library instead of the .pyd it actually links.
+    """
+    content = _render_cmakelists(build_toml, tmp_path)
+
+    module_install = content.split("# Consumable module install")[1]
+    # Windows splits the pair: the import library is the linkable half.
+    assert 'ARCHIVE DESTINATION "lib"' in module_install
+    assert 'LIBRARY DESTINATION "bin"' in module_install
+    # Elsewhere the module itself is the linkable artifact and stays in lib/.
+    assert 'LIBRARY DESTINATION "lib"' in module_install
+
+
+def test_pybind_module_still_installs_into_the_wheel_tree(build_toml, tmp_path):
+    """The _package install must survive: it is what the wheel is built from."""
+    content = _render_cmakelists(build_toml, tmp_path)
+    assert 'ARCHIVE DESTINATION "_package/xms/core"' in content
+    assert 'LIBRARY DESTINATION "_package/xms/core"' in content
+
+
 def test_conan_profile_options_reaches_template_context(tmp_path):
     """Nested TOML tables for conan_profile_options reach the template as a dict."""
     toml_file = tmp_path / "build.toml"

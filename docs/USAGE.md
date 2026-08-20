@@ -314,6 +314,21 @@ Omit the table and the attribute is not emitted at all, so the recipe inherits t
 
 One more msvc-192-only behavior, which needs no configuration: the recipe propagates its own `wchar_t` option into boost's (`self.options["boost"].wchar_t`). The legacy `boost/1.74.0.3` exposes that option and the Conan 1 recipe did the same; `boost/1.86.0` has none, which is why the assignment is VS2019-only and tolerant of a boost build that doesn't declare it.
 
+### 7.5 What a package exposes to a C++ consumer
+
+`cpp_info.libs` names **one** library, and which one depends on the `pybind` option:
+
+| Option | `cpp_info.libs` | Where it is installed |
+|---|---|---|
+| `pybind = False` | `<name>lib` (`<name>lib_d` on Debug) | `lib/` |
+| `pybind = True` | `_<name>` (`_<name>_d` on Debug) — the *module's* import library | Windows: `bin/` holds the `.pyd`, `lib/` its import library. Elsewhere the module itself is in `lib/`. |
+
+Both libraries are in a `pybind=True` package; only the module is advertised. A consumer of a pybind package links the module dynamically, which is what lets an msvc 192 application consume an msvc 194 build — the MSVC compatibility guarantee runs newer-consumes-older, so a static link across that boundary is unsupported. The `_d` suffix comes from `set(CMAKE_DEBUG_POSTFIX _d)` in the generated `CMakeLists.txt`, so the names in `cpp_info` and on disk cannot drift apart.
+
+The module is installed twice on purpose: once under `_package/xms/<python_namespaced_dir>/`, which is the tree the wheel is built from, and once into `bin/` + `lib/`, because Conan's generators look only there.
+
+**Naming note for anything migrating off Conan 1.** The static library is `<name>lib`, not Conan 1's `lib<name>` — e.g. `data_objectslib`, where the Conan 1 recipe produced `libdata_objects`. Anything reading `cpp_info` is unaffected; a consumer hard-coding the old file name is not.
+
 ---
 
 ## 8. Python version support (3.10, 3.13, 3.14)

@@ -712,6 +712,55 @@ class TestValidateSettings:
             obj.configure()
 
 
+class TestPackageInfo:
+    """Verify package_info advertises the library a consumer should link."""
+
+    @staticmethod
+    def _make_obj(pybind, build_type):
+        """Create a recipe stub whose package_info can be called in isolation."""
+        obj = object.__new__(XmsConan2File)
+        obj.name = "data_objects"
+        obj.settings = MagicMock()
+        obj.settings.build_type = build_type
+        obj.options = MagicMock()
+        obj.options.pybind = pybind
+        obj.package_folder = os.path.join("fake", "package")
+        obj.cpp_info = MagicMock()
+        obj.runenv_info = MagicMock()
+        return obj
+
+    @pytest.mark.parametrize(
+        "pybind,build_type,expected",
+        [
+            (True, "Release", "_data_objects"),
+            (True, "Debug", "_data_objects_d"),
+            (False, "Release", "data_objectslib"),
+            (False, "Debug", "data_objectslib_d"),
+        ],
+    )
+    def test_linked_library_follows_the_pybind_option(self, pybind, build_type, expected):
+        """A pybind package advertises the module's import library, not the static one.
+
+        XMS dynamically links the .pyd, which is what lets a v142 consumer keep
+        consuming a v143 build -- the guarantee only runs
+        newer-consumes-older, so handing it the static library instead is an
+        unsupported link. Both prior recipes (Conan 1 data_objects, the
+        hand-ported Conan 2 xmsapi) selected on this option; xmsconan named the
+        static library unconditionally.
+        """
+        obj = self._make_obj(pybind, build_type)
+        obj.package_info()
+        assert obj.cpp_info.libs == [expected]
+
+    def test_pybind_package_still_exports_pythonpath(self):
+        """Selecting the module's lib must not disturb the _package PYTHONPATH entry."""
+        obj = self._make_obj(pybind=True, build_type="Release")
+        obj.package_info()
+        obj.runenv_info.append.assert_called_once_with(
+            "PYTHONPATH", os.path.join("fake", "package", "_package")
+        )
+
+
 class TestRequirements:
     """Verify requirements() picks the right third-party stack and deps."""
 
