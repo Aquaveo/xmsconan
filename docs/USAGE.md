@@ -153,6 +153,25 @@ Boost (`1.86.0`) and zlib (`1.3.1`) are added automatically by the recipe. On a 
 | `python_namespaced_dir` | derived | The submodule under `xms.<...>`. e.g. `"core"` produces `xms.core`. Defaults to `library_name` minus the `xms` prefix when omitted. |
 | `pybind_root` | `false` | Whether this library hosts the root `xms` namespace. |
 
+### 5.4.1 Which configurations get built (`[matrix]` table)
+
+The fan-out is otherwise fixed: on Windows, `build_type` × `compiler.runtime` gives 4 base configurations, plus a `wchar_t=typedef` copy of each, plus a `testing=True` copy of each, plus one pybind configuration per Python version — 13 for a single-version library. `[matrix]` narrows or widens that. Both keys are optional; omit the table for the historical fan-out.
+
+| Field | Default | Description |
+|---|---|---|
+| `[matrix].compiler_runtime` | `["dynamic", "static"]` | Which MSVC runtimes to build. Applied to the base matrix *before* the product, so the `wchar_t` and `testing` copies shrink with it — `["dynamic"]` turns 13 configurations into 7. **Inert on Linux and macOS**, which declare no `compiler.runtime`: one `build.toml` serves every platform, so a Windows-only statement must not fail elsewhere. Use it for a library nothing consumes a static-CRT build of. |
+| `[matrix].pybind_build_types` | `["Release"]` | Which build types get a pybind configuration. Add `"Debug"` for a library whose consumers link a Debug module (`bin/_<name>_d.<abi>.pyd` and its import library). `XMS_COVERAGE=1` adds `Debug` on top of whatever this names, since the instrumented build is a separate concern from which modules a library ships. |
+
+```toml
+[matrix]
+compiler_runtime = ["dynamic"]              # nothing consumes a /MT build of this library
+pybind_build_types = ["Release", "Debug"]   # the desktop application links the Debug module
+```
+
+An unknown key, a value outside the accepted set (`"MD"`, `"RelWithDebInfo"`), or an empty list is rejected when the packager is constructed. An empty list would build nothing at all, which looks exactly like a successful build — omit the key instead.
+
+The table reaches the packager as `CONAN_MATRIX` in the generated `conanfile.py`, which `build.py` forwards. `xmsconan vs2019` reads the `build.toml` in each checkout directly, so the same table applies on that track (§16).
+
 ### 5.5 CMake escape hatches
 
 | Field | Default | Description |
@@ -785,6 +804,8 @@ With the default two Python versions, `windows_vs2019` (msvc 192, x86_64, cppstd
 | `wchar_t=typedef` | 4 | the same four, with the MSVC `/Zc:wchar_t-` toggle |
 | testing | 4 | the same four, with `testing=True` |
 | pybind | 2 | `Release` + `dynamic` runtime only, one per `--python-versions` entry |
+
+A library's `[matrix]` table (§5.4.1) narrows this the same way it narrows the CI matrix — the driver reads the `build.toml` in each checkout, so `--preview` and the build agree. `pybind_build_types = ["Release", "Debug"]` is how this track produces the Debug module the desktop products link.
 
 `windows_vs2019` is a normal platform key of `XmsConanPackager.generate_configurations()`, so it can be driven directly too (the valid keys are `darwin`, `linux`, `windows`, `windows_vs2019`; anything else raises `ValueError` naming the unknown key and listing the valid ones).
 

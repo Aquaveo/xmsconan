@@ -101,6 +101,7 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
+from xmsconan.toml_utils import load_toml
 
 #: Username used to log in to :data:`VS2019_REMOTE_NAME` when neither the
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
@@ -632,7 +633,30 @@ def setup(password_file=None, username=None,
 # --- build ---------------------------------------------------------------
 
 
-def _new_packager(library, conanfile_path, python_versions):
+def _library_matrix(library_dir):
+    """Read the ``[matrix]`` table out of a library's ``build.toml``.
+
+    The VS2019 driver builds each library from its own checkout rather than
+    through the generated ``build.py``, so it has to pick the table up itself --
+    otherwise a library that restricts its matrix would still get the full
+    fan-out on this track, and one that asks for a Debug pybind build (which is
+    what the desktop products link) would not get it here at all.
+
+    Args:
+        library_dir: Directory holding the library's ``build.toml``.
+
+    Returns:
+        The ``[matrix]`` table, or an empty dict when the file or the table is
+        absent. A malformed file is left to the ``xmsconan_gen`` step, which
+        reports it far more usefully than this would.
+    """
+    toml_path = os.path.join(library_dir, "build.toml")
+    if not os.path.isfile(toml_path):
+        return {}
+    return load_toml(toml_path).get("matrix", {})
+
+
+def _new_packager(library, conanfile_path, python_versions, matrix=None):
     """Build a packager wired for the VS2019 matrix.
 
     ``apply_boost_defaults=False`` is not implied by the platform key -- see
@@ -642,6 +666,8 @@ def _new_packager(library, conanfile_path, python_versions):
         library: Library / Conan package name.
         conanfile_path: Path passed to ``conan create``.
         python_versions: Python versions the pybind variants fan out across.
+        matrix: The library's ``[matrix]`` table, restricting which
+            configurations are produced. None or empty means the full fan-out.
 
     Returns:
         An :class:`~xmsconan.package_tools.packager.XmsConanPackager` with no
@@ -653,6 +679,7 @@ def _new_packager(library, conanfile_path, python_versions):
         build_missing=True,
         apply_boost_defaults=False,
         python_versions=python_versions,
+        matrix=matrix or None,
     )
 
 
@@ -694,7 +721,7 @@ def _pybind_python_versions(configurations):
     return sorted(versions, key=lambda v: tuple(int(part) for part in v.split(".")))
 
 
-def check_python_versions(libraries, python_versions=None, config_filter=None):
+def check_python_versions(libraries, python_versions=None, config_filter=None, root=None):
     """Check the interpreter running conan against the pybind configurations.
 
     The recipe hands CMake ``Python3_EXECUTABLE = sys.executable`` while the
@@ -710,15 +737,18 @@ def check_python_versions(libraries, python_versions=None, config_filter=None):
     configurations have ``pybind=False`` and are indifferent to the running
     interpreter, and ``--filter`` can remove the pybind pair outright, so
     checking the flag values alone would fail builds that work today.  The
-    matrix is a function of the platform key, ``python_versions`` and
-    ``config_filter`` -- not of the library -- so generating it once for the
-    first selected library answers for the whole run.
+    matrix is a function of the platform key, ``python_versions``,
+    ``config_filter`` and the library's own ``[matrix]`` table, so it is
+    generated for the first selected library, whose table is the one read.
 
     Args:
         libraries: :class:`LibrarySpec` list from :func:`select_libraries`;
             must not be empty (the caller rejects an empty selection first).
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
+        root: Directory holding the library checkouts, used to find the first
+            library's ``build.toml``. None falls back to the working directory,
+            and a missing file simply means the full fan-out.
 
     Returns:
         A :class:`CheckResult`.  ``ok`` is True when the filtered matrix has
@@ -731,7 +761,10 @@ def check_python_versions(libraries, python_versions=None, config_filter=None):
     """
     name = "python interpreter"
     running = f"{sys.version_info.major}.{sys.version_info.minor}"
-    packager = _new_packager(libraries[0].name, ".", python_versions)
+    packager = _new_packager(
+        libraries[0].name, ".", python_versions,
+        matrix=_library_matrix(os.path.join(root or ".", libraries[0].name)),
+    )
     requested = _pybind_python_versions(_configure(packager, config_filter))
     if not requested:
         return CheckResult(
@@ -753,19 +786,26 @@ def check_python_versions(libraries, python_versions=None, config_filter=None):
     )
 
 
-def preview(libraries, python_versions=None, config_filter=None):
+def preview(libraries, python_versions=None, config_filter=None, root=None):
     """Print the configuration matrix for each library without building.
 
     Args:
         libraries: :class:`LibrarySpec` list from :func:`select_libraries`.
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
+        root: Directory holding the library checkouts, used to read each
+            library's ``[matrix]`` table so the preview matches what a build
+            would produce. None falls back to the working directory; a library
+            with no ``build.toml`` there previews the full fan-out.
 
     Returns:
         Process exit code (always 0 -- nothing was built).
     """
     for library in libraries:
-        packager = _new_packager(library.name, ".", python_versions)
+        packager = _new_packager(
+            library.name, ".", python_versions,
+            matrix=_library_matrix(os.path.join(root or ".", library.name)),
+        )
         configurations = _configure(packager, config_filter)
         print(f"==> {library.name}: {len(configurations)} configuration(s)")
         packager.print_configuration_table()
@@ -878,7 +918,8 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
             )
 
     packager = _new_packager(
-        name, os.path.join(library_dir, "conanfile.py"), python_versions
+        name, os.path.join(library_dir, "conanfile.py"), python_versions,
+        matrix=_library_matrix(library_dir),
     )
     configurations = _configure(packager, config_filter)
     attempted = len(configurations)
@@ -1350,7 +1391,7 @@ def _run_build(args):
         if args.preview:
             return preview(
                 libraries, python_versions=args.python_versions,
-                config_filter=config_filter,
+                config_filter=config_filter, root=args.root,
             )
         if not os.path.isdir(args.root):
             # A missing *library* is a skip, because the stack is only
@@ -1367,7 +1408,7 @@ def _run_build(args):
         checks = run_preflight(remote=args.remote_name) + [print_check(
             check_python_versions(
                 libraries, python_versions=args.python_versions,
-                config_filter=config_filter,
+                config_filter=config_filter, root=args.root,
             )
         )]
         if not all(check.ok for check in checks):

@@ -88,6 +88,8 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 | `python_binding_type` | string | `"pybind11"` | Python binding framework (`"pybind11"` or `"vtk_wrap"`) |
 | `python_namespaced_dir` | string | `""` | Python module subdirectory (e.g., `"core"` for `xms.core`) |
 | `pybind_root` | boolean | `false` | Whether this is the root pybind package |
+| `[matrix].compiler_runtime` | array[string] | `["dynamic", "static"]` | Which MSVC runtimes the fan-out builds. `["dynamic"]` drops the static-CRT configurations (and their `wchar_t` / `testing` copies) for a library nothing consumes a `/MT` build of. Inert on Linux and macOS. See `docs/USAGE.md` §5.4.1. |
+| `[matrix].pybind_build_types` | array[string] | `["Release"]` | Which build types get a pybind configuration. Add `"Debug"` when consumers link a Debug module; `XMS_COVERAGE=1` adds it regardless. See `docs/USAGE.md` §5.4.1. |
 
 ### Advanced
 

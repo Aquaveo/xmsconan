@@ -472,6 +472,56 @@ def test_generates_conanfile_without_profile_options(tmp_path):
     assert "CONAN_PROFILE_OPTIONS = {}" in content
 
 
+def test_generates_conanfile_with_matrix_table(tmp_path):
+    """A [matrix] table reaches the generated conanfile as CONAN_MATRIX.
+
+    That constant is how build.py hands the table to the packager, so a table
+    that stops here restricts nothing.
+    """
+    content = _render_conanfile(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[matrix]\n'
+        'compiler_runtime = ["dynamic"]\n'
+        'pybind_build_types = ["Release", "Debug"]\n',
+        tmp_path,
+    )
+
+    assert "CONAN_MATRIX = {'compiler_runtime': ['dynamic']," in content
+    assert "'pybind_build_types': ['Release', 'Debug']}" in content
+
+
+def test_generates_conanfile_without_matrix_table(tmp_path):
+    """Omitting [matrix] yields an empty table, i.e. the full fan-out."""
+    content = _render_conanfile(
+        'library_name = "xmscore"\ndescription = "desc"\n', tmp_path
+    )
+
+    assert "CONAN_MATRIX = {}" in content
+
+
+def test_generated_build_py_passes_the_matrix_to_the_packager(tmp_path):
+    """build.py must forward CONAN_MATRIX; the constant alone changes nothing."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\n', encoding="utf-8"
+    )
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    content = (output_dir / "build.py").read_text(encoding="utf-8")
+    assert "matrix=conanfile.CONAN_MATRIX," in content
+
+
 def test_generates_conanfile_with_vs2019_dependency_overrides(tmp_path):
     """A [vs2019_dependency_overrides] table lands on the generated recipe subclass.
 

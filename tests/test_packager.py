@@ -115,6 +115,106 @@ def test_generate_configurations_windows_matrix(platform_key, expected_msvc_vers
 
 
 @patch_env(clear=True)
+def test_matrix_compiler_runtime_drops_the_static_crt_configurations():
+    """A library that ships no static-CRT build can stop producing them.
+
+    Nothing has ever consumed a static-CRT build of some libraries, and two of
+    the configurations cannot even link -- xmdf's "static" payload carries
+    __declspec(dllimport) CRT references, so a /MT link of the test runner has
+    unresolvable symbols. Cutting the base configurations cuts their wchar_t
+    and testing copies with them.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.13"],
+                         matrix={"compiler_runtime": ["dynamic"]})
+    configs = p.generate_configurations(system_platform="windows")
+
+    assert {c["compiler.runtime"] for c in configs} == {"dynamic"}
+    # 2 base + 2 wchar_t + 2 testing + 1 pybind (Release only, by default).
+    assert len(configs) == 7
+
+
+@patch_env(clear=True)
+def test_matrix_compiler_runtime_is_inert_where_the_setting_does_not_exist():
+    """One build.toml serves every platform, so the key cannot fail on Linux.
+
+    Linux and macOS declare no compiler.runtime at all; a library that restricts
+    it for Windows must still build there.
+    """
+    p = XmsConanPackager("xmscore", matrix={"compiler_runtime": ["dynamic"]})
+    configs = p.generate_configurations(system_platform="linux")
+
+    assert configs
+    assert not any("compiler.runtime" in c for c in configs)
+
+
+@patch_env(clear=True)
+def test_matrix_pybind_build_types_restores_debug_pybind():
+    """Debug+pybind is requestable without turning coverage on.
+
+    Consumers link a Debug .pyd (bin/_<name>_d.<abi>.pyd), but the only way to
+    get one used to be XMS_COVERAGE=1 -- unreachable for a Windows-only library,
+    since the generated CMakeLists makes XMS_COVERAGE a FATAL_ERROR on MSVC.
+    Whether the Debug module is built and whether it is instrumented are
+    unrelated concerns.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.13"], coverage=False,
+                         matrix={"pybind_build_types": ["Release", "Debug"]})
+    configs = p.generate_configurations(system_platform="windows")
+
+    pybind = [c for c in configs if c["options"]["pybind"]]
+    assert {c["build_type"] for c in pybind} == {"Release", "Debug"}
+    # Still dynamic-runtime only: that gate is compiler_runtime's job, not this one.
+    assert {c["compiler.runtime"] for c in pybind} == {"dynamic"}
+
+
+@patch_env(clear=True)
+def test_pybind_build_types_defaults_to_release_only():
+    """Omitting the key leaves the historical fan-out untouched."""
+    p = XmsConanPackager("xmscore", python_versions=["3.13"], coverage=False)
+    configs = p.generate_configurations(system_platform="windows")
+
+    pybind = [c for c in configs if c["options"]["pybind"]]
+    assert {c["build_type"] for c in pybind} == {"Release"}
+
+
+@patch_env(clear=True)
+def test_coverage_still_adds_debug_pybind_to_an_explicit_release_only_list():
+    """Coverage needs a Debug pybind build, so it unions rather than obeys.
+
+    A library that pins Release-only must not silently lose the instrumented
+    build the coverage tooling looks for.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.13"], coverage=True,
+                         matrix={"pybind_build_types": ["Release"]})
+    configs = p.generate_configurations(system_platform="windows")
+
+    pybind = [c for c in configs if c["options"]["pybind"]]
+    assert {c["build_type"] for c in pybind} == {"Release", "Debug"}
+
+
+@pytest.mark.parametrize("matrix,expected", [
+    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),   # misspelled key
+    ({"compiler_runtime": ["MD"]}, "MD"),                        # Conan 1 spelling
+    ({"compiler_runtime": []}, "compiler_runtime"),              # would build nothing
+    ({"compiler_runtime": "dynamic"}, "compiler_runtime"),       # string, not list
+    ({"pybind_build_types": ["RelWithDebInfo"]}, "RelWithDebInfo"),
+    ({"pybind_build_types": []}, "pybind_build_types"),
+    (["dynamic"], "matrix"),                                     # list, not a table
+])
+def test_matrix_rejects_bad_input(matrix, expected):
+    """A misspelled key or value fails loudly instead of silently building nothing.
+
+    Every failure mode here is otherwise invisible: an ignored key produces the
+    full 13-configuration fan-out the library was trying to trim, and an empty
+    list produces no configurations at all -- which looks like a successful
+    build that packaged nothing.
+    """
+    with pytest.raises(ValueError) as exc_info:
+        XmsConanPackager("xmscore", matrix=matrix)
+    assert expected in str(exc_info.value)
+
+
+@patch_env(clear=True)
 def test_generate_configurations_auto_detects_platform_and_arch():
     """system_platform=None looks the platform up from platform.system() and uses the detected arch.
 

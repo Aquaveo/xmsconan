@@ -36,6 +36,7 @@ if __name__ == "__main__":
         artifacts_dir=args.artifacts_dir,
         test_shards=test_shards,
         profile_options=conanfile.CONAN_PROFILE_OPTIONS,
+        matrix=conanfile.CONAN_MATRIX,
     )
     builder.generate_configurations()
     if args.filter:

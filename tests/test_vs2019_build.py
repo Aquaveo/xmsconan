@@ -578,6 +578,51 @@ def test_preview_applies_filter(capsys):
     assert len(_table_rows(out)) == 6
 
 
+@patch_env(clear=True)
+def test_preview_honors_the_library_matrix_table(tmp_path, capsys):
+    """A restricted [matrix] shrinks the preview, so it matches what a build makes.
+
+    The VS2019 driver builds from each checkout rather than through the
+    generated build.py, so it reads the table itself; a preview that ignored it
+    would advertise configurations the build then declines to produce.
+    """
+    library_dir = tmp_path / "xmscore"
+    library_dir.mkdir()
+    (library_dir / "build.toml").write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[matrix]\n'
+        'compiler_runtime = ["dynamic"]\n',
+        encoding="utf-8",
+    )
+
+    vs.preview(
+        [vs.LibrarySpec("xmscore", True, "synthetic")],
+        python_versions=["3.10"], root=str(tmp_path),
+    )
+
+    out = capsys.readouterr().out
+    # 2 base + 2 wchar_t + 2 testing + 1 pybind, all dynamic-runtime.
+    assert "==> xmscore: 7 configuration(s)" in out
+
+
+def test_library_matrix_is_empty_without_a_build_toml(tmp_path):
+    """A checkout with no build.toml previews and builds the full fan-out."""
+    assert vs._library_matrix(str(tmp_path)) == {}
+
+
+def test_library_matrix_reads_the_table(tmp_path):
+    """The table is returned as declared, for the packager to validate."""
+    (tmp_path / "build.toml").write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[matrix]\n'
+        'pybind_build_types = ["Release", "Debug"]\n',
+        encoding="utf-8",
+    )
+    assert vs._library_matrix(str(tmp_path)) == {"pybind_build_types": ["Release", "Debug"]}
+
+
 # --- build_library -------------------------------------------------------
 
 
@@ -640,6 +685,9 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
         build_missing=True,
         apply_boost_defaults=False,
         python_versions=["3.10", "3.13"],
+        # This checkout's build.toml declares no [matrix], so the fan-out is
+        # unrestricted -- the table is read per library, not per run.
+        matrix=None,
     )
     packager.generate_configurations.assert_called_once_with("windows_vs2019")
     packager.filter_configurations.assert_not_called()
