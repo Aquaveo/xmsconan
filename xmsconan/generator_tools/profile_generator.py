@@ -27,6 +27,42 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_OUTPUT_DIR = "conan_profiles"
 
 
+def _remove_stale_profiles(profiles_dir: str, written: list) -> list:
+    """Delete profiles in ``profiles_dir`` this run did not write.
+
+    Profiles are generated artifacts, so the directory has to *match* the
+    matrix rather than accumulate every matrix a repo ever had. Trimming
+    ``[matrix]`` otherwise left the dropped configurations' profiles on disk,
+    indistinguishable from the fresh ones, while ``CMakePresets.json`` -- a
+    single rewritten file -- lost them. A developer or IDE picking a stale
+    profile computes a package id nothing was published for and gets missing-
+    binary errors that look like a remote problem.
+
+    Only ``.txt`` files are considered, so anything else a user keeps in that
+    directory is left alone.
+
+    Args:
+        profiles_dir: Directory the profiles were written to.
+        written: Absolute paths this run wrote.
+
+    Returns:
+        The paths removed, sorted.
+    """
+    if not os.path.isdir(profiles_dir):
+        return []
+    keep = {os.path.normcase(os.path.abspath(path)) for path in written}
+    removed = []
+    for name in os.listdir(profiles_dir):
+        if not name.endswith(".txt"):
+            continue
+        path = os.path.join(profiles_dir, name)
+        if os.path.normcase(os.path.abspath(path)) in keep:
+            continue
+        os.remove(path)
+        removed.append(path)
+    return sorted(removed)
+
+
 def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR,
                       system_platform=None, dry_run=False, write_presets=True):
     """Write one Conan profile per build configuration.
@@ -82,6 +118,8 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
     written = packager.write_profiles(profiles_dir, system_platform)
     for path in written:
         LOGGER.info("Wrote profile: %s", path)
+    for path in _remove_stale_profiles(profiles_dir, written):
+        LOGGER.info("Removed stale profile: %s", path)
     LOGGER.info("Generated %d profile(s) in %s", len(written), profiles_dir)
 
     if write_presets:

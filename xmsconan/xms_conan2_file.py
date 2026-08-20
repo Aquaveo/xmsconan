@@ -239,19 +239,41 @@ class XmsConan2File(ConanFile):
 
         references += self._resolved_xms_dependencies()
 
-        required_names = {reference.split('/')[0] for reference in references}
-        for dependency in self.extra_dependencies:
+        # Keyed by package name so a skip can name the reference that won, not
+        # just the one that lost.
+        required = {reference.split('/')[0]: reference for reference in references}
+        for entry in self.extra_dependencies:
+            # Stripped: a stray space made "  boost/1.86.0" a different package
+            # name here, so it slipped past the dedupe and reached
+            # self.requires() beside the recipe's own boost.
+            dependency = entry.strip()
+            if not dependency:
+                raise ConanException(
+                    "extra_dependencies contains an empty entry. Remove it, or "
+                    "name a package as 'name/version'."
+                )
             name = dependency.split('/')[0]
-            if name in required_names:
-                # Reported rather than dropped silently: the entry may name a
-                # version that is not the one being used, and that is worth
-                # seeing in the build log.
-                self.output.info(
-                    f"Skipping extra_dependencies entry '{dependency}': "
-                    f"{name} is already required by the recipe."
+            winner = required.get(name)
+            if winner == dependency:
+                # Exact duplicate of something already required: nothing is lost
+                # by dropping it, so there is nothing to report.
+                continue
+            if winner is not None:
+                # A warning, not info: ConanOutput.info is ConanOutput.status,
+                # untagged text beside routine progress narration, once per
+                # configuration in a 14-configuration run. What is being
+                # discarded is a version pin the author wrote deliberately --
+                # someone who pinned 7.1.0 to dodge a broken 7.2.0 gets 7.2.0,
+                # and the generated find_package is version-agnostic so nothing
+                # downstream catches it.
+                self.output.warning(
+                    f"extra_dependencies entry '{dependency}' is ignored: the recipe "
+                    f"already requires '{winner}', and Conan deduplicates by package "
+                    f"name. The build will use '{winner}'. Remove the entry or align "
+                    f"its version."
                 )
                 continue
-            required_names.add(name)
+            required[name] = dependency
             references.append(dependency)
 
         for reference in references:
