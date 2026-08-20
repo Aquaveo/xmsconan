@@ -59,19 +59,25 @@ if (IS_CONDA_BUILD)
 else () # If we are not using conda, we are using conan
     # Conan 2 setup
     {%- for dependency in xms_dependencies -%}{{ '\n    ' }}find_package({{ dependency.name }} REQUIRED){% endfor %}
+    {%- for dependency in extra_cmake_dependencies -%}{{ '\n    ' }}find_package({{ dependency.name }} REQUIRED){% endfor %}
     find_package(Boost REQUIRED)
     find_package(ZLIB REQUIRED)
 
     {%- for dependency in xms_dependencies -%}{{ '\n    ' }}list(APPEND EXT_INCLUDE_DIRS {{ '${' }}{{ dependency.name }}_INCLUDE_DIRS}){% endfor %}
+    {%- for dependency in extra_cmake_dependencies -%}{{ '\n    ' }}list(APPEND EXT_INCLUDE_DIRS {{ '${' }}{{ dependency.name }}_INCLUDE_DIRS}){% endfor %}
     list(APPEND EXT_INCLUDE_DIRS ${Boost_INCLUDE_DIRS})
     list(APPEND EXT_INCLUDE_DIRS ${ZLIB_INCLUDE_DIRS})
 
     {%- for dependency in xms_dependencies -%}{{ '\n    ' }}list(APPEND EXT_LIB_DIRS {{ '${' }}{{ dependency.name }}_LIBRARY_DIRS}){% endfor %}
+    {#- A header-only package defines no _LIBRARY_DIRS or _LIBRARIES; those
+        expand to nothing, exactly as the Boost and ZLIB lines already tolerate. #}
+    {%- for dependency in extra_cmake_dependencies -%}{{ '\n    ' }}list(APPEND EXT_LIB_DIRS {{ '${' }}{{ dependency.name }}_LIBRARY_DIRS}){% endfor %}
     list(APPEND EXT_LIB_DIRS ${Boost_LIBRARY_DIRS})
     list(APPEND EXT_LIB_DIRS ${ZLIB_LIBRARY_DIRS})
 
 
     {%- for dependency in xms_dependencies -%}{{ '\n    ' }}list(APPEND EXT_LIBS {{ '${' }}{{ dependency.name }}_LIBRARIES}){% endfor %}
+    {%- for dependency in extra_cmake_dependencies -%}{{ '\n    ' }}list(APPEND EXT_LIBS {{ '${' }}{{ dependency.name }}_LIBRARIES}){% endfor %}
     list(APPEND EXT_LIBS ${Boost_LIBRARIES})
     list(APPEND EXT_LIBS ${ZLIB_LIBRARIES})
 endif ()
