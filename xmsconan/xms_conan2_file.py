@@ -548,28 +548,32 @@ class XmsConan2File(ConanFile):
     def _builds_wheel(self):
         """Whether this pybind configuration should build and test a wheel.
 
-        Release only.  ``CMAKE_DEBUG_POSTFIX`` reaches the module target, so a
-        Debug build produces ``_<name>_d.<abi>.pyd`` while the generated
-        ``_package/pyproject.toml`` declares the extension module as
-        ``xms.<dir>._<name>`` -- the wheel would install a module that
-        ``import`` cannot find, and ``run_python_tests`` would fail on it.
-        Renaming the Debug module instead is not an option: consumers link
-        ``_<name>_d`` by that exact name.
+        Everything but a Windows Debug build.  There the module is named
+        ``_<name>_d``: ``pybind11_add_module`` clears the debug postfix and the
+        generated CMakeLists re-asserts it, because ``_<name>_d`` is what
+        ``package_info()`` advertises and what a C++ consumer links.  The
+        generated ``_package/pyproject.toml`` names the extension module
+        exactly once, as ``xms.<dir>._<name>``, so a Windows Debug wheel would
+        install a module ``import`` cannot find and ``run_python_tests`` would
+        fail on it.  That configuration exists to produce the Conan package a
+        C++ consumer links (``bin/_<name>_d.<abi>.pyd`` plus
+        ``lib/_<name>_d.lib``), not a wheel; ``Release`` is what ships to an
+        index.
 
-        A Debug pybind configuration therefore exists to produce the Conan
-        package a C++ consumer links (``bin/_<name>_d.<abi>.pyd`` plus
-        ``lib/_<name>_d.lib``), not a wheel.  The Release configuration is what
-        ships to an index.
+        Off Windows the postfix is never re-asserted, so a Debug module keeps
+        its importable name -- and a Debug pybind build is exactly what
+        ``xmsconan coverage`` instruments for the Python half of its report.
+        Skipping the wheel there would report zero Python coverage with no
+        error, so it must build its wheel and run its tests.
 
         Returns:
             True when the wheel should be built and the Python tests run.
         """
-        if str(self.settings.build_type) == 'Debug':
+        if str(self.settings.build_type) == 'Debug' and str(self.settings.os) == 'Windows':
             self.output.info(
-                "Debug pybind build: skipping the wheel and the Python tests. The Debug "
-                "module is named _<name>_d by CMAKE_DEBUG_POSTFIX, which the wheel's "
-                "pyproject.toml cannot declare; this configuration ships the Conan "
-                "package only."
+                "Windows Debug pybind build: skipping the wheel and the Python tests. The "
+                "module is named _<name>_d, which the wheel's pyproject.toml cannot "
+                "declare; this configuration ships the Conan package only."
             )
             return False
         return True
@@ -611,9 +615,12 @@ class XmsConan2File(ConanFile):
         application consume an msvc 194 build, since the compatibility
         guarantee only runs newer-consumes-older and a static link across that
         boundary is not supported.  Both libraries are in the package either
-        way.  ``CMAKE_DEBUG_POSTFIX`` supplies the ``_d`` on both names; it
-        applies to the module target too, so the Debug module is
-        ``_<name>_d``.
+        way.  ``CMAKE_DEBUG_POSTFIX`` supplies the ``_d`` on the static
+        library.  The module target takes more work: ``pybind11_add_module``
+        overwrites ``DEBUG_POSTFIX`` with the interpreter's value, which is
+        empty for a release interpreter, so the generated CMakeLists
+        re-asserts ``_d`` on Windows.  That is what keeps the Debug module
+        ``_<name>_d`` on disk as well as here.
         """
         if self.options.pybind:
             self.runenv_info.append('PYTHONPATH', os.path.join(self.package_folder, "_package"))

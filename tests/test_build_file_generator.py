@@ -376,6 +376,65 @@ def test_module_install_is_absent_unless_the_library_opts_in(build_toml, tmp_pat
     assert 'LIBRARY DESTINATION "_package/xms/core"' in content
 
 
+def _debug_postfix_guard(content):
+    """Return the guarded block that re-asserts the module's Debug postfix.
+
+    Sliced to the ``if`` that owns the ``set_target_properties`` call: an
+    assertion over the whole file passes just as happily when the call sits
+    outside its guard, which is the case that would produce ``_<name>_d_d``
+    against a debug Python build.
+    """
+    guard = "if (WIN32 AND NOT PYTHON_MODULE_DEBUG_POSTFIX)"
+    assert guard in content, "the module's Debug postfix is re-asserted unguarded"
+    return content.split(guard, 1)[1].split("endif ()", 1)[0]
+
+
+def test_debug_pybind_module_keeps_the_d_postfix(build_toml, tmp_path):
+    """The module target's Debug postfix is re-asserted after pybind11 clears it.
+
+    ``pybind11_add_module`` calls ``pybind11_extension``, which sets the
+    target's ``DEBUG_POSTFIX`` to ``PYTHON_MODULE_DEBUG_POSTFIX`` -- the
+    ``NAME_WE`` of a release interpreter's ``.cp313-win_amd64.pyd``, i.e. the
+    empty string -- overriding the directory-scope ``CMAKE_DEBUG_POSTFIX _d``.
+    Without the re-assert the Debug module and its import library are named
+    ``_<name>``, while ``package_info()`` advertises ``_<name>_d``, and the
+    consumer fails with LNK1104 on a file that was never built.
+    """
+    content = _render_cmakelists(build_toml, tmp_path)
+    reassert = 'set_target_properties(_xmscore PROPERTIES DEBUG_POSTFIX "_d")'
+
+    assert reassert in _debug_postfix_guard(content)
+    # The directory-scope default must stay: it is what suffixes the static library.
+    assert "set(CMAKE_DEBUG_POSTFIX _d)" in content
+
+
+def test_debug_postfix_reassert_is_windows_only(build_toml, tmp_path):
+    """Off Windows the module must keep the name the wheel's pyproject.toml declares.
+
+    A Linux Debug pybind build is the Python half of ``xmsconan coverage``, and
+    it builds and imports its own wheel. There is also no import library off
+    Windows, so nothing links the module by name there.
+    """
+    branch = _debug_postfix_guard(_render_cmakelists(build_toml, tmp_path))
+
+    assert "else ()" not in branch
+
+
+def test_debug_postfix_reassert_yields_the_advertised_import_library(tmp_path):
+    """The re-asserted postfix is what makes the installed .lib match ``cpp_info``.
+
+    The import library is installed through
+    ``$<TARGET_FILE_BASE_NAME:_<name>>``, which carries ``DEBUG_POSTFIX``. Both
+    halves must be present for ``lib/_<name>_d.lib`` to exist, so pin them
+    together rather than in separate tests that could drift apart.
+    """
+    content = _render_cmakelists(_advertising_toml(tmp_path), tmp_path)
+    reassert = 'set_target_properties(_xmscore PROPERTIES DEBUG_POSTFIX "_d")'
+
+    assert reassert in _debug_postfix_guard(content)
+    assert "$<TARGET_FILE_BASE_NAME:_xmscore>.lib" in _module_install_branch(content)
+
+
 def test_rendered_cmakelists_has_balanced_conditionals(tmp_path):
     """Every ``if (`` in the rendered file is closed.
 
