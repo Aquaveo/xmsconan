@@ -49,6 +49,12 @@ class XmsConan2File(ConanFile):
     # Submodule under xms.<...> (e.g. "core"). Set by the generated subclass; required
     # when XMS_COVERAGE=1 so pytest-cov scopes to xms.<python_namespaced_dir>.
     python_namespaced_dir = None
+    # Opt in to advertising the pybind module's import library (_<name>) to C++
+    # consumers instead of the static library. Windows-only by construction: a
+    # MODULE library is an unlinkable bundle on macOS, and on Linux the module
+    # carries a SOABI suffix that find_library cannot match. Only for a library
+    # whose consumers deliberately link the .pyd -- see package_info().
+    pybind_advertises_module = False
     xms_dependency_options = {}  # Per-dependency option overrides: {"dep_name": {"pybind": False, "testing": False}}
 
     # Third-party (non-XMS) requirements used by EVERY toolchain except msvc 192
@@ -498,7 +504,7 @@ class XmsConan2File(ConanFile):
             if self.options.testing:
                 self.run_cxx_tests(cmake)
 
-            if self.options.pybind:
+            if self.options.pybind and self._builds_wheel():
                 self._build_wheel()
                 self.run_python_tests()
         finally:
@@ -517,21 +523,80 @@ class XmsConan2File(ConanFile):
             copy(self, "*.whl", src=os.path.join(self.build_folder, "dist"),
                  dst=os.path.join(self.package_folder, "dist"))
 
+    def _builds_wheel(self):
+        """Whether this pybind configuration should build and test a wheel.
+
+        Release only.  ``CMAKE_DEBUG_POSTFIX`` reaches the module target, so a
+        Debug build produces ``_<name>_d.<abi>.pyd`` while the generated
+        ``_package/pyproject.toml`` declares the extension module as
+        ``xms.<dir>._<name>`` -- the wheel would install a module that
+        ``import`` cannot find, and ``run_python_tests`` would fail on it.
+        Renaming the Debug module instead is not an option: consumers link
+        ``_<name>_d`` by that exact name.
+
+        A Debug pybind configuration therefore exists to produce the Conan
+        package a C++ consumer links (``bin/_<name>_d.<abi>.pyd`` plus
+        ``lib/_<name>_d.lib``), not a wheel.  The Release configuration is what
+        ships to an index.
+
+        Returns:
+            True when the wheel should be built and the Python tests run.
+        """
+        if str(self.settings.build_type) == 'Debug':
+            self.output.info(
+                "Debug pybind build: skipping the wheel and the Python tests. The Debug "
+                "module is named _<name>_d by CMAKE_DEBUG_POSTFIX, which the wheel's "
+                "pyproject.toml cannot declare; this configuration ships the Conan "
+                "package only."
+            )
+            return False
+        return True
+
+    def _advertises_module(self):
+        """Whether ``cpp_info.libs`` should name the module's import library.
+
+        Three conditions, all required.  ``pybind_advertises_module`` is the
+        library's own opt-in: a consumer that links the .pyd gets only the
+        symbols the module exports (``PyInit__<name>`` plus anything explicitly
+        ``__declspec(dllexport)``), where the static library gives it
+        everything, so this is a deliberate per-library choice and not a
+        default.  ``options.pybind`` is what makes a module exist at all -- and
+        note it propagates down the graph (see ``configure``), so a plain sister
+        library in a pybind graph must not be caught by it.  Windows is
+        structural: only there is the module's linkable half a separate import
+        library.  A macOS ``MODULE`` target is a bundle that cannot be linked,
+        and a Linux module carries a SOABI suffix
+        (``_<name>.cpython-313-x86_64-linux-gnu.so``) that CMakeDeps'
+        ``find_library(NAMES _<name>)`` cannot match, so advertising it there
+        produces a configure error rather than a usable package.
+
+        Returns:
+            True when the module's import library should be advertised.
+        """
+        if not self.pybind_advertises_module:
+            return False
+        if not self.options.pybind:
+            return False
+        return str(self.settings.os) == 'Windows'
+
     def package_info(self):
         """The package_info method of the conan class.
 
-        A ``pybind=True`` package advertises the *module's* import library
-        (``_<name>``), not the static library (``<name>lib``).  Both are in the
-        package, but a C++ consumer of a pybind package links the .pyd
-        dynamically -- that is what lets an msvc 192 application consume an msvc
-        194 build, since the compatibility guarantee only runs
-        newer-consumes-older and a static link across that boundary is not
-        supported.  ``CMAKE_DEBUG_POSTFIX`` supplies the ``_d`` on both names.
+        A package normally advertises its static library (``<name>lib``).  A
+        library that sets ``pybind_advertises_module`` advertises the *module's*
+        import library (``_<name>``) on Windows instead, for consumers that
+        deliberately link the .pyd -- which is what lets an msvc 192
+        application consume an msvc 194 build, since the compatibility
+        guarantee only runs newer-consumes-older and a static link across that
+        boundary is not supported.  Both libraries are in the package either
+        way.  ``CMAKE_DEBUG_POSTFIX`` supplies the ``_d`` on both names; it
+        applies to the module target too, so the Debug module is
+        ``_<name>_d``.
         """
         if self.options.pybind:
             self.runenv_info.append('PYTHONPATH', os.path.join(self.package_folder, "_package"))
 
-        lib_name = f'_{self.name}' if self.options.pybind else f'{self.name}lib'
+        lib_name = f'_{self.name}' if self._advertises_module() else f'{self.name}lib'
         if self.settings.build_type == 'Debug':
             self.cpp_info.libs = [f'{lib_name}_d']
         else:

@@ -303,21 +303,90 @@ def _render_cmakelists(build_toml, tmp_path):
     return (output_dir / "CMakeLists.txt").read_text(encoding="utf-8")
 
 
-def test_pybind_module_is_installed_where_a_cpp_consumer_can_find_it(build_toml, tmp_path):
-    """The module and its import library land in the standard Conan layout.
+def _advertising_toml(tmp_path):
+    """Write a build.toml that opts in to advertising the pybind module."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'python_namespaced_dir = "core"\n'
+        'pybind_advertises_module = true\n',
+        encoding="utf-8",
+    )
+    return toml_file
+
+
+def _module_install_branch(content):
+    """Return the body of the module install's ``if (WIN32)`` branch.
+
+    Sliced to the branch rather than to end-of-file: an assertion over
+    everything after the marker comment passes just as happily when the
+    destinations are swapped between branches, which is the bug this block
+    exists to fix.
+    """
+    block = content.split("# Consumable module install")[1]
+    body = block.split("if (WIN32)", 1)[1]
+    return body.split("endif ()", 1)[0]
+
+
+def test_pybind_module_is_installed_where_a_cpp_consumer_can_find_it(tmp_path):
+    """An opted-in library installs the module to bin/ and its import library to lib/.
 
     Installing the module only under ``_package/`` parks it where no Conan
-    generator looks, so a C++ consumer of a ``pybind=True`` package was handed
-    the static library instead of the .pyd it actually links.
+    generator looks. The import library is installed *by name* rather than
+    through ``install(TARGETS ... ARCHIVE)``: CMake tracks no ARCHIVE artifact
+    for a MODULE target, so an ARCHIVE clause installs nothing and does not say
+    so (verified against CMake 3.28 + MSVC v143).
+    """
+    branch = _module_install_branch(_render_cmakelists(_advertising_toml(tmp_path), tmp_path))
+
+    assert 'LIBRARY DESTINATION "bin"' in branch
+    assert "$<TARGET_FILE_BASE_NAME:_xmscore>.lib" in branch
+    assert 'DESTINATION "lib"' in branch
+    # An ARCHIVE clause here would be the silent no-op described above.
+    assert "ARCHIVE" not in branch
+
+
+def test_pybind_module_install_is_windows_only(tmp_path):
+    """There is no non-Windows branch: the module is not linkable off Windows.
+
+    A macOS MODULE target is a bundle, and a Linux module's SOABI suffix does
+    not match the ``find_library(NAMES _<name>)`` CMakeDeps generates.
+    """
+    content = _render_cmakelists(_advertising_toml(tmp_path), tmp_path)
+    block = content.split("# Consumable module install")[1]
+    branch_head = block.split("endif ()", 1)[0]
+
+    assert "if (WIN32)" in branch_head
+    assert "else ()" not in branch_head
+
+
+def test_module_install_is_absent_unless_the_library_opts_in(build_toml, tmp_path):
+    """Advertising the module is per-library, so the extra install is too.
+
+    ``pybind`` propagates down the dependency graph, so a template that
+    installed the module unconditionally would change every sister library's
+    package contents.
     """
     content = _render_cmakelists(build_toml, tmp_path)
 
-    module_install = content.split("# Consumable module install")[1]
-    # Windows splits the pair: the import library is the linkable half.
-    assert 'ARCHIVE DESTINATION "lib"' in module_install
-    assert 'LIBRARY DESTINATION "bin"' in module_install
-    # Elsewhere the module itself is the linkable artifact and stays in lib/.
-    assert 'LIBRARY DESTINATION "lib"' in module_install
+    assert "# Consumable module install" not in content
+    assert "TARGET_FILE_BASE_NAME" not in content
+    # The wheel tree install is unconditional and must survive.
+    assert 'LIBRARY DESTINATION "_package/xms/core"' in content
+
+
+def test_rendered_cmakelists_has_balanced_conditionals(tmp_path):
+    """Every ``if (`` in the rendered file is closed.
+
+    A template edit that drops one branch keyword still renders, and every
+    substring assertion still passes -- the file just stops parsing in CMake.
+    """
+    content = _render_cmakelists(_advertising_toml(tmp_path), tmp_path)
+
+    opens = len(re.findall(r"^\s*if\s*\(", content, re.MULTILINE))
+    closes = len(re.findall(r"^\s*endif\s*\(", content, re.MULTILINE))
+    assert opens == closes, f"{opens} if( vs {closes} endif("
 
 
 def test_pybind_module_still_installs_into_the_wheel_tree(build_toml, tmp_path):

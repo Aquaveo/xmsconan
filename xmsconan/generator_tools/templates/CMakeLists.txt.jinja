@@ -387,31 +387,40 @@ if (IS_PYTHON_BUILD)
             LIBRARY DESTINATION "_package/xms/{{ python_namespaced_dir }}"
     )
 
-    # Consumable module install
+{% if pybind_advertises_module %}
+    # Consumable module install (Windows only)
     #
     # The install above builds the wheel; this one makes the module consumable
-    # as a C++ package. A pybind package's linkable artifact is the module
-    # itself, not the static library -- consumers link the .pyd dynamically so
-    # an msvc 192 application can consume an msvc 194 build -- and Conan's
-    # generators only look in lib/ and bin/, never under _package/. Without
-    # this the module is present but unreachable, and cpp_info.libs points at a
-    # file no consumer wants.
+    # as a C++ package, for a library whose consumers deliberately link the .pyd
+    # rather than the static library. Conan's generators look only in lib/ and
+    # bin/, never under _package/, so without this the module is present but
+    # unreachable.
     #
-    # A MODULE library's artifact is LIBRARY on every platform (the import
-    # library is the ARCHIVE), so Windows splits the pair across bin/ and lib/
-    # while everywhere else the module itself lives in lib/.
+    # Windows only, and not through install(TARGETS ... ARCHIVE): CMake tracks
+    # no ARCHIVE artifact for a MODULE library, so an ARCHIVE clause installs
+    # nothing at all -- silently, because a missing artifact of a requested kind
+    # is not an install error. (Verified on CMake 3.28 + MSVC v143, with and
+    # without ENABLE_EXPORTS.) The import library is a real file the linker
+    # emits, since the module exports PyInit__<name>, so it is installed by
+    # name. TARGET_FILE_BASE_NAME carries CMAKE_DEBUG_POSTFIX, giving
+    # _<name>.lib in Release and _<name>_d.lib in Debug -- the names
+    # package_info() advertises.
+    #
+    # Nothing equivalent exists off Windows: a macOS MODULE target is a bundle
+    # that cannot be linked, and a Linux module's SOABI suffix
+    # (_<name>.cpython-313-x86_64-linux-gnu.so) does not match the
+    # find_library(NAMES _<name>) that CMakeDeps generates.
     if (WIN32)
         install(
                 TARGETS _{{ library_name }}
-                ARCHIVE DESTINATION "lib"
                 LIBRARY DESTINATION "bin"
         )
-    else ()
         install(
-                TARGETS _{{ library_name }}
-                LIBRARY DESTINATION "lib"
+                FILES "$<TARGET_FILE_DIR:_{{ library_name }}>/$<TARGET_FILE_BASE_NAME:_{{ library_name }}>.lib"
+                DESTINATION "lib"
         )
     endif ()
+{% endif %}
 
     install(DIRECTORY "_package/" DESTINATION "_package"
             FILES_MATCHING PATTERN "*.py"
