@@ -45,6 +45,22 @@ def _read_library_name(toml_path="build.toml"):
     return name
 
 
+def _repairs_wheel(toml_path="build.toml"):
+    """Whether this platform's wheel should be repaired for *toml_path*.
+
+    Only Windows is switchable, through ``ci.windows_wheel_repair``.
+    delvewheel's ignore list excuses ``vcruntime140.dll`` for a CPython wheel
+    but not ``msvcp140.dll``, so a ``.pyd`` with no third-party imports still
+    gets a mangled CRT vendored beside it -- which then overrides the runtime
+    XMS deliberately supplies to the Python process. Linux and macOS have no
+    such switch: an unrepaired manylinux wheel is not installable.
+    """
+    if sys.platform != "win32":
+        return True
+    data = toml.load(toml_path)
+    return data.get("ci", {}).get("windows_wheel_repair", True)
+
+
 def _read_ci_xvfb(toml_path="build.toml"):
     """Read ``ci.xvfb`` from *toml_path*.  Returns ``False`` if not set."""
     data = toml.load(toml_path)
@@ -160,18 +176,26 @@ def publish(
 
     # 3. Build (wrapped with xvfb-run if needed)
     print("==> Building...")
+    repair_wheel = _repairs_wheel(toml_path)
     build_cmd = xvfb + [
         sys.executable, "build.py",
         "--version", version,
         "--wheel-dir", wheel_dir,
     ]
+    if not repair_wheel:
+        # The staged libraries exist only to let the repair tools resolve
+        # imports, so collecting them is pure cost once repair is off.
+        build_cmd.append("--skip-dependency-libs")
     if build_filter:
         build_cmd.extend(["--filter", build_filter])
     steps.subprocess_run(build_cmd, check=True)
 
     # 4. Repair wheel
-    print("==> Repairing wheel...")
-    steps.wheel_repair(wheel_dir=wheel_dir)
+    if repair_wheel:
+        print("==> Repairing wheel...")
+        steps.wheel_repair(wheel_dir=wheel_dir)
+    else:
+        print("==> Skipping wheel repair ([ci].windows_wheel_repair = false)")
 
     # 5. Deploy wheel
     if deploy_wheel:

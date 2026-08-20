@@ -586,7 +586,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %> --artifacts-dir test_artifacts"
         shell: cmd
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -595,11 +595,19 @@ jobs:
           path: test_artifacts/
           if-no-files-found: ignore
         if: always()
+<% if ci_windows_wheel_repair %>
+      <#- [ci].windows_wheel_repair = false removes this step and the
+          dependency-libs staging that feeds it: delvewheel's ignore list
+          excuses vcruntime140 for a cp3xx wheel but not msvcp140, so a .pyd
+          with no third-party imports still gets a mangled CRT vendored beside
+          it. Linux and macOS repair is unaffected -- a manylinux wheel has to
+          be repaired to be installable. #>
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
         shell: bash
         if: matrix.build_type == 'Release'
+<% endif %>
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:

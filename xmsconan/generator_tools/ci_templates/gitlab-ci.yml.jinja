@@ -180,13 +180,22 @@ Conan Build:
     - python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
-    - python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse --artifacts-dir test_artifacts
+    - python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %> --artifacts-dir test_artifacts
+<% if ci_windows_wheel_repair %>
 <# Windows repairs in place rather than in a separate Package-stage job the way
    Linux does: delvewheel resolves the DLL imports of a win_amd64 .pyd and can
    only run on a Windows host, so a manylinux container cannot stand in. Keeping
    it here also avoids a second WinVM allocation for a step that takes seconds.
-   This mirrors the GitHub workflow, which repairs inside its windows job. #>
+   This mirrors the GitHub workflow, which repairs inside its windows job.
+
+   [ci].windows_wheel_repair = false removes this step, and with it the
+   dependency-libs staging above that exists only to feed it. delvewheel's
+   ignore list excuses vcruntime140 for a cp3xx wheel but not msvcp140, so a
+   .pyd with no third-party imports still gets a mangled CRT vendored beside
+   it -- which then overrides the runtime XMS supplies to the Python process
+   on purpose. A library with nothing to vendor opts out. #>
     - xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
+<% endif %>
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz
   tags:
     - WinVM

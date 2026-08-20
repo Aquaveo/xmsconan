@@ -254,6 +254,9 @@ def generate_ci(
         "version": version,
         "python_namespaced_dir": toml_data.get("python_namespaced_dir", library_name[3:]),
         "ci_windows": ci_config.get("windows", True),
+        # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
+        # installable, so there is no equivalent switch for Linux or macOS.
+        "ci_windows_wheel_repair": ci_config.get("windows_wheel_repair", True),
         "ci_linux": ci_config.get("linux", True),
         "ci_deploy": ci_config.get("deploy", True),
         "ci_coverage": ci_config.get("coverage", False),

@@ -522,6 +522,34 @@ def test_generated_build_py_passes_the_matrix_to_the_packager(tmp_path):
     assert "matrix=conanfile.CONAN_MATRIX," in content
 
 
+def test_generated_build_py_can_skip_the_dependency_libs_pass(tmp_path):
+    """build.py exposes --skip-dependency-libs, which the CI passes when repair is off.
+
+    collect_dependency_libs copies every DLL in the Conan cache -- hundreds of
+    them -- purely so the repair tools can resolve imports. With repair off it is
+    artifact bloat and nothing else.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "desc"\n', encoding="utf-8"
+    )
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    content = (output_dir / "build.py").read_text(encoding="utf-8")
+    assert '"--skip-dependency-libs"' in content
+    assert "if not args.skip_dependency_libs:" in content
+
+
 def test_generates_conanfile_with_vs2019_dependency_overrides(tmp_path):
     """A [vs2019_dependency_overrides] table lands on the generated recipe subclass.
 

@@ -95,6 +95,50 @@ def test_publish_no_deploy(mock_steps, tmp_path):
     mock_steps.conan_deploy.assert_not_called()
 
 
+@patch("xmsconan.ci_tools.publish.sys.platform", "win32")
+def test_publish_skips_windows_repair_when_the_toml_opts_out(mock_steps, tmp_path):
+    """On Windows, ci.windows_wheel_repair = false skips the repair step.
+
+    Same reason the generated CI skips it: delvewheel vendors a mangled
+    msvcp140 beside a .pyd that needs nothing vendored. The wheel still uploads.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
+        encoding="utf-8",
+    )
+
+    publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
+
+    mock_steps.wheel_repair.assert_not_called()
+    mock_steps.wheel_deploy.assert_called_once()
+
+
+@patch("xmsconan.ci_tools.publish.sys.platform", "linux")
+def test_publish_still_repairs_on_linux_when_windows_repair_is_off(mock_steps, tmp_path):
+    """The key is Windows-scoped: a manylinux wheel must still be repaired."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
+        encoding="utf-8",
+    )
+
+    publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
+
+    mock_steps.wheel_repair.assert_called_once_with(wheel_dir="wheelhouse")
+
+
+@patch("xmsconan.ci_tools.publish.sys.platform", "win32")
+def test_publish_repairs_on_windows_by_default(mock_steps, tmp_path):
+    """Omitting the key keeps the historical behavior."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+
+    publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
+
+    mock_steps.wheel_repair.assert_called_once_with(wheel_dir="wheelhouse")
+
+
 def test_publish_no_wheel(mock_steps, tmp_path):
     """deploy_wheel=False skips wheel upload but keeps conan."""
     toml_file = tmp_path / "build.toml"

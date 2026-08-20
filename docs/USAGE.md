@@ -189,6 +189,7 @@ These drive the CI templates. All optional.
 | `ci_type` | — | `"github"` or `"gitlab"`. **Required** for `xmsconan ci`. (Lives at the top level, not under `[ci]`.) |
 | `[ci].windows` | `true` | Emit a Windows job. |
 | `[ci].linux` | `true` | Emit the Linux jobs. **GitLab only**, like `[ci].windows` — the GitHub templates ignore both. Setting it to `false` also removes `Repair Wheel`, `Wheel Deploy`, `Conan Deploy - Linux` and the `Package` stage, because the Linux job is what produces `wheelhouse/` and the others consume it through `dependencies:`. Intended for libraries that cannot build on Linux at all; see the note below. |
+| `[ci].windows_wheel_repair` | `true` | Repair the Windows wheel. `false` drops `xmsconan_wheel_repair --platform windows` from the Windows job on **both** GitLab and GitHub, drops the same step from `xmsconan publish` when it runs on Windows, and passes `--skip-dependency-libs` to `build.py` so the Conan cache's DLLs are not staged for a repair that no longer happens. The unrepaired wheel is still built, uploaded as an artifact, and deployed. Windows-scoped by design — see §12.1. |
 | `[ci].linux_arm` | `false` | Emit a Linux ARM job (GitHub only). |
 | `[ci].deploy` | `true` | Emit deploy jobs (only run on tag pushes). |
 | `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
@@ -507,7 +508,7 @@ The generated jobs follow the pattern:
 - Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
 - `[ci].linux = false` yields a **Windows-only pipeline**: `Conan Build - Windows`, `Lint`, and (on tags) `Wheel Deploy - Windows` and `Conan Deploy - Windows`. Two combinations are rejected at generation time rather than producing a pipeline that fails opaquely later — `linux = false` together with `windows = false` (nothing would build), and `linux = false` with `coverage = true` (coverage compiles with `--coverage` under gcc, and the generated `CMakeLists.txt` rejects MSVC when `XMS_COVERAGE` is set).
-- **Each platform stages and publishes its own wheel.** Linux builds one, repairs it in the Package-stage `Repair Wheel` job, and uploads it from `Wheel Deploy`. Windows passes `--wheel-dir wheelhouse` and then repairs *in place* inside `Conan Build - Windows`, because `delvewheel` reads the DLL imports of a `win_amd64` `.pyd` and only runs on a Windows host — the manylinux container that repairs the Linux wheel cannot stand in. `Wheel Deploy - Windows` uploads the result on tags from a plain `python:3.13` image, since a devpi upload needs no MSVC toolchain. A Windows-only pipeline therefore publishes wheels, and the manual VS2019 track (§16.8) is no longer the only route.
+- **Each platform stages and publishes its own wheel.** Linux builds one, repairs it in the Package-stage `Repair Wheel` job, and uploads it from `Wheel Deploy`. Windows passes `--wheel-dir wheelhouse` and then repairs *in place* inside `Conan Build - Windows`, because `delvewheel` reads the DLL imports of a `win_amd64` `.pyd` and only runs on a Windows host — the manylinux container that repairs the Linux wheel cannot stand in. `Wheel Deploy - Windows` uploads the result on tags from a plain `python:3.13` image, since a devpi upload needs no MSVC toolchain. A Windows-only pipeline therefore publishes wheels, and the manual VS2019 track (§16.8) is no longer the only route. `[ci].windows_wheel_repair = false` drops the Windows repair step for a library that has nothing to vendor — see §12.1; the deploy job is unaffected either way.
 - **The Windows wheel jobs fan out with the build matrix.** `Conan Build - Windows` runs once per `PYTHON_TARGET_VERSION`, and each instance stages its own wheel into `wheelhouse/`. Each wheel's own ABI tag (`cp310` / `cp313` / `cp314`) keeps the files distinct, so the merged artifact holds every wheel and one `Wheel Deploy - Windows` job uploads the set.
 
 ### 10.3 Toolchain versions
@@ -594,7 +595,28 @@ What runs per platform:
 | macOS | `delocate-wheel` | `DYLD_LIBRARY_PATH={wheel_dir}/libs` |
 | Windows | `delvewheel repair --namespace-pkg xms` | `--add-path {wheel_dir}/libs` |
 
-`build.py` already populates `wheelhouse/libs/` for you when `--wheel-dir` is set. After repair, the original `wheelhouse/` is replaced with the repaired version (the `libs/` directory is removed).
+`build.py` already populates `wheelhouse/libs/` for you when `--wheel-dir` is set — `collect_dependency_libs` copies **every** `.dll` / `.so` / `.dylib` anywhere in the Conan cache, which is routinely several hundred files. After repair, the original `wheelhouse/` is replaced with the repaired version (the `libs/` directory is removed).
+
+### 12.1 Opting out on Windows (`[ci].windows_wheel_repair = false`)
+
+Windows repair is the one that can be turned off, because it can make a wheel worse.
+
+delvewheel's default ignore lists excuse `vcruntime140.dll` and `vcruntime140_1.dll` for a CPython wheel (they ship with the interpreter), and `python3xx.dll` / `api-ms-*` by regex. **`msvcp140.dll` is on none of them.** Any `.pyd` built with MSVC imports it, so delvewheel treats it as a needed dependency and vendors it — mangled to `msvcp140-<hash>.dll`, with the `_delvewheel_patch` hook rewriting the module's import table to point at the wheel's private copy. It will always find one: `--add-path {wheel_dir}/libs` holds everything from the Conan cache, and `System32` is on `PATH` besides.
+
+For a library whose `.pyd` statically links everything and imports nothing third-party there is nothing legitimate to bundle, so the entire outcome of repair is a second C++ runtime inside the process. That matters where the host application supplies the runtime itself — GMS/SMS/WMS scrub `PATH` in `dmGetScriptEnvironment` and point it at their own shipped `ms_redist_*` DLLs precisely so one CRT is in play.
+
+Set the key to `false` in that situation:
+
+```toml
+[ci]
+windows_wheel_repair = false
+```
+
+That removes the repair step from the generated GitLab and GitHub Windows jobs, skips it in `xmsconan publish` when it runs on Windows, and passes `--skip-dependency-libs` to `build.py` so the hundreds of cache DLLs are not staged for a step that no longer runs. The wheel is still built, still uploaded as an artifact, and still deployed — unrepaired, which for such a library is what it already was in substance.
+
+There is no equivalent switch for Linux or macOS. A Linux wheel has to be repaired to carry a `manylinux` platform tag and to bundle `libstdc++.so.6`; skipping it would publish something pip cannot install portably.
+
+Confirm what a given wheel actually got by unzipping the repaired output: a vendored CRT shows up as `xms/<subdir>/*.libs/msvcp140-<hash>.dll` alongside a `_delvewheel_patch` entry in the package `__init__.py`.
 
 ---
 
