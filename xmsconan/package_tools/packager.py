@@ -504,10 +504,32 @@ class XmsConanPackager(object):
         # be inert elsewhere.
         runtimes = self._matrix['compiler_runtime']
         if runtimes and 'compiler.runtime' in system_platform_configuration:
-            system_platform_configuration['compiler.runtime'] = [
+            kept = [
                 runtime for runtime in system_platform_configuration['compiler.runtime']
                 if runtime in runtimes
             ]
+            if not kept:
+                raise ValueError(
+                    f'matrix.compiler_runtime {list(runtimes)} keeps none of the runtimes '
+                    f'{system_platform_configuration["compiler.runtime"]} that platform '
+                    f'{system_platform!r} declares, so nothing would be built.'
+                )
+            # A pybind variant is only produced for a dynamic-runtime msvc
+            # configuration (see _pybind_variants), so a static-only restriction
+            # silently yields a matrix with no module and no wheel. Downstream
+            # that is either an opaque "No .whl files found" from the repair
+            # step or -- with windows_wheel_repair off -- a green pipeline that
+            # publishes nothing. Rejected here for the same reason an empty
+            # value list is.
+            if 'dynamic' not in kept:
+                raise ValueError(
+                    f'matrix.compiler_runtime {list(runtimes)} leaves platform '
+                    f'{system_platform!r} with no dynamic-runtime configuration, and a '
+                    f'pybind variant is only produced for those -- so no module and no '
+                    f'wheel would be built. Include "dynamic", or drop the pybind '
+                    f'configurations deliberately with a --filter.'
+                )
+            system_platform_configuration['compiler.runtime'] = kept
 
         # Override arch with detected architecture only when platform was auto-detected
         if auto_detected:
@@ -1016,24 +1038,49 @@ class XmsConanPackager(object):
             return False
 
         data = json.loads(result.stdout)
-        # Collect all pybind candidates with their revision timestamps so we
-        # can pick the most recent one per python_version.
+        # Collect all pybind candidates, newest revision first, Release ahead of
+        # any other build type for the same python_version.
+        #
+        # build_type has to be part of the decision, not just the dedupe key.
+        # ``ts`` is the *recipe-revision* timestamp, shared by every binary in
+        # the revision, so a Release and a Debug pybind package for one
+        # python_version tie on (ts, py_version, exact_ref) and the winner would
+        # be whichever package-id hash happens to sort higher -- a choice that
+        # flips on any dependency bump. Both carry a wheel whose filename is
+        # identical, so nothing downstream could tell which one got published.
+        # Debug is only ever a candidate at all because [matrix]
+        # pybind_build_types can now ask for it; Release is what ships.
         candidates = []
         for exact_ref, cache in data.get('Local Cache', {}).items():
             for rev in cache.get('revisions', {}).values():
                 ts = rev.get('timestamp', 0)
                 for pid, pinfo in rev.get('packages', {}).items():
-                    options = pinfo.get('info', {}).get('options', {})
+                    info = pinfo.get('info', {})
+                    options = info.get('options', {})
                     if options.get('pybind') == 'True':
                         py_version = options.get('python_version', '')
-                        candidates.append((ts, py_version, exact_ref, pid))
-        candidates.sort(reverse=True)  # newest first
+                        build_type = info.get('settings', {}).get('build_type', '')
+                        release_first = 0 if build_type == 'Release' else 1
+                        candidates.append(
+                            (-ts, release_first, py_version, exact_ref, pid, build_type)
+                        )
+        candidates.sort()
 
         seen_python_versions = set()
         extracted = False
-        for _ts, py_version, exact_ref, pid in candidates:
+        for _ts, _release_first, py_version, exact_ref, pid, build_type in candidates:
             if py_version in seen_python_versions:
+                self.printer.print_message(
+                    f'Ignoring the {build_type or "unknown"}-build wheel for python '
+                    f'{py_version}: a wheel for that version was already staged.'
+                )
                 continue
+            if build_type and build_type != 'Release':
+                self.printer.print_message(
+                    f'Warning: the only pybind package for python {py_version} is a '
+                    f'{build_type} build. Staging its wheel, which is not what a release '
+                    f'should publish.'
+                )
             path_result = subprocess.run(
                 ['conan', 'cache', 'path', f'{exact_ref}:{pid}'],
                 capture_output=True, text=True

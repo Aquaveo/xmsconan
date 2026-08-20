@@ -465,10 +465,21 @@ def test_extra_dependency_can_opt_out_of_cmake(tmp_path):
 
 
 def test_no_extra_dependencies_leaves_the_conan_block_alone(tmp_path, build_toml):
-    """A library declaring none renders exactly the Boost/ZLIB block it always did."""
+    """A library declaring none renders exactly the Boost/ZLIB block it always did.
+
+    Named rather than counted: counting ``find_package(`` between a comment and
+    the first ``endif ()`` breaks on any nested conditional and raises
+    IndexError if the comment is ever reworded.
+    """
     content = _render_cmakelists(build_toml, tmp_path)
-    conan_block = content.split("# Conan 2 setup")[1].split("endif ()")[0]
-    assert conan_block.count("find_package(") == 2  # Boost and ZLIB only
+    found = re.findall(r"find_package\((\w+) REQUIRED\)", content)
+
+    assert "Boost" in found
+    assert "ZLIB" in found
+    # Neither the cereal/xmdf-style extras nor a lowercase duplicate of a
+    # built-in should appear for a library that declared none.
+    assert "zlib" not in found
+    assert "boost" not in found
 
 
 def test_conan_profile_options_reaches_template_context(tmp_path):

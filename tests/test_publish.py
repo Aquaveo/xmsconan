@@ -95,48 +95,66 @@ def test_publish_no_deploy(mock_steps, tmp_path):
     mock_steps.conan_deploy.assert_not_called()
 
 
+def _write_publish_toml(tmp_path, **ci_keys):
+    """Write a minimal build.toml, with any given keys under ``[ci]``."""
+    lines = ['library_name = "xmscore"']
+    if ci_keys:
+        lines.append("[ci]")
+        lines += [
+            f"{key} = {'true' if value else 'false'}" for key, value in ci_keys.items()
+        ]
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return toml_file
+
+
+def _build_argv(mock_steps):
+    """Return the argv of the build.py call (the second subprocess_run call)."""
+    return mock_steps.subprocess_run.call_args_list[1][0][0]
+
+
 @patch("xmsconan.ci_tools.publish.sys.platform", "win32")
 def test_publish_skips_windows_repair_when_the_toml_opts_out(mock_steps, tmp_path):
     """On Windows, ci.windows_wheel_repair = false skips the repair step.
 
     Same reason the generated CI skips it: delvewheel vendors a mangled
-    msvcp140 beside a .pyd that needs nothing vendored. The wheel still uploads.
+    msvcp140 beside a .pyd that needs nothing vendored. The wheel still uploads,
+    and the dependency-libs staging that only feeds repair is skipped with it.
     """
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
-        encoding="utf-8",
-    )
+    toml_file = _write_publish_toml(tmp_path, windows_wheel_repair=False)
 
     publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
 
     mock_steps.wheel_repair.assert_not_called()
     mock_steps.wheel_deploy.assert_called_once()
+    assert "--skip-dependency-libs" in _build_argv(mock_steps)
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
 def test_publish_still_repairs_on_linux_when_windows_repair_is_off(mock_steps, tmp_path):
-    """The key is Windows-scoped: a manylinux wheel must still be repaired."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
-        encoding="utf-8",
-    )
+    """The key is Windows-scoped: a manylinux wheel must still be repaired.
+
+    And the libs it is repaired against must still be staged -- passing
+    --skip-dependency-libs here would leave delvewheel/auditwheel resolving
+    from the build box's own paths.
+    """
+    toml_file = _write_publish_toml(tmp_path, windows_wheel_repair=False)
 
     publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
 
     mock_steps.wheel_repair.assert_called_once_with(wheel_dir="wheelhouse")
+    assert "--skip-dependency-libs" not in _build_argv(mock_steps)
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "win32")
 def test_publish_repairs_on_windows_by_default(mock_steps, tmp_path):
-    """Omitting the key keeps the historical behavior."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    """Omitting the key keeps the historical behavior, staging included."""
+    toml_file = _write_publish_toml(tmp_path)
 
     publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
 
     mock_steps.wheel_repair.assert_called_once_with(wheel_dir="wheelhouse")
+    assert "--skip-dependency-libs" not in _build_argv(mock_steps)
 
 
 def test_publish_no_wheel(mock_steps, tmp_path):
