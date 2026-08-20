@@ -115,6 +115,7 @@ def render_template_with_toml(
     toml_data.setdefault("pybind_headers", [])
     toml_data.setdefault("xms_dependency_options", {})
     toml_data.setdefault("extra_dependency_cmake_names", {})
+    toml_data.setdefault("matrix", {})
     toml_data.setdefault("vs2019_dependency_overrides", {})
     toml_data.setdefault("xms_dependencies", [])
     toml_data.setdefault("xms_python_dependencies", [])

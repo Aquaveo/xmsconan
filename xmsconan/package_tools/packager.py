@@ -152,6 +152,7 @@ class XmsConanPackager(object):
         apply_boost_defaults: bool = True,
         profile_conf: Optional[dict] = None,
         profile_variants: Optional[list] = None,
+        matrix: Optional[dict] = None,
     ):
         """Initialize the packager.
 
@@ -191,6 +192,19 @@ class XmsConanPackager(object):
                 that drives C++ coverage is always emitted (it does not
                 require this flag). When None, defaults to ``True`` iff
                 ``XMS_COVERAGE=1`` is set in the environment.
+            matrix: Which configurations the fan-out should produce, from the
+                ``[matrix]`` table of ``build.toml``. ``compiler_runtime``
+                restricts the platform's ``compiler.runtime`` values (a subset of
+                ``["dynamic", "static"]``) before the cartesian product, so the
+                ``wchar_t`` and ``testing`` copies shrink with the base
+                configurations; it is inert on platforms that declare no such
+                setting, since one ``build.toml`` serves every platform.
+                ``pybind_build_types`` names the build types that get a pybind
+                variant (a subset of ``["Release", "Debug"]``, default
+                ``["Release"]``); ``coverage`` adds ``Debug`` to whatever it
+                names, because the instrumented build is a separate concern from
+                which modules a library ships. None means the full historical
+                fan-out.
             apply_boost_defaults: If True (the default), inject the boost
                 ``without_stacktrace`` / ``without_locale`` defaults described
                 below into the profile options. Set to False when building
@@ -213,6 +227,7 @@ class XmsConanPackager(object):
         self._profile_conf = dict(DEFAULT_PROFILE_CONF) if profile_conf is None else dict(profile_conf)
         self._profile_variants = self._resolve_profile_variants(profile_variants)
         self._python_versions = self._resolve_python_versions(python_versions)
+        self._matrix = self._resolve_matrix(matrix)
         self._coverage = (
             coverage if coverage is not None
             else os.environ.get('XMS_COVERAGE') == '1'
@@ -252,6 +267,79 @@ class XmsConanPackager(object):
 
     #: Values ``kinds`` may name; the return values of :meth:`configuration_kind`.
     _VARIANT_KINDS = frozenset({'library', 'python', 'testing'})
+
+    #: Accepted values per ``[matrix]`` key. The keys double as the vocabulary
+    #: check: anything else in the table is a misspelling, and a misspelling that
+    #: is skipped rather than rejected produces the very fan-out the library was
+    #: trying to trim.
+    _MATRIX_VALUES = {
+        'compiler_runtime': ('dynamic', 'static'),
+        'pybind_build_types': ('Release', 'Debug'),
+    }
+
+    #: Build types that get a pybind variant when ``[matrix]`` does not say.
+    DEFAULT_PYBIND_BUILD_TYPES = ('Release',)
+
+    @classmethod
+    def _resolve_matrix(cls, matrix: Optional[dict]) -> dict:
+        """Validate the ``[matrix]`` table and fill in its defaults.
+
+        Both failure modes are silent otherwise. A misspelled key
+        (``compiler_runtimes``) is simply never read, so the library keeps
+        producing configurations it asked to stop producing, and an empty list
+        yields no configurations at all -- a build that succeeds having packaged
+        nothing.
+
+        Args:
+            matrix: The ``[matrix]`` table, or None for the full fan-out.
+
+        Returns:
+            The table with every accepted key present: ``compiler_runtime`` is
+            None when unrestricted, ``pybind_build_types`` always a tuple.
+
+        Raises:
+            ValueError: When ``matrix`` is not a mapping, carries an unknown key,
+                or names a value outside the accepted vocabulary -- including an
+                empty list, which would build nothing.
+        """
+        if matrix is None:
+            matrix = {}
+        if not isinstance(matrix, dict):
+            raise ValueError(f'matrix must be a table, got {type(matrix).__name__}')
+
+        unknown = sorted(set(matrix) - set(cls._MATRIX_VALUES))
+        if unknown:
+            raise ValueError(
+                f'matrix has unknown key(s) {", ".join(unknown)}. '
+                f'Accepted keys: {", ".join(sorted(cls._MATRIX_VALUES))}.'
+            )
+
+        resolved = {}
+        for key, accepted in cls._MATRIX_VALUES.items():
+            values = matrix.get(key)
+            if values is None:
+                resolved[key] = None
+                continue
+            if not isinstance(values, (list, tuple)):
+                raise ValueError(
+                    f'matrix.{key} must be a list, got {type(values).__name__}'
+                )
+            if not values:
+                raise ValueError(
+                    f'matrix.{key} is empty, which would build nothing. '
+                    f'Omit the key for every value, or name a subset of: {", ".join(accepted)}.'
+                )
+            invalid = sorted(str(value) for value in values if value not in accepted)
+            if invalid:
+                raise ValueError(
+                    f'matrix.{key} names unknown value(s) {", ".join(invalid)}. '
+                    f'Accepted values: {", ".join(accepted)}.'
+                )
+            resolved[key] = tuple(values)
+
+        if resolved['pybind_build_types'] is None:
+            resolved['pybind_build_types'] = cls.DEFAULT_PYBIND_BUILD_TYPES
+        return resolved
 
     @classmethod
     def _resolve_profile_variants(cls, profile_variants):
@@ -409,6 +497,18 @@ class XmsConanPackager(object):
             )
         system_platform_configuration = configurations[system_platform].copy()
 
+        # Trim the base matrix before the product so the wchar_t and testing
+        # copies shrink with it. Platforms that declare no compiler.runtime
+        # (linux, darwin) ignore the restriction rather than failing: one
+        # build.toml drives every platform, so a Windows-only statement has to
+        # be inert elsewhere.
+        runtimes = self._matrix['compiler_runtime']
+        if runtimes and 'compiler.runtime' in system_platform_configuration:
+            system_platform_configuration['compiler.runtime'] = [
+                runtime for runtime in system_platform_configuration['compiler.runtime']
+                if runtime in runtimes
+            ]
+
         # Override arch with detected architecture only when platform was auto-detected
         if auto_detected:
             system_platform_configuration['arch'] = [get_current_arch()]
@@ -501,16 +601,36 @@ class XmsConanPackager(object):
                 variants.append(wchar_t_options)
         return variants
 
+    def _pybind_build_types(self):
+        """Return the build types a pybind variant is produced for.
+
+        ``[matrix].pybind_build_types`` decides this, defaulting to Release
+        only: for most libraries the Release wheel is what ships and a Debug
+        module is redundant. A library whose consumers link a Debug module names
+        Debug as well.
+
+        Coverage is added on top rather than obeyed, because
+        ``xmsconan_coverage`` needs a Debug+pybind build to instrument the
+        Python-reachable C++ surface. The two used to be the same switch, which
+        made the Debug module unreachable for any library that cannot run
+        coverage at all -- ``XMS_COVERAGE`` is a ``FATAL_ERROR`` on MSVC, so a
+        Windows-only library could never ask for one.
+
+        Returns:
+            The build-type names, as a set.
+        """
+        build_types = set(self._matrix['pybind_build_types'])
+        if self._coverage:
+            build_types.add('Debug')
+        return build_types
+
     def _pybind_variants(self, combinations):
         """Return the pybind copies of ``combinations``, one per python version.
 
-        Debug+pybind is normally redundant (the Release wheel is what ships),
-        but xmsconan_coverage needs a Debug+pybind build to instrument the
-        Python-reachable C++ surface — so the Debug gate relaxes when coverage
-        is enabled. The companion testing-only Debug build (emitted
-        unconditionally by ``_testing_variants``) handles C++ coverage. On msvc,
-        only the dynamic-runtime configurations get a pybind variant; every
-        other toolchain fans out from all of them.
+        The companion testing-only Debug build (emitted unconditionally by
+        ``_testing_variants``) handles C++ coverage. On msvc, only the
+        dynamic-runtime configurations get a pybind variant; every other
+        toolchain fans out from all of them.
 
         Args:
             combinations: The base configurations to derive from.
@@ -519,10 +639,10 @@ class XmsConanPackager(object):
             A new list of deep-copied configurations, ``len(python_versions)``
             per eligible base configuration.
         """
+        build_types = self._pybind_build_types()
         variants = []
         for combination in combinations:
-            allow_debug = combination['build_type'] != 'Debug' or self._coverage
-            if allow_debug and \
+            if combination['build_type'] in build_types and \
                     (combination['compiler'] != 'msvc' or combination['compiler.runtime'] in ['dynamic']):
                 for py_version in self._python_versions:
                     pybind_options = copy.deepcopy(combination)
