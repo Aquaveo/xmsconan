@@ -623,7 +623,7 @@ class XmsConanPackager(object):
                 variants.append(wchar_t_options)
         return variants
 
-    def _pybind_build_types(self):
+    def _pybind_build_types(self) -> set:
         """Return the build types a pybind variant is produced for.
 
         ``[matrix].pybind_build_types`` decides this, defaulting to Release

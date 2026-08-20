@@ -193,3 +193,50 @@ def test_malformed_variant_is_rejected_by_name(tmp_path):
 
     with pytest.raises(ValueError, match="unknown platforms macos"):
         generate_profiles(toml_file_path=str(toml_file), system_platform="windows")
+
+
+@patch_env(clear=True)
+def test_stale_profiles_are_removed(tmp_path):
+    """Trimming the matrix removes the profiles for the configurations it dropped.
+
+    write_profiles only writes; it never deleted. So a library that narrowed
+    [matrix] kept the dropped configurations' profiles on disk, indistinguishable
+    from the fresh ones, while CMakePresets.json -- one rewritten file -- lost
+    them. A developer or IDE picking a stale profile computes a package id
+    nothing was published for, and the missing-binary error looks like a remote
+    problem.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8"
+    )
+    first = generate_profiles(toml_file_path=str(toml_file), system_platform="windows")
+    assert any("static" in os.path.basename(path) for path in first)
+
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        '[matrix]\n'
+        'compiler_runtime = ["dynamic"]\n',
+        encoding="utf-8",
+    )
+    generate_profiles(toml_file_path=str(toml_file), system_platform="windows")
+
+    on_disk = os.listdir(tmp_path / DEFAULT_OUTPUT_DIR)
+    assert not [name for name in on_disk if "static" in name]
+
+
+@patch_env(clear=True)
+def test_unrelated_files_in_the_profiles_directory_survive(tmp_path):
+    """Only generated .txt profiles are pruned."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8"
+    )
+    generate_profiles(toml_file_path=str(toml_file), system_platform="linux")
+    keep = tmp_path / DEFAULT_OUTPUT_DIR / "notes.md"
+    keep.write_text("hand-written", encoding="utf-8")
+
+    generate_profiles(toml_file_path=str(toml_file), system_platform="linux")
+
+    assert keep.exists()

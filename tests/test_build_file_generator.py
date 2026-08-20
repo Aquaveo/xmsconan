@@ -1035,3 +1035,80 @@ def test_gen_no_profiles_skips_them(tmp_path, monkeypatch):
 
     assert not (tmp_path / "conan_profiles").exists()
     assert not (tmp_path / "CMakePresets.json").exists()
+
+
+def test_extra_dependency_cmake_name_typo_is_rejected(tmp_path):
+    """An override naming no declared package fails generation.
+
+    Ignoring it produced a find_package that failed naming the *dependency*,
+    pointing nowhere near the misspelled table key -- the same failure mode
+    vs2019_dependency_overrides already refuses.
+    """
+    toml_file = _write_extra_dependency_toml(
+        tmp_path, '\n[extra_dependency_cmake_names]\nxmdff = "Xmdf"\n'
+    )
+    with pytest.raises(ValueError, match="xmdff"):
+        _render_cmakelists(toml_file, tmp_path)
+
+
+@pytest.mark.parametrize("value", ["false", "0", "3", "true"], ids=[
+    "false-bare-word", "zero", "integer", "true-bare-word",
+])
+def test_extra_dependency_cmake_name_must_be_a_string(tmp_path, value):
+    """A non-string override is refused rather than silently acted on.
+
+    A falsey value dropped the dependency from find_package and every EXT_*
+    list, surfacing as a missing header; a truthy one rendered its Python repr
+    into the CMake file as find_package(3 REQUIRED).
+    """
+    toml_file = _write_extra_dependency_toml(
+        tmp_path, f'\n[extra_dependency_cmake_names]\nxmdf = {value}\n'
+    )
+    with pytest.raises(ValueError, match="must be a string"):
+        _render_cmakelists(toml_file, tmp_path)
+
+
+def test_extra_dependencies_are_deduped_against_the_template_builtins(tmp_path):
+    """An entry the template already finds does not get a second find_package.
+
+    Conan publishes zlib's and boost's configs as ZLIB and Boost, so the
+    lowercase duplicate is a hard configure error -- and USAGE advertises the
+    recipe-side dedupe as the feature that lets a library list a dep the recipe
+    already supplies, so users following that advice land exactly here.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'python_namespaced_dir = "core"\n'
+        'extra_dependencies = ["zlib/1.3.1", "boost/1.86.0", "pybind11/3.0.1", "cereal/1.3.0"]\n',
+        encoding="utf-8",
+    )
+    content = _render_cmakelists(toml_file, tmp_path)
+    found = re.findall(r"find_package\((\w+) REQUIRED\)", content)
+
+    assert "cereal" in found
+    assert "zlib" not in found
+    assert "boost" not in found
+    # pybind11 is found inside the IS_PYTHON_BUILD block, where Python exists;
+    # a second unconditional call is not wanted.
+    assert found.count("pybind11") == 1
+
+
+def test_extra_dependency_duplicating_an_xms_dependency_is_not_found_twice(tmp_path):
+    """The CMake side dedupes against xms_dependencies, as the recipe side does."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsgrid"\n'
+        'description = "Grid"\n'
+        'python_namespaced_dir = "grid"\n'
+        'extra_dependencies = ["xmscore/7.1.0"]\n'
+        '\n[[xms_dependencies]]\n'
+        'name = "xmscore"\n'
+        'version = "7.0.0"\n',
+        encoding="utf-8",
+    )
+    content = _render_cmakelists(toml_file, tmp_path)
+    found = re.findall(r"find_package\((\w+) REQUIRED\)", content)
+
+    assert found.count("xmscore") == 1

@@ -38,7 +38,19 @@ def _write_text_lf(path: Path, content: str, encoding: str = "utf-8") -> None:
         f.write(content)
 
 
-def _extra_cmake_dependencies(toml_data: dict) -> list[dict]:
+#: Packages the generated ``CMakeLists.txt`` already finds on its own, keyed by
+#: Conan package name. An ``extra_dependencies`` entry naming one of these is
+#: wired into the Conan graph but must not produce a second ``find_package``:
+#: Conan publishes boost's and zlib's configs under different names (``Boost``,
+#: ``ZLIB``), so the lowercase duplicate is a hard configure error, and pybind11
+#: is found inside the ``IS_PYTHON_BUILD`` block where Python is available.
+_CMAKE_BUILTIN_DEPENDENCIES = frozenset({
+    "boost", "zlib", "pybind11", "cxxtest", "gtest",
+})
+
+
+def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
+                              xms_dependencies: list) -> list[dict]:
     """Resolve which ``extra_dependencies`` the generated CMakeLists should find.
 
     ``extra_dependencies`` entries are Conan references (``"cereal/1.3.0"``), and
@@ -46,21 +58,59 @@ def _extra_cmake_dependencies(toml_data: dict) -> list[dict]:
     ``find_package`` with. That is the reference name for most packages, so it is
     the default; ``[extra_dependency_cmake_names]`` overrides an entry whose
     CMake config uses something else, and an empty override keeps a dependency in
-    the Conan graph while leaving it out of the CMake file entirely -- for a
-    package that ships no CMake config, or one the template already finds on its
-    own.
+    the Conan graph while leaving it out of the CMake file entirely.
+
+    Entries the template already finds are dropped, mirroring the recipe-side
+    dedupe in ``XmsConan2File.requirements()`` -- one list must not obey two
+    rules. That covers ``xms_dependencies`` (already looped over above the extras
+    in the template) and :data:`_CMAKE_BUILTIN_DEPENDENCIES`.
 
     Args:
-        toml_data: The parsed ``build.toml``, with defaults already applied.
+        extra_dependencies: The ``extra_dependencies`` list from ``build.toml``.
+        overrides: The ``[extra_dependency_cmake_names]`` table.
+        xms_dependencies: The normalized ``xms_dependencies`` entries.
 
     Returns:
         One ``{"name": <cmake package name>}`` entry per dependency to find, in
-        declaration order, with opted-out entries dropped.
+        declaration order, deduplicated.
+
+    Raises:
+        ValueError: When an override names a package that is not in
+            ``extra_dependencies``, or gives one a non-string value.
     """
-    overrides = toml_data["extra_dependency_cmake_names"]
+    conan_names = [reference.split("/")[0] for reference in extra_dependencies]
+    unmatched = sorted(set(overrides) - set(conan_names))
+    if unmatched:
+        # The same rule vs2019_dependency_overrides enforces: an ignored key is
+        # a typo whose only symptom is a find_package that fails naming the
+        # *dependency*, pointing nowhere near the misspelled table entry.
+        raise ValueError(
+            f'extra_dependency_cmake_names names package(s) {", ".join(unmatched)} '
+            f'that are not in extra_dependencies. Declared: '
+            f'{", ".join(sorted(conan_names)) or "(none)"}.'
+        )
+    for name, value in overrides.items():
+        if not isinstance(value, str):
+            # A falsey non-string silently dropped the dependency; a truthy one
+            # rendered its repr straight into find_package(3 REQUIRED).
+            raise ValueError(
+                f'extra_dependency_cmake_names.{name} must be a string, got '
+                f'{type(value).__name__} ({value!r}). Use "" to keep the '
+                f'dependency out of CMakeLists.txt.'
+            )
+
+    already_found = set(_CMAKE_BUILTIN_DEPENDENCIES)
+    already_found.update(
+        dep["name"] if isinstance(dep, dict) else str(dep).split("/")[0]
+        for dep in xms_dependencies
+    )
+
     dependencies = []
-    for reference in toml_data["extra_dependencies"]:
-        conan_name = reference.split("/")[0]
+    seen = set()
+    for conan_name in conan_names:
+        if conan_name in already_found or conan_name in seen:
+            continue
+        seen.add(conan_name)
         cmake_name = overrides.get(conan_name, conan_name)
         if cmake_name:
             dependencies.append({"name": cmake_name})
@@ -130,7 +180,11 @@ def render_template_with_toml(
             if isinstance(dep, dict):
                 dep.setdefault("no_python", False)
 
-    toml_data["extra_cmake_dependencies"] = _extra_cmake_dependencies(toml_data)
+    toml_data["extra_cmake_dependencies"] = _extra_cmake_dependencies(
+        toml_data["extra_dependencies"],
+        toml_data["extra_dependency_cmake_names"],
+        toml_data["xms_dependencies"],
+    )
 
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -936,7 +936,15 @@ class TestRequirements:
         obj.requirements()
         required = self._required(obj)
         assert [r for r in required if r.startswith("pybind11/")] == ["pybind11/3.0.1"]
-        assert obj.output.info.called, "a dropped dependency must not be silent"
+        if extra == "pybind11/3.0.1":
+            # An exact duplicate loses nothing, so there is nothing to report.
+            assert not obj.output.warning.called
+        else:
+            # A discarded *pin* is a warning that names both references, so the
+            # author can see which version the build actually used.
+            message = obj.output.warning.call_args[0][0]
+            assert extra in message
+            assert "pybind11/3.0.1" in message
 
     def test_extra_dependency_is_kept_when_nothing_else_requires_it(self):
         """The same entry survives on a configuration that does not require it itself.
@@ -948,7 +956,9 @@ class TestRequirements:
         obj = self._make_obj(pybind=False, extra_dependencies=["pybind11/3.0.1"])
         obj.requirements()
         assert "pybind11/3.0.1" in self._required(obj)
-        assert not obj.output.info.called
+        # Specifically no *skip* report -- asserting nothing was logged at all
+        # would redden on any future diagnostic in requirements().
+        assert not obj.output.warning.called
 
     def test_extra_dependencies_are_deduplicated_against_each_other(self):
         """Two entries naming one package collapse to the first.
@@ -971,6 +981,10 @@ class TestRequirements:
         obj.requirements()
         required = self._required(obj)
         assert [r for r in required if r.startswith("xmscore/")] == ["xmscore/[>=7.0.0 <8.0.0]"]
+        # The warning has to name the range that won, not just the pin that lost.
+        message = obj.output.warning.call_args[0][0]
+        assert "xmscore/7.1.0" in message
+        assert "xmscore/[>=7.0.0 <8.0.0]" in message
 
     def test_vs2019_dependency_override_replaces_matching_reference(self):
         """On VS2019 an override replaces its dep, matched on the name before '/'."""
