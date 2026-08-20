@@ -202,6 +202,20 @@ def generate_ci(
                 "Coverage builds with --coverage under gcc; the generated "
                 "CMakeLists rejects MSVC when XMS_COVERAGE is set."
             )
+    if ci_type == "github":
+        # Every wheel step in the GitHub workflow is gated on
+        # `matrix.build_type == 'Release'`, so a library whose pybind
+        # configurations exclude Release builds a wheel on the Debug leg and
+        # discards it, while the Release leg dies inside xmsconan_wheel_repair
+        # with "No .whl files found". Same class of check as the two above.
+        pybind_build_types = toml_data.get("matrix", {}).get("pybind_build_types")
+        if pybind_build_types and "Release" not in pybind_build_types:
+            raise ValueError(
+                f"build.toml sets [matrix].pybind_build_types = "
+                f"{list(pybind_build_types)} with ci_type = \"github\". Every wheel "
+                f"step in the GitHub workflow runs only on the Release leg, so no "
+                f"wheel would be published. Include \"Release\"."
+            )
     # [ci].linux and [ci].windows are GitLab-only (see docs/USAGE.md, "CI
     # options"). The GitHub templates ignore both, so a project that sets
     # either here gets the full matrix and no indication its setting did

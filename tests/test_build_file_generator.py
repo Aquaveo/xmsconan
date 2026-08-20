@@ -1112,3 +1112,31 @@ def test_extra_dependency_duplicating_an_xms_dependency_is_not_found_twice(tmp_p
     found = re.findall(r"find_package\((\w+) REQUIRED\)", content)
 
     assert found.count("xmscore") == 1
+
+
+def test_generation_rejects_a_malformed_matrix_table(tmp_path):
+    """A bad [matrix] fails before it is written into the generated conanfile.
+
+    render_template_with_toml writes the table verbatim as CONAN_MATRIX, so a
+    caller that renders templates without going on to generate profiles would
+    otherwise produce an artifact from unvalidated input.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[matrix]\n'
+        'compiler_runtimes = ["dynamic"]\n',
+        encoding="utf-8",
+    )
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("conanfile.py.jinja", tpl_dir)
+
+    with pytest.raises(ValueError, match="compiler_runtimes"):
+        render_template_with_toml(
+            toml_file_path=str(toml_file),
+            version="1.0.0",
+            template_dir=str(tpl_dir),
+            output_dir=str(tmp_path / "output"),
+        )

@@ -192,14 +192,23 @@ def test_coverage_still_adds_debug_pybind_to_an_explicit_release_only_list():
     assert {c["build_type"] for c in pybind} == {"Release", "Debug"}
 
 
+@patch_env(clear=True)
 @pytest.mark.parametrize("matrix,expected", [
-    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),   # misspelled key
-    ({"compiler_runtime": ["MD"]}, "MD"),                        # Conan 1 spelling
-    ({"compiler_runtime": []}, "compiler_runtime"),              # would build nothing
-    ({"compiler_runtime": "dynamic"}, "compiler_runtime"),       # string, not list
+    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),
+    ({"compiler_runtime": ["MD"]}, "MD"),
+    ({"compiler_runtime": []}, "compiler_runtime"),
+    ({"compiler_runtime": "dynamic"}, "compiler_runtime"),
     ({"pybind_build_types": ["RelWithDebInfo"]}, "RelWithDebInfo"),
     ({"pybind_build_types": []}, "pybind_build_types"),
-    (["dynamic"], "matrix"),                                     # list, not a table
+    (["dynamic"], "matrix"),
+], ids=[
+    "misspelled-key",
+    "conan-1-runtime-spelling",
+    "empty-runtime-list-builds-nothing",
+    "runtime-string-not-list",
+    "unsupported-build-type",
+    "empty-build-type-list",
+    "matrix-is-a-list-not-a-table",
 ])
 def test_matrix_rejects_bad_input(matrix, expected):
     """A misspelled key or value fails loudly instead of silently building nothing.
@@ -2072,3 +2081,39 @@ def test_matrix_static_only_runtime_is_inert_on_linux():
     packager = XmsConanPackager("xmscore", matrix={"compiler_runtime": ["static"]})
     configs = packager.generate_configurations(system_platform="linux")
     assert [c for c in configs if c["options"]["pybind"]]
+
+
+@patch_env(clear=True)
+def test_debug_pybind_fans_out_across_every_python_version():
+    """Debug+pybind fans out per python version, like Release does.
+
+    A single-version matrix cannot tell "Debug fans out" from "Debug gets one
+    version", so this asserts all four (build_type, python_version) pairs.
+    """
+    packager = XmsConanPackager(
+        "xmscore", python_versions=["3.10", "3.13"],
+        matrix={"pybind_build_types": ["Release", "Debug"]},
+    )
+    configs = packager.generate_configurations(system_platform="windows")
+
+    pybind = [c for c in configs if c["options"]["pybind"]]
+    pairs = {(c["build_type"], c["options"]["python_version"]) for c in pybind}
+    assert pairs == {
+        ("Release", "3.10"), ("Release", "3.13"),
+        ("Debug", "3.10"), ("Debug", "3.13"),
+    }
+
+
+@patch_env(clear=True)
+def test_empty_matrix_table_matches_no_matrix_at_all():
+    """The generated build.py passes CONAN_MATRIX = {} for most libraries.
+
+    That literal is the production default, while the tests above cover None and
+    populated tables -- equivalent today, and worth pinning so it stays so.
+    """
+    default = XmsConanPackager("xmscore", python_versions=["3.13"])
+    explicit = XmsConanPackager("xmscore", python_versions=["3.13"], matrix={})
+
+    from_default = default.generate_configurations(system_platform="windows")
+    from_explicit = explicit.generate_configurations(system_platform="windows")
+    assert from_default == from_explicit

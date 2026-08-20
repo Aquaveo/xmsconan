@@ -1329,3 +1329,29 @@ def test_malformed_build_toml_names_the_file(tmp_path):
     (tmp_path / "build.toml").write_text("library_name = \n", encoding="utf-8")
     with pytest.raises(ValueError, match="could not parse"):
         vs._library_matrix(str(tmp_path))
+
+
+@mock.patch(f"{MODULE}.XmsConanPackager")
+@mock.patch(f"{MODULE}.subprocess.run")
+def test_build_library_passes_the_librarys_own_matrix(mock_run, mock_packager_cls, tmp_path):
+    """The checkout's [matrix] reaches the packager, not just any matrix.
+
+    Asserting only that the kwarg is present cannot catch matrix=None: the build
+    would silently produce the full fan-out for a library that trimmed it,
+    including the static-CRT configurations that cannot link a test runner.
+    """
+    library_dir = tmp_path / "xmscore"
+    library_dir.mkdir()
+    (library_dir / "build.toml").write_text(
+        'library_name = "xmscore"\n'
+        '[matrix]\n'
+        'compiler_runtime = ["dynamic"]\n',
+        encoding="utf-8",
+    )
+    mock_packager_cls.return_value = fake_packager(configurations=[{}] * 7)
+
+    vs.build_library(XMSCORE, str(tmp_path), version="7.0.0", python_versions=["3.13"])
+
+    assert mock_packager_cls.call_args.kwargs["matrix"] == {
+        "compiler_runtime": ["dynamic"],
+    }

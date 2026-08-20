@@ -327,7 +327,8 @@ GitHub retired the `windows-2019` runner image, so the msvc 192 binaries the Aqu
 # One time: add + log in to the aquaveo-vs2019 remote, then check the machine
 xmsconan_vs2019 setup --password-file <path to your conan password file>
 
-# Preview the matrix (14 configurations per library) without building
+# Preview the matrix (14 configurations per library by default, fewer if
+# build.toml restricts it with [matrix]) without building
 xmsconan_vs2019 build --root E:\code\xms\migration --preview
 
 # Build. Hours, not minutes — per-configuration logs go to the --log-dir
@@ -359,7 +360,7 @@ xmsconan_wheel_deploy --wheel-dir wheelhouse
 
 Run those from **Git Bash** — PowerShell strips the inner quotes out of `--filter`. Repeat from a 3.13 virtual environment, into a different `--wheel-dir`, for the 3.13 wheel.
 
-**The Python running conan is the target Python.** The recipe hands CMake `Python3_EXECUTABLE = sys.executable` while the generated `CMakeLists.txt` requires `find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED)`. In CI `actions/setup-python` installs the matrix version and conan runs under it; on a workstation you supply it, so a 3.12 venv building `--python-versions 3.10` fails every pybind configuration at CMake configure. `build` checks this against the *filtered* matrix before compiling anything and exits 2 — the other twelve configurations don't care which interpreter is running, so a non-pybind build from any environment still works. Full workflow in `docs/USAGE.md` §16.8.
+**The Python running conan is the target Python.** The recipe hands CMake `Python3_EXECUTABLE = sys.executable` while the generated `CMakeLists.txt` requires `find_package(Python3 ${PYTHON_TARGET_VERSION} EXACT REQUIRED)`. In CI `actions/setup-python` installs the matrix version and conan runs under it; on a workstation you supply it, so a 3.12 venv building `--python-versions 3.10` fails every pybind configuration at CMake configure. `build` checks this against the *filtered* matrix before compiling anything and exits 2 — the non-pybind configurations don't care which interpreter is running, so a non-pybind build from any environment still works. Full workflow in `docs/USAGE.md` §16.8.
 
 ## Development
 

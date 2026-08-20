@@ -454,6 +454,7 @@ python build.py   --version 0.0.0 --wheel-dir wheelhouse --artifacts-dir test_ar
 | `--repair` | Run `repair_linux_wheel` after extraction (Docker required). |
 | `--artifacts-dir DIR` | Save per-config test artifacts (LastTest.log, runner binary, `_package/`, `test_files/`) for debugging. |
 | `--test-shards N\|auto` | Run gtest sharding for testing builds. |
+| `--skip-dependency-libs` | Do not stage the Conan cache's shared libraries into `<wheel-dir>/libs`. They exist only so the repair tools can resolve imports, so this is for a build whose wheel is not repaired — the generated CI passes it automatically when `[ci].windows_wheel_repair` is off (§12.1). |
 | `--skip-build --upload` | After a successful build, push the matrix to the Conan remote. |
 
 `xmsconan gen` and `xmsconan profiles` also **remove** any `.txt` profile in `conan_profiles/` that the current matrix does not produce, so narrowing `[matrix]` does not leave stale profiles behind for an IDE to pick. `CMakePresets.json` is a single rewritten file and was always clean; the two now agree. Non-`.txt` files in that directory are left alone.
@@ -781,7 +782,7 @@ Run at the end of `setup`, and again at the start of every `build` — a failure
 | conan remote `aquaveo-vs2019` | The remote appears in `conan remote list` **and is enabled**. `conan remote list` keeps printing disabled remotes as `[… Enabled: False]`, so the name alone is not enough. | `xmsconan_vs2019 setup --password-file <path>`, or `conan remote enable aquaveo-vs2019` if it is merely disabled. |
 | python interpreter *(`build` only)* | The matrix that is actually about to be built contains **no pybind configuration**, or every pybind configuration targets the Python version this shell is running. | Re-run from a virtual environment of the requested version, or pass `--python-versions <the version you are running>`. Full explanation in §16.8. |
 
-The interpreter check is the one check that depends on the *request* rather than the machine, so it runs after the matrix has been generated and `--filter` applied, and prints into the same block. That scoping is deliberate: 12 of the 14 configurations have `pybind=False` and don't care which interpreter is running, so building only those from whatever virtualenv you happen to be in keeps working. `setup` doesn't run it — there is no matrix at that point.
+The interpreter check is the one check that depends on the *request* rather than the machine, so it runs after the matrix has been generated and `--filter` applied, and prints into the same block. That scoping is deliberate: all but the pybind configurations have `pybind=False` and don't care which interpreter is running, so building only those from whatever virtualenv you happen to be in keeps working. `setup` doesn't run it — there is no matrix at that point.
 
 A conan version outside the pinned series is a **failure, not a warning**: a minor bump can change package_id computation and silently detach these hand-built packages from the binaries already on the remote. Same reasoning as the CI pin in §10.3.
 
@@ -840,7 +841,7 @@ xmscore → xmsgrid → xmsinterp → xmsmesher → xmsextractor
 
 A name that is not in this tuple cannot be built by the driver at all — `--only`/`--from` validate against it and exit 2 with `unknown library`. Adding a newly migrated library here is a one-line change in `xmsconan/build_tools/vs2019_build.py`.
 
-### 16.6 The matrix — 14 configurations per library
+### 16.6 The matrix — 14 configurations per library by default
 
 With the default two Python versions, `windows_vs2019` (msvc 192, x86_64, cppstd 17) produces:
 
@@ -905,7 +906,7 @@ Could NOT find Python3: Found unsuitable version "3.12.0",
 but required is exact version "3.10" (found .../python.exe)
 ```
 
-on *every* pybind configuration, after the twelve that don't care have already built. `build` catches this before compiling anything (§16.3) and exits 2, naming the version you're running, the version(s) the matrix wants, and both ways out. From a 3.10 venv everything lines up with no recipe change: the `EXACT` check passes, the wheel comes out tagged `cp310`, and the recipe's Python test venv is 3.10 as well.
+on *every* pybind configuration, after the non-pybind ones that don't care have already built. `build` catches this before compiling anything (§16.3) and exits 2, naming the version you're running, the version(s) the matrix wants, and both ways out. From a 3.10 venv everything lines up with no recipe change: the `EXACT` check passes, the wheel comes out tagged `cp310`, and the recipe's Python test venv is 3.10 as well.
 
 **What `--wheel-dir` does.** After a clean build, per library:
 
