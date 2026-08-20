@@ -205,7 +205,7 @@ jobs:
   # LINUX
   # ----------------------------------------------------------------------------------------------
   linux:
-    name: GCC-13 (${{ matrix.build_type }}, Linux)
+    name: GCC-13 (${{ matrix.build_type }}<< ci_linux_name_py >>, Linux)
     runs-on: ubuntu-latest
 
 <% if docker_image %>
@@ -349,7 +349,7 @@ jobs:
   # LINUX ARM
   # ----------------------------------------------------------------------------------------------
   linux-arm:
-    name: GCC-13 (${{ matrix.build_type }}, Linux ARM)
+    name: GCC-13 (${{ matrix.build_type }}<< ci_linux_name_py >>, Linux ARM)
     runs-on: ubuntu-24.04-arm
 
 <% if docker_image %>

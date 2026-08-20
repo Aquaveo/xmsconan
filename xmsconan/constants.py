@@ -1,7 +1,7 @@
 """Shared constants for the xmsconan tools.
 
-Everything here names a Conan remote or a compiler identity that more than
-one module needs.  They live in one place so a remote rename or a toolchain
+Everything here names a Conan remote, a compiler identity, or a Python
+version set that more than one module needs.  They live in one place so a remote rename or a toolchain
 bump is a single edit rather than a grep-and-hope across the package.
 
 Note: :mod:`xmsconan.xms_conan2_file` deliberately does **not** import from
@@ -11,6 +11,25 @@ top-level ``xms_conan2_file`` module with no ``xmsconan`` package around it,
 so it has to stay standalone and repeat the msvc 192 literal.
 """
 import re
+
+#: Python versions the conanfile's ``python_version`` option accepts.
+#:
+#: This repeats the literal in :mod:`xmsconan.xms_conan2_file` for the reason
+#: given above -- that module cannot import from here -- so
+#: ``test_supported_python_versions_matches_the_recipe`` pins the two together.
+#: A version that passes CI generation but is missing from the recipe option
+#: produces a matrix leg that dies at conan configure time.
+SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.13", "3.14")
+
+
+def version_sort_key(version) -> tuple:
+    """Sort a ``"3.10"``-style version string numerically, not lexically.
+
+    ``"3.9" > "3.10"`` under string comparison, which would pick the wrong
+    "highest" entry the moment a two-digit minor is in play.
+    """
+    return tuple(int(part) for part in str(version).split("."))
+
 
 #: Base URL of the Aquaveo Artifactory Conan 2 repositories.  Every remote
 #: URL below is this plus the repository name.

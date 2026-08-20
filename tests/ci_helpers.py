@@ -31,8 +31,9 @@ def _toml_value(value):
     return f'"{value}"'
 
 
-def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Snap", **ci_flags):
-    """Write a minimal build.toml with the given ci_type and [ci] flags."""
+def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Snap",
+                     coverage_table=None, **ci_flags):
+    """Write a minimal build.toml with the given ci_type, [ci] and [coverage] tables."""
     lines = [
         f'library_name = "{library_name}"',
         f'description = "{description}"',
@@ -40,6 +41,10 @@ def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Sna
     ]
     if ci_flags:
         lines += ["", "[ci]"] + [f"{key} = {_toml_value(value)}" for key, value in ci_flags.items()]
+    if coverage_table:
+        lines += ["", "[coverage]"] + [
+            f"{key} = {_toml_value(value)}" for key, value in coverage_table.items()
+        ]
     toml_file = tmp_path / "build.toml"
     toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return toml_file
