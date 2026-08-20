@@ -746,8 +746,10 @@ class TestPackageInfo:
         XMS dynamically links the .pyd, which is what lets an msvc 192 consumer
         keep consuming an msvc 194 build -- the guarantee only runs
         newer-consumes-older, so handing it the static library instead is an
-        unsupported link. ``CMAKE_DEBUG_POSTFIX`` reaches the module target, so
-        the Debug name carries ``_d`` as well.
+        unsupported link. The Debug name carries ``_d`` because the generated
+        CMakeLists re-asserts ``DEBUG_POSTFIX`` on the module target, which
+        pybind11 otherwise clears -- see
+        ``test_debug_pybind_module_keeps_the_d_postfix``.
         """
         obj = self._make_obj(pybind, build_type)
         obj.package_info()
@@ -795,32 +797,50 @@ class TestBuildsWheel:
     """Verify which pybind configurations build and test a wheel."""
 
     @staticmethod
-    def _make_obj(build_type):
+    def _make_obj(build_type, os_name="Windows"):
         """Create a recipe stub whose _builds_wheel can be called in isolation."""
         obj = object.__new__(XmsConan2File)
         obj.settings = MagicMock()
         obj.settings.build_type = MagicMock(__str__=lambda _s: build_type)
+        obj.settings.os = MagicMock(__str__=lambda _s: os_name)
         obj.output = MagicMock()
         return obj
 
-    def test_release_builds_the_wheel(self):
-        """Release is the configuration that ships to an index."""
-        assert self._make_obj("Release")._builds_wheel() is True
+    @pytest.mark.parametrize("os_name", ["Windows", "Linux", "Macos"])
+    def test_release_builds_the_wheel(self, os_name):
+        """Release is the configuration that ships to an index, on every platform."""
+        assert self._make_obj("Release", os_name)._builds_wheel() is True
 
-    def test_debug_does_not_build_a_wheel(self):
-        """A Debug wheel would declare a module name that does not exist in it.
+    def test_windows_debug_does_not_build_a_wheel(self):
+        """A Windows Debug wheel would declare a module name that does not exist in it.
 
-        ``CMAKE_DEBUG_POSTFIX`` reaches the pybind module target, so the Debug
-        build produces ``_<name>_d.<abi>.pyd`` while the generated
+        The generated CMakeLists re-asserts ``DEBUG_POSTFIX "_d"`` on the module
+        target -- pybind11 having cleared it -- so the Windows Debug build
+        produces ``_<name>_d.<abi>.pyd`` while the generated
         ``_package/pyproject.toml`` declares ``xms.<dir>._<name>``. The wheel
         would install a module ``import`` cannot find, and ``run_python_tests``
         would fail on it. Renaming the module is not an option -- consumers link
-        ``_<name>_d`` by that exact name -- so the Debug configuration ships the
-        Conan package only.
+        ``_<name>_d`` by that exact name -- so the Windows Debug configuration
+        ships the Conan package only.
         """
         obj = self._make_obj("Debug")
         assert obj._builds_wheel() is False
         assert obj.output.info.called, "skipping a deliverable must be stated"
+
+    @pytest.mark.parametrize("os_name", ["Linux", "Macos"])
+    def test_debug_builds_the_wheel_off_windows(self, os_name):
+        """The Debug pybind build off Windows is what coverage instruments.
+
+        ``xmsconan coverage`` runs its Python half as
+        ``pybind=True, testing=False, Debug`` on Linux and reads pytest-cov
+        output from that build. The postfix is re-asserted on Windows only, so
+        the module keeps its importable name here -- skipping the wheel would
+        report zero Python coverage with no error, which is what a
+        ``build_type``-only skip did.
+        """
+        obj = self._make_obj("Debug", os_name)
+        assert obj._builds_wheel() is True
+        assert not obj.output.info.called, "nothing was skipped, so nothing to report"
 
 
 class TestRequirements:

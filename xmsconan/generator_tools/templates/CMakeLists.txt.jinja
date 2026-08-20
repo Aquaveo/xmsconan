@@ -368,6 +368,28 @@ if (IS_PYTHON_BUILD)
         LINKER_LANGUAGE CXX
     )
 
+    # pybind11_add_module -> pybind11_extension sets DEBUG_POSTFIX on the module
+    # target to PYTHON_MODULE_DEBUG_POSTFIX, which is the NAME_WE of the
+    # interpreter's EXT_SUFFIX -- the empty string for a release interpreter,
+    # whose suffix is ".cp313-win_amd64.pyd". That silently overrides the
+    # directory-scope CMAKE_DEBUG_POSTFIX, so without re-asserting it here the
+    # Debug module and its import library are named _<name> while
+    # package_info() advertises _<name>_d, and the consumer fails to link.
+    # CMake composes the file name as PREFIX + OUTPUT_NAME + DEBUG_POSTFIX +
+    # SUFFIX, so this yields _<name>_d.<abi>.pyd and _<name>_d.lib.
+    #
+    # Windows only. The import library -- and therefore the whole
+    # consumer-links-the-module story -- exists only there, and off Windows the
+    # module must keep the importable name the wheel's pyproject.toml declares,
+    # since a Debug pybind build is what coverage instruments.
+    #
+    # Guarded on the postfix being empty: against a genuine debug Python build
+    # PYTHON_MODULE_DEBUG_POSTFIX is already "_d", and setting it again would
+    # produce _<name>_d_d.
+    if (WIN32 AND NOT PYTHON_MODULE_DEBUG_POSTFIX)
+        set_target_properties(_{{ library_name }} PROPERTIES DEBUG_POSTFIX "_d")
+    endif ()
+
     if (APPLE)
         set_target_properties(_{{ library_name }} PROPERTIES
             INSTALL_RPATH "@loader_path"
@@ -402,8 +424,9 @@ if (IS_PYTHON_BUILD)
     # is not an install error. (Verified on CMake 3.28 + MSVC v143, with and
     # without ENABLE_EXPORTS.) The import library is a real file the linker
     # emits, since the module exports PyInit__<name>, so it is installed by
-    # name. TARGET_FILE_BASE_NAME carries CMAKE_DEBUG_POSTFIX, giving
-    # _<name>.lib in Release and _<name>_d.lib in Debug -- the names
+    # name. TARGET_FILE_BASE_NAME carries the target's DEBUG_POSTFIX -- the one
+    # re-asserted above, since pybind11 clears the directory-scope value --
+    # giving _<name>.lib in Release and _<name>_d.lib in Debug, the names
     # package_info() advertises.
     #
     # Nothing equivalent exists off Windows: a macOS MODULE target is a bundle
