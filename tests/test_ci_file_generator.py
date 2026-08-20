@@ -1173,3 +1173,33 @@ def test_version_sort_key_orders_numerically_not_lexically():
     """
     assert max(["3.9", "3.10"], key=version_sort_key) == "3.10"
     assert sorted(["3.14", "3.9", "3.10"], key=version_sort_key) == ["3.9", "3.10", "3.14"]
+
+
+@pytest.mark.parametrize("xvfb", [False, True])
+def test_gitlab_repair_wheel_interpreter_matches_its_image(tmp_path, xvfb):
+    """The absolute interpreter path must name the ABI its image actually ships.
+
+    With xvfb the job runs ``conan-gcc13-x11-gdal-py<version>``, which carries
+    only the one ABI its tag names, so a hardcoded ``cp313-cp313`` breaks as
+    soon as the resolved Linux version is anything but 3.13.
+    """
+    toml_file = write_gitlab_toml(
+        tmp_path, xvfb=xvfb, linux_python_versions=["3.13", "3.14"],
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    job = parsed["Repair Wheel"]
+    assert all("/opt/python/cp314-cp314/bin/" in line for line in job["script"])
+    if xvfb:
+        assert job["image"].endswith("conan-gcc13-x11-gdal-py3.14")
+
+
+def test_gitlab_repair_wheel_interpreter_unchanged_without_fanout(tmp_path):
+    """A project on one Linux version keeps the cp313 path it already had."""
+    toml_file = write_gitlab_toml(tmp_path, python_versions=["3.10", "3.13"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert all("/opt/python/cp313-cp313/bin/" in line
+               for line in parsed["Repair Wheel"]["script"])

@@ -209,8 +209,8 @@ Repair Wheel:
   dependencies:
     - Conan Build
   script:
-    - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - /opt/python/cp313-cp313/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
+    - /opt/python/<< gitlab_linux_cp_tag >>/bin/pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - /opt/python/<< gitlab_linux_cp_tag >>/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
   artifacts:
     expire_in: '1d'
     paths:

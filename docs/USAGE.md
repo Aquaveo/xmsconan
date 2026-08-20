@@ -369,9 +369,13 @@ What opting in turns on:
 - **Wheel output.** Each version produces its own `cp3XY` wheel; pip on the consumer
   side picks the right one.
 
-Wheel repair is unaffected: `xmsconan_wheel_repair` only hosts `auditwheel`, which
-keys off each wheel's own tags, so the manylinux `cp313-cp313` interpreter repairs a
-`cp314` wheel fine.
+Wheel repair does not need a matching interpreter: `xmsconan_wheel_repair` only
+hosts `auditwheel`, which keys off each wheel's own tags, so one interpreter
+repairs every ABI's wheels in a single job. It does need an interpreter that
+*exists* in its image, though — the GitLab `Repair Wheel` job invokes one by
+absolute path, and with `[ci].xvfb` it runs `conan-gcc13-x11-gdal-py<version>`,
+which ships only the ABI its tag names. That path therefore tracks the resolved
+Linux version rather than being pinned.
 
 For local builds (`python build.py`), the matrix is single-version: it uses
 `PYTHON_TARGET_VERSION` from the environment if set, otherwise `3.13`. To build
@@ -469,7 +473,7 @@ The generated jobs follow the pattern:
 - `Repair Wheel` and `Wheel Deploy` stay single jobs: they collect every leg's wheels and act on all of them at once.
 - `[ci].split_tests` cannot be combined with a multi-version `linux_python_versions` — the C++ test job takes the build job's artifacts by name, so a multi-ABI build would leave it testing an indeterminate one. `xmsconan ci` rejects that combination at generation time.
 - `Conan Build - Windows`, `Conan Deploy - Windows`: `parallel:matrix` over `PYTHON_TARGET_VERSION` from `python_versions`. The matrix also sets `PY_TAG` (`py310` / `py313` / `py314`) which selects the runner via `image: GLR-${PY_TAG}`.
-- Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
+- `Repair Wheel` runs one `xmsconan_wheel_repair` over every leg's wheels. Its `/opt/python/cp<XY>-cp<XY>` interpreter follows the resolved Linux version, because the xvfb variant of the job runs an image that ships only that one ABI. auditwheel itself doesn't care about the host Python.
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
 - `[ci].linux = false` yields a **Windows-only pipeline**: `Conan Build - Windows`, `Lint`, and (on tags) `Conan Deploy - Windows`. Two combinations are rejected at generation time rather than producing a pipeline that fails opaquely later — `linux = false` together with `windows = false` (nothing would build), and `linux = false` with `coverage = true` (coverage compiles with `--coverage` under gcc, and the generated `CMakeLists.txt` rejects MSVC when `XMS_COVERAGE` is set).
 - **A Windows-only pipeline publishes no wheel.** `Conan Build - Windows` does not pass `--wheel-dir`, so with the Linux job gone nothing stages `wheelhouse/`. Conan packages still publish on tags. A library in that position gets its wheels from the manual VS2019 track (§16.8) until the Windows job learns to stage them.

@@ -39,6 +39,20 @@ def _display_name(library_name: str) -> str:
     return "Xms" + library_name[3:].title()
 
 
+def _cp_tag(python_version: str) -> str:
+    """Return the CPython ABI directory name for ``/opt/python/<tag>``.
+
+    ``"3.14"`` -> ``"cp314-cp314"``. The GitLab ``Repair Wheel`` job invokes an
+    interpreter by absolute path, and the image it runs in only ships the one
+    ABI its tag names -- ``conan-gcc13-x11-gdal-py3.14`` has
+    ``/opt/python/cp314-cp314`` and no ``cp313-cp313`` -- so the path has to
+    track the same version that selected the image. The manylinux image used on
+    the non-xvfb branch carries every current ABI, so it is satisfied by any
+    value this returns.
+    """
+    return "cp{0}-cp{0}".format(str(python_version).replace(".", ""))
+
+
 def _job_name_py(platform_python_versions: list) -> str:
     """Return the ``name:`` fragment that keeps fanned-out legs distinguishable.
 
@@ -215,6 +229,7 @@ def generate_ci(
     ci_python_versions = list(ci_config.get("python_versions", ["3.13"]))
     ci_mac_python_versions = _platform_python_versions(ci_config, "mac", ci_python_versions)
     ci_linux_python_versions = _platform_python_versions(ci_config, "linux", ci_python_versions)
+    gitlab_linux_single_py = max(ci_linux_python_versions, key=version_sort_key)
 
     for key, versions in (("python_versions", ci_python_versions),
                           ("mac_python_versions", ci_mac_python_versions),
@@ -270,7 +285,8 @@ def generate_ci(
             "${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1
             else ci_linux_python_versions[0]
         ),
-        "gitlab_linux_single_py": max(ci_linux_python_versions, key=version_sort_key),
+        "gitlab_linux_single_py": gitlab_linux_single_py,
+        "gitlab_linux_cp_tag": _cp_tag(gitlab_linux_single_py),
         "gitlab_linux_py_suffix": (
             "-py${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1 else ""
         ),
