@@ -23,6 +23,7 @@ CI_OPTIONS = {
     "coverage": [False, True],
     "xvfb": [False, True],
     "linux_arm": [False, True],
+    "windows_wheel_repair": [False, True],
 }
 
 # Every combination of the boolean CI flags.

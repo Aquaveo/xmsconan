@@ -1247,18 +1247,56 @@ def test_gitlab_windows_wheel_deploy_survives_a_skipped_repair(tmp_path):
                for step in pipeline["Wheel Deploy - Windows"]["script"])
 
 
-def test_github_windows_repair_can_be_switched_off(tmp_path):
-    """The GitHub windows job honors the same key, for the same reason."""
-    toml_file = write_github_toml(tmp_path, windows_wheel_repair=False)
+def _github_windows_job(tmp_path, **ci_flags):
+    """Render the GitHub workflow and return its parsed Windows build job."""
+    toml_file = write_github_toml(tmp_path, **ci_flags)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    workflow = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
+        encoding="utf-8"
+    )
+    jobs = yaml.safe_load(workflow)["jobs"]
+    # Selected by job key: every platform job renders `runs-on: ${{
+    # matrix.platform }}`, so the runner string cannot tell them apart.
+    assert "windows" in jobs, f"no windows job in {sorted(jobs)}"
+    return jobs["windows"], jobs
 
-    assert "--platform windows" not in content
-    assert "--skip-dependency-libs" in content
-    # Linux and macOS repair is untouched: a manylinux wheel has to be repaired.
-    assert "--platform linux" in content
-    assert "--platform macos" in content
+
+def _step_runs(job):
+    """Return the ``run:`` text of every step in a workflow job."""
+    return [str(step.get("run", "")) for step in job["steps"]]
+
+
+def test_github_windows_repair_is_on_by_default(tmp_path):
+    """The Windows step must exist, asserted on the Windows job itself.
+
+    A whole-file substring check cannot make this claim: the Linux and macOS
+    steps also run xmsconan_wheel_repair, so the Windows step could vanish
+    entirely without the assertion noticing.
+    """
+    windows, _jobs = _github_windows_job(tmp_path)
+    runs = _step_runs(windows)
+
+    assert any("--platform windows" in run for run in runs)
+    assert not any("--skip-dependency-libs" in run for run in runs)
+
+
+def test_github_windows_repair_can_be_switched_off(tmp_path):
+    """The GitHub windows job honors the same key, for the same reason."""
+    windows, jobs = _github_windows_job(tmp_path, windows_wheel_repair=False)
+    runs = _step_runs(windows)
+
+    assert not any("--platform windows" in run for run in runs)
+    assert any("--skip-dependency-libs" in run for run in runs)
+    # Linux and macOS repair is untouched: a manylinux wheel has to be repaired,
+    # and their build steps must not have grown the skip flag either.
+    other_runs = [
+        run for name, job in jobs.items() if name != "windows"
+        for run in _step_runs(job)
+    ]
+    assert any("--platform linux" in run for run in other_runs)
+    assert any("--platform macos" in run for run in other_runs)
+    assert not any("--skip-dependency-libs" in run for run in other_runs)
 
 
 def test_gitlab_windows_wheel_deploy_exists_and_is_tag_only(tmp_path):

@@ -59,14 +59,21 @@ if __name__ == "__main__":
             exit(1)
 
     if args.wheel_dir:
-        if builder.extract_wheel(args.wheel_dir, version=args.version):
-            if not args.skip_dependency_libs:
-                libs_dir = os.path.join(args.wheel_dir, 'libs')
-                builder.collect_dependency_libs(libs_dir)
-            if args.repair:
-                builder.repair_linux_wheel(args.wheel_dir)
-        else:
-            print("Warning: no wheel extracted (no pybind package found)")
+        # extract_wheel returns False both when nothing was extracted and when
+        # only some of the expected python_versions were -- and in the partial
+        # case it has already copied the wheels it did find. Treating that as a
+        # warning left a green build with a wheelhouse nobody had checked, no
+        # dependency libs staged for the repair step, and whatever was there
+        # queued for deploy. --wheel-dir is a request, not a hint.
+        if not builder.extract_wheel(args.wheel_dir, version=args.version):
+            print(f"error: --wheel-dir {args.wheel_dir} was given but no complete set of "
+                  f"wheels was extracted; see the message above.")
+            exit(1)
+        if not args.skip_dependency_libs:
+            libs_dir = os.path.join(args.wheel_dir, 'libs')
+            builder.collect_dependency_libs(libs_dir)
+        if args.repair:
+            builder.repair_linux_wheel(args.wheel_dir)
 
     if args.upload:
         if builder.upload(version=args.version) != 0:

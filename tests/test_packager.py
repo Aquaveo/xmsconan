@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1927,3 +1927,148 @@ def test_colliding_stems_are_disambiguated(tmp_path):
     written = [os.path.basename(path) for path in packager.write_profiles(str(tmp_path))]
 
     assert sorted(written) == ["linux_library_release.txt", "linux_library_release_2.txt"]
+
+
+# --- extract_wheel: which pybind package's wheel gets staged ---
+
+
+def _conan_list_json(*packages):
+    """Build a ``conan list --format=json`` payload for one recipe revision.
+
+    Args:
+        packages: ``(package_id, build_type, python_version)`` triples, all in
+            the same revision -- which is the case this exists to exercise,
+            since every binary in a revision shares its timestamp.
+    """
+    return json.dumps({
+        "Local Cache": {
+            "xmscore/1.0": {
+                "revisions": {
+                    "rev1": {
+                        "timestamp": 1700000000.0,
+                        "packages": {
+                            pid: {
+                                "info": {
+                                    "options": {"pybind": "True", "python_version": py},
+                                    "settings": {"build_type": build_type},
+                                }
+                            }
+                            for pid, build_type, py in packages
+                        },
+                    }
+                }
+            }
+        }
+    })
+
+
+def _fake_conan(list_json, cache_root):
+    """Return a subprocess.run stub answering ``conan list`` and ``conan cache path``."""
+    def run(cmd, *_args, **_kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        if cmd[1] == "list":
+            result.stdout = list_json
+        else:  # conan cache path <ref>:<pid>
+            result.stdout = os.path.join(cache_root, cmd[3].split(":")[1])
+        return result
+    return run
+
+
+def _seed_package(cache_root, pid, wheel_name):
+    """Create a fake package folder holding one wheel."""
+    dist = os.path.join(cache_root, pid, "dist")
+    os.makedirs(dist, exist_ok=True)
+    with open(os.path.join(dist, wheel_name), "w", encoding="utf-8") as handle:
+        handle.write("wheel")
+
+
+@patch_env(clear=True)
+def test_extract_wheel_prefers_the_release_build(tmp_path):
+    """With a Release and a Debug pybind package, the Release wheel is staged.
+
+    Both carry a wheel, both share the recipe revision's timestamp, and the two
+    wheel filenames are identical -- so before build_type entered the decision
+    the winner was whichever package-id hash sorted higher, and nothing
+    downstream could tell which one had been published.
+    """
+    cache_root = str(tmp_path / "cache")
+    # 'aaa' sorts below 'zzz', so the Debug id would win a hash-order tie.
+    _seed_package(cache_root, "zzz", "xmscore-1.0-cp313-cp313-win_amd64.whl")
+    _seed_package(cache_root, "aaa", "xmscore-1.0-cp313-cp313-win_amd64.whl")
+    list_json = _conan_list_json(("aaa", "Release", "3.13"), ("zzz", "Debug", "3.13"))
+
+    packager = XmsConanPackager("xmscore", python_versions=["3.13"])
+    out_dir = str(tmp_path / "wheelhouse")
+    with patch("xmsconan.package_tools.packager.subprocess.run",
+               side_effect=_fake_conan(list_json, cache_root)) as run:
+        assert packager.extract_wheel(out_dir, version="1.0") is True
+
+    # The Release package's path is the one that was resolved and copied.
+    resolved = [call.args[0][3] for call in run.call_args_list if call.args[0][1] == "cache"]
+    assert resolved == ["xmscore/1.0:aaa"]
+
+
+@patch_env(clear=True)
+def test_extract_wheel_warns_when_only_a_debug_build_exists(tmp_path, capsys):
+    """A Debug-only wheel is still staged, but not silently.
+
+    Preferring Release must not turn into dropping the only wheel there is --
+    that would be a green build with an empty wheelhouse.
+    """
+    cache_root = str(tmp_path / "cache")
+    _seed_package(cache_root, "ddd", "xmscore-1.0-cp313-cp313-win_amd64.whl")
+    list_json = _conan_list_json(("ddd", "Debug", "3.13"))
+
+    packager = XmsConanPackager("xmscore", python_versions=["3.13"])
+    with patch("xmsconan.package_tools.packager.subprocess.run",
+               side_effect=_fake_conan(list_json, cache_root)):
+        assert packager.extract_wheel(str(tmp_path / "wheelhouse"), version="1.0") is True
+
+    out = capsys.readouterr().out
+    assert "Debug build" in out
+
+
+@patch_env(clear=True)
+def test_extract_wheel_keeps_one_wheel_per_python_version(tmp_path):
+    """Two python versions each get their own Release wheel."""
+    cache_root = str(tmp_path / "cache")
+    _seed_package(cache_root, "p310", "xmscore-1.0-cp310-cp310-win_amd64.whl")
+    _seed_package(cache_root, "p313", "xmscore-1.0-cp313-cp313-win_amd64.whl")
+    list_json = _conan_list_json(("p310", "Release", "3.10"), ("p313", "Release", "3.13"))
+
+    packager = XmsConanPackager("xmscore", python_versions=["3.10", "3.13"])
+    out_dir = str(tmp_path / "wheelhouse")
+    with patch("xmsconan.package_tools.packager.subprocess.run",
+               side_effect=_fake_conan(list_json, cache_root)):
+        assert packager.extract_wheel(out_dir, version="1.0") is True
+
+    assert sorted(os.listdir(out_dir)) == [
+        "xmscore-1.0-cp310-cp310-win_amd64.whl",
+        "xmscore-1.0-cp313-cp313-win_amd64.whl",
+    ]
+
+
+# --- matrix restrictions that would build no module ---
+
+
+@patch_env(clear=True)
+def test_matrix_static_only_runtime_is_rejected():
+    """A static-only restriction leaves no pybind configuration, so it is refused.
+
+    _pybind_variants only fans out from dynamic-runtime msvc configurations, so
+    this produced 6 configurations with no module and no wheel. Downstream that
+    is an opaque "No .whl files found" from the repair step, or -- with
+    windows_wheel_repair off -- a green pipeline that publishes nothing.
+    """
+    packager = XmsConanPackager("xmscore", matrix={"compiler_runtime": ["static"]})
+    with pytest.raises(ValueError, match="no dynamic-runtime configuration"):
+        packager.generate_configurations(system_platform="windows")
+
+
+@patch_env(clear=True)
+def test_matrix_static_only_runtime_is_inert_on_linux():
+    """The rejection is msvc-specific: linux declares no compiler.runtime at all."""
+    packager = XmsConanPackager("xmscore", matrix={"compiler_runtime": ["static"]})
+    configs = packager.generate_configurations(system_platform="linux")
+    assert [c for c in configs if c["options"]["pybind"]]
