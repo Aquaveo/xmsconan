@@ -75,3 +75,7 @@ coverage-html-py/
 .claude/settings.local.json
 .envrc
 .env
+CLAUDE.local.md
+
+# Virtualenv (provisioned per worktree; never shared or committed)
+.venv/
