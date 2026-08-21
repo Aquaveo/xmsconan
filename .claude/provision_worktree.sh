@@ -23,13 +23,15 @@ json_field() {
         printf '%s' "$1" | jq -r ".$2 // empty"
     else
         printf '%s' "$1" | python3 -c \
-            "import json,sys; print(json.load(sys.stdin).get('$2', ''))"
+            "import json,sys; print(json.load(sys.stdin).get('$2') or '')"
     fi
 }
 
 copy_worktree_includes() {
-    # $1 = destination worktree. Mirrors Claude Code's .worktreeinclude rule:
-    # copy a path only when it matches a listed pattern AND git ignores it.
+    # $1 = destination worktree (absolute). Mirrors Claude Code's
+    # .worktreeinclude rule: copy a path only when it matches a listed pattern
+    # AND git ignores it. Every fallible step returns non-zero -- `set -e` does
+    # not apply here, because the caller tests this function's status.
     [ -f "$PROJECT_DIR/.worktreeinclude" ] || return 0
     COPIED=0
     while IFS= read -r PATTERN || [ -n "$PATTERN" ]; do
@@ -40,13 +42,30 @@ copy_worktree_includes() {
         for SRC in "$PROJECT_DIR"/$PATTERN; do
             [ -e "$SRC" ] || continue
             REL="${SRC#"$PROJECT_DIR"/}"
-            git -C "$PROJECT_DIR" check-ignore -q "$REL" || continue
-            mkdir -p "$1/$(dirname "$REL")"
-            cp -R "$SRC" "$1/$REL"
+            # exit 1 is "not ignored" (skip); anything else is fatal (128 =
+            # bad pathspec, unreadable repo) and must not look like a skip.
+            if ! git -C "$PROJECT_DIR" check-ignore -q "$REL"; then
+                STATUS=$?
+                if [ "$STATUS" -ne 1 ]; then
+                    echo "provision_worktree: git check-ignore failed (exit $STATUS) for $REL" >&2
+                    return 1
+                fi
+                continue
+            fi
+            if [ -d "$SRC" ]; then
+                # Copy the contents, not the directory: `cp -R dir dest` nests
+                # as dest/dir when dest already exists (re-provisioning).
+                mkdir -p "$1/$REL" || return 1
+                cp -R "$SRC/." "$1/$REL/" || return 1
+            else
+                mkdir -p "$1/$(dirname "$REL")" || return 1
+                cp -R "$SRC" "$1/$REL" || return 1
+            fi
             COPIED=$((COPIED + 1))
         done
     done < "$PROJECT_DIR/.worktreeinclude"
     [ "$COPIED" -eq 0 ] || echo "provision_worktree: copied $COPIED .worktreeinclude path(s)" >&2
+    return 0
 }
 
 provision() {
@@ -57,35 +76,48 @@ provision() {
     MODE="${2:-hook}"
     SKIP=0
     [ "$MODE" = "hook" ] || SKIP=1
+    # Canonicalize before the cd: $1 is also used as a destination prefix, and a
+    # relative one would resolve against the new cwd and copy into the wrong tree.
     cd "$1" || return 1
-    copy_worktree_includes "$1"
+    WT_DIR="$PWD"
+    copy_worktree_includes "$WT_DIR" || return 1
 
+    # Independent checks, not elif: a repo carrying both files needs both.
+    RC=0
     if [ -f build.toml ]; then
         # CMakeLists.txt, conanfile.py, build.py, .flake8, conan_profiles/ and
         # CMakePresets.json are generated and gitignored, so a fresh worktree
         # has none of them and cannot configure or build until this runs.
-        if ! command -v xmsconan_gen >/dev/null 2>&1; then
+        if command -v xmsconan_gen >/dev/null 2>&1; then
+            xmsconan_gen build.toml 1>&2 || return 1
+            echo "provision_worktree: build files generated in $WT_DIR" >&2
+        else
             echo "provision_worktree: xmsconan_gen not on PATH; skipping build-file generation." >&2
             echo 'Install it, then run: xmsconan_gen build.toml' >&2
-            return $SKIP
+            RC=$SKIP
         fi
-        xmsconan_gen build.toml 1>&2 || return 1
-        echo "provision_worktree: build files generated in $1" >&2
-    elif [ -f pyproject.toml ]; then
-        if ! command -v uv >/dev/null 2>&1; then
-            echo "provision_worktree: uv not on PATH; skipping venv setup." >&2
-            echo 'Install uv, then run: uv sync' >&2
-            return $SKIP
-        fi
-        # Never inherit another worktree's venv.
-        unset VIRTUAL_ENV VIRTUAL_ENV_PROMPT
-        if [ -f uv.lock ]; then
-            uv sync --frozen 1>&2 || return 1
-        else
-            uv sync 1>&2 || return 1
-        fi
-        echo "provision_worktree: .venv ready in $1" >&2
     fi
+    if [ -f pyproject.toml ]; then
+        if command -v uv >/dev/null 2>&1; then
+            # Never inherit another worktree's venv.
+            unset VIRTUAL_ENV VIRTUAL_ENV_PROMPT
+            # --all-extras, not plain sync: test deps live in
+            # [project.optional-dependencies], so a plain sync yields a venv
+            # that cannot run the repo's own test suite. --all-extras rather
+            # than --extra test keeps this script repo-agnostic.
+            if [ -f uv.lock ]; then
+                uv sync --frozen --all-extras 1>&2 || return 1
+            else
+                uv sync --all-extras 1>&2 || return 1
+            fi
+            echo "provision_worktree: .venv ready in $WT_DIR" >&2
+        else
+            echo "provision_worktree: uv not on PATH; skipping venv setup." >&2
+            echo 'Install uv, then run: uv sync --all-extras' >&2
+            RC=$SKIP
+        fi
+    fi
+    return $RC
 }
 
 if [ "${1:-}" = "provision" ]; then
@@ -120,18 +152,25 @@ WorktreeCreate)
         WT="$PROJECT_DIR/.claude/worktrees/$NAME"
         BRANCH="$NAME"
     fi
-    mkdir -p "$(dirname "$WT")"
-    git -C "$PROJECT_DIR" worktree add -b "$BRANCH" "$WT" HEAD 1>&2
-
     rollback() {
         # Never leave a registered-but-unreported worktree behind -- on failure
         # or a signal (hook timeout sends TERM) remove what this run created.
-        cd "$PROJECT_DIR" || true
+        # Each step reports its own failure: a rollback that cannot finish must
+        # say so, or the leftover worktree is exactly what the trap prevents.
+        cd "$PROJECT_DIR" ||
+            echo "provision_worktree: rollback could not cd to $PROJECT_DIR" >&2
         echo "provision_worktree: $1; rolling back $WT" >&2
-        git -C "$PROJECT_DIR" worktree remove --force "$WT" 1>&2 || true
-        git -C "$PROJECT_DIR" branch -D "$BRANCH" 1>&2 || true
+        git -C "$PROJECT_DIR" worktree remove --force "$WT" 1>&2 ||
+            echo "provision_worktree: rollback could not remove worktree $WT; remove it by hand" >&2
+        git -C "$PROJECT_DIR" branch -D "$BRANCH" 1>&2 ||
+            echo "provision_worktree: rollback could not delete branch $BRANCH; delete it by hand" >&2
         exit 1
     }
+
+    mkdir -p "$(dirname "$WT")"
+    git -C "$PROJECT_DIR" worktree add -b "$BRANCH" "$WT" HEAD 1>&2
+    # Armed on the next line after the add: from here on the worktree exists,
+    # so every exit path has to be able to undo it.
     trap 'rollback "interrupted"' TERM INT HUP
 
     if ! provision "$WT" hook; then
