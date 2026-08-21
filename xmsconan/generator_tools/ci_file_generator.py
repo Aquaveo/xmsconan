@@ -204,12 +204,13 @@ def generate_ci(
             )
     if ci_type == "github":
         # Every wheel step in the GitHub workflow is gated on
-        # `matrix.build_type == 'Release'`, so a library whose pybind
-        # configurations exclude Release publishes nothing: on Linux and macOS
-        # the Debug leg builds a wheel and discards it, on Windows it builds
-        # none at all (see USAGE section 7.5), and either way the Release leg
-        # dies inside xmsconan_wheel_repair with "No .whl files found". Same
-        # class of check as the two above.
+        # `matrix.build_type == 'Release'` -- including the build step's
+        # --wheel-dir -- so a library whose pybind configurations exclude
+        # Release publishes nothing: the Release leg is the only leg that asks
+        # for a wheel and it has no pybind configuration to get one from, so it
+        # dies in build.py with "no complete set of wheels was extracted". The
+        # Debug leg that could have produced one never stages it. Same class of
+        # check as the two above.
         pybind_build_types = toml_data.get("matrix", {}).get("pybind_build_types")
         if pybind_build_types and "Release" not in pybind_build_types:
             raise ValueError(
