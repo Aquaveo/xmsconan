@@ -178,18 +178,20 @@ def test_pybind_build_types_defaults_to_release_only():
 
 
 @patch_env(clear=True)
-def test_coverage_still_adds_debug_pybind_to_an_explicit_release_only_list():
-    """Coverage needs a Debug pybind build, so it unions rather than obeys.
+def test_coverage_obeys_an_explicit_release_only_pybind_list():
+    """Coverage obeys [matrix].pybind_build_types rather than unioning Debug in.
 
-    A library that pins Release-only must not silently lose the instrumented
-    build the coverage tooling looks for.
+    It used to add Debug, for a build whose instrumentation nothing read --
+    gcovr runs against the testing build folder only -- while making every
+    dependency need a Debug+pybind binary. Python coverage runs against the
+    Release pybind configuration the matrix already names.
     """
     p = XmsConanPackager("xmscore", python_versions=["3.13"], coverage=True,
                          matrix={"pybind_build_types": ["Release"]})
     configs = p.generate_configurations(system_platform="windows")
 
     pybind = [c for c in configs if c["options"]["pybind"]]
-    assert {c["build_type"] for c in pybind} == {"Release", "Debug"}
+    assert {c["build_type"] for c in pybind} == {"Release"}
 
 
 @patch_env(clear=True)
@@ -302,8 +304,12 @@ def test_pybind_variants_exclude_debug():
 
 
 @patch_env(clear=True)
-def test_pybind_debug_emitted_when_coverage_flag():
-    """coverage=True relaxes the Debug gate so xmsconan_coverage finds a build."""
+def test_pybind_debug_not_emitted_when_coverage_flag():
+    """coverage=True does not add a Debug pybind config on its own.
+
+    xmsconan_coverage looks for the Release pybind build now, so the Debug one
+    would only cost every dependency a Debug+pybind binary.
+    """
     p = XmsConanPackager("xmscore", coverage=True)
     p.generate_configurations(system_platform="linux")
 
@@ -311,15 +317,16 @@ def test_pybind_debug_emitted_when_coverage_flag():
         c for c in p.configurations
         if c["build_type"] == "Debug" and c["options"].get("pybind") is True
     ]
-    assert debug_pybind, (
-        "coverage=True must emit at least one Debug+pybind config — without "
-        "it xmsconan_coverage cannot locate a matching package in the cache"
+    assert not debug_pybind, (
+        "coverage=True must not add a Debug+pybind config — nothing reads its "
+        "instrumentation, and requiring it breaks on dependencies that publish "
+        "no Debug+pybind binary"
     )
 
 
 @patch_env({"XMS_COVERAGE": "1"}, clear=True)
-def test_pybind_debug_emitted_when_xms_coverage_env():
-    """XMS_COVERAGE=1 in the env is treated as coverage=True by default."""
+def test_pybind_debug_not_emitted_when_xms_coverage_env():
+    """XMS_COVERAGE=1 in the env is treated as coverage=True, and adds no Debug."""
     p = XmsConanPackager("xmscore")
     p.generate_configurations(system_platform="linux")
 
@@ -327,7 +334,7 @@ def test_pybind_debug_emitted_when_xms_coverage_env():
         c for c in p.configurations
         if c["build_type"] == "Debug" and c["options"].get("pybind") is True
     ]
-    assert debug_pybind
+    assert not debug_pybind
 
 
 @patch_env(clear=True)
@@ -374,7 +381,7 @@ def test_explicit_coverage_false_overrides_env():
 
 @patch_env(clear=True)
 def test_coverage_true_propagates_xms_coverage_into_buildenv():
-    """coverage=True must export XMS_COVERAGE into the profile's [buildenv].
+    """coverage=True must export XMS_COVERAGE into every non-pybind [buildenv].
 
     Without it the activation script never sets ``XMS_COVERAGE`` for the
     CMake child process, so ``CMakeLists.txt.jinja``'s
@@ -384,15 +391,27 @@ def test_coverage_true_propagates_xms_coverage_into_buildenv():
     out" (issue #69 — the 2.14.0/2.14.1/2.14.2 chain finally got the
     pipeline to a green run, but the C++ report was empty for exactly
     this reason).
+
+    Pybind configurations are excluded on purpose: gcovr reads the testing
+    build folder only, so instrumenting a pybind module produces .gcda nobody
+    opens. The recipe still collects pytest-cov output there, keyed off the
+    inherited process environment rather than this buildenv.
     """
     p = XmsConanPackager("xmscore", coverage=True)
     p.generate_configurations(system_platform="linux")
 
     for cfg in p.configurations:
+        if cfg["options"].get("pybind"):
+            assert "XMS_COVERAGE" not in cfg["buildenv"], (
+                f"pybind configurations must not be instrumented; found "
+                f"XMS_COVERAGE on {cfg.get('build_type')!r} / "
+                f"options={cfg.get('options')}"
+            )
+            continue
         assert cfg["buildenv"].get("XMS_COVERAGE") == "1", (
-            f"every configuration must export XMS_COVERAGE=1 in buildenv "
-            f"when coverage=True; missing on {cfg.get('build_type')!r} / "
-            f"options={cfg.get('options')}"
+            f"every non-pybind configuration must export XMS_COVERAGE=1 in "
+            f"buildenv when coverage=True; missing on "
+            f"{cfg.get('build_type')!r} / options={cfg.get('options')}"
         )
 
 
