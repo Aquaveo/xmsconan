@@ -1314,70 +1314,99 @@ def test_github_windows_repair_can_be_switched_off(tmp_path):
 
 
 #: The build step's wheel request, as the GitHub expression that gates it.
+#:
+#: Spelled out here rather than imported from ci_file_generator so the
+#: assertions below compare the rendered workflow against a literal. Importing
+#: the constant would assert the template against its own input, which stays
+#: green through any change to the expression itself.
 RELEASE_GATED_WHEEL_DIR = (
     "${{ matrix.build_type == 'Release' && ' --wheel-dir wheelhouse' || '' }}"
 )
 
+#: The step that runs build.py, in every platform job.
+BUILD_STEP_NAME = "Build the Conan Packages"
+
+#: The GitHub jobs that build the library, as opposed to linting it.
+BUILDING_JOBS = ("mac", "linux", "linux-arm", "windows")
+
+#: Every (job, step) that reads the wheelhouse the build step fills.
+WHEEL_CONSUMING_STEPS = sorted(
+    (job, step)
+    for job in BUILDING_JOBS
+    for step in ("Repair wheel", "Upload wheel artifact", "Upload wheel to Aquapi")
+)
+
+
+@pytest.fixture
+def github_arm_jobs(tmp_path):
+    """The parsed jobs of a GitHub workflow with every platform job present."""
+    return _github_jobs(write_github_toml(tmp_path, linux_arm=True), tmp_path)
+
 
 def _build_step_run(job, job_name):
-    """Return the ``run:`` text of one job's Conan build step."""
+    """Return the ``run:`` text of one job's build step."""
     for step in job["steps"]:
-        if step.get("name") == "Build the Conan Packages":
+        if step.get("name") == BUILD_STEP_NAME:
             return str(step["run"])
-    raise AssertionError(f"no build step in the {job_name} job")
+    raise AssertionError(f"no {BUILD_STEP_NAME!r} step in the {job_name} job")
 
 
-def _building_jobs(jobs):
-    """The jobs that run build.py, keyed by job name."""
-    return {
-        name: job for name, job in jobs.items()
-        if any(step.get("name") == "Build the Conan Packages" for step in job.get("steps", []))
-    }
+def _touches_the_wheelhouse(step):
+    """Whether a step names the wheelhouse, in its command or its inputs.
+
+    Matched on the directory rather than on a list of known commands, so a
+    wheel step added later under a different spelling is covered too. The
+    artifact upload is a ``uses:`` step that names it only in ``with.path``.
+    """
+    text = str(step.get("run", ""))
+    text += " ".join(str(value) for value in step.get("with", {}).values())
+    return "wheelhouse" in text
 
 
-def test_github_build_step_requests_a_wheel_only_on_the_release_leg(tmp_path):
-    """Every platform's build step asks for a wheel dir on Release and only there.
+def test_github_every_platform_job_builds(github_arm_jobs):
+    """The build step exists on each platform job, and only on those."""
+    building = [
+        name for name, job in github_arm_jobs.items()
+        if any(step.get("name") == BUILD_STEP_NAME for step in job.get("steps", []))
+    ]
+    assert sorted(building) == sorted(BUILDING_JOBS)
+
+
+@pytest.mark.parametrize("job_name", BUILDING_JOBS)
+def test_github_build_step_requests_a_wheel_only_on_the_release_leg(github_arm_jobs, job_name):
+    """The build step asks for a wheel dir on the Release leg and only there.
 
     build.py exits 1 when --wheel-dir extracts no complete set of wheels, and
     [matrix].pybind_build_types defaults to Release only -- so an unguarded
     --wheel-dir fails every Debug leg of every repository on the default
-    configuration. Asserted per job, and with the guard removed from the text
-    so a second, unguarded request cannot hide behind the guarded one.
+    configuration. Parametrized by job so a failure names the platform, and
+    with the guard removed from the text so a second, unguarded request cannot
+    hide behind the guarded one.
     """
-    toml_file = write_github_toml(tmp_path, linux_arm=True)
-    building = _building_jobs(_github_jobs(toml_file, tmp_path))
-    assert set(building) == {"mac", "linux", "linux-arm", "windows"}
-
-    for name, job in building.items():
-        run = _build_step_run(job, name)
-        assert RELEASE_GATED_WHEEL_DIR in run, name
-        assert "--wheel-dir" not in run.replace(RELEASE_GATED_WHEEL_DIR, ""), name
+    run = _build_step_run(github_arm_jobs[job_name], job_name)
+    assert RELEASE_GATED_WHEEL_DIR in run
+    assert "--wheel-dir" not in run.replace(RELEASE_GATED_WHEEL_DIR, "")
 
 
-def test_github_wheel_steps_stay_release_only(tmp_path):
-    """The steps that consume the wheel run on the same leg that stages it.
+def test_github_wheel_steps_stay_release_only(github_arm_jobs):
+    """Every step that reads the wheelhouse runs only where one is filled.
 
-    The guard above is only correct while every wheel step is Release-gated;
-    if one loses its ``if:`` it would run on a Debug leg with no wheelhouse.
+    The guard above is only correct while this holds; if a consuming step lost
+    its ``if:`` it would run on a Debug leg with no wheelhouse at all. The
+    build step is excluded because it is the step that *creates* the
+    wheelhouse, and its own Release gate lives inside the run text rather than
+    in an ``if:``.
     """
-    jobs = _github_jobs(write_github_toml(tmp_path, linux_arm=True), tmp_path)
-
-    def consumes_a_wheel(step):
-        """A step is a wheel step when it repairs, deploys, or uploads one."""
-        run = str(step.get("run", ""))
-        path = str(step.get("with", {}).get("path", ""))
-        commands = ("xmsconan_wheel_repair", "xmsconan_wheel_deploy")
-        return any(cmd in run for cmd in commands) or path.startswith("wheelhouse/")
-
     wheel_steps = [
-        (name, step)
-        for name, job in jobs.items()
+        (name, step.get("name"), str(step.get("if", "")))
+        for name, job in github_arm_jobs.items()
         for step in job.get("steps", [])
-        if consumes_a_wheel(step)
+        if step.get("name") != BUILD_STEP_NAME and _touches_the_wheelhouse(step)
     ]
-    assert len(wheel_steps) == 12, [name for name, _ in wheel_steps]
-    for name, step in wheel_steps:
-        assert "matrix.build_type == 'Release'" in str(step["if"]), (name, step.get("name"))
+
+    assert sorted((name, step) for name, step, _ in wheel_steps) == WHEEL_CONSUMING_STEPS
+    for name, step, condition in wheel_steps:
+        assert "matrix.build_type == 'Release'" in condition, (name, step)
 
 
 def test_gitlab_windows_wheel_deploy_exists_and_is_tag_only(tmp_path):
