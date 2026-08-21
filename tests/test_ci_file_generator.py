@@ -530,55 +530,6 @@ def test_ci_pins_conan_version(ci_toml, tmp_path):
     assert [line for line in conan_installs if '"conan~=' not in line] == []
 
 
-def _build_step_run(job):
-    """The ``run:`` of one job's "Build the Conan Packages" step."""
-    for step in job["steps"]:
-        if step.get("name") == "Build the Conan Packages":
-            return step["run"]
-    raise AssertionError("job has no 'Build the Conan Packages' step")
-
-
-@pytest.mark.parametrize("job_name", ["mac", "linux", "windows"])
-def test_github_build_step_requests_a_wheel_only_on_release(ci_toml, tmp_path, job_name):
-    """``--wheel-dir`` reaches build.py on the Release leg alone.
-
-    ``[matrix].pybind_build_types`` defaults to Release, so a Debug leg builds
-    no pybind package -- and build.py treats ``--wheel-dir`` as a request it
-    must satisfy, exiting 1 when no complete set of wheels comes out. Passing
-    the flag unconditionally therefore failed every Debug leg of every
-    consumer, which is what it did between xmsconan 2.22.0 and this fix.
-
-    Asserted per job rather than over the whole document so a regression names
-    the platform that lost the gate.
-    """
-    run = _build_step_run(_github_jobs(ci_toml, tmp_path)[job_name])
-
-    assert run.count("--wheel-dir") == 1
-    assert "${{ matrix.build_type == 'Release' && '--wheel-dir wheelhouse" in run
-
-
-def test_github_windows_skip_dependency_libs_stays_inside_the_wheel_gate(tmp_path):
-    """The unrepaired-Windows companion flag is gated with ``--wheel-dir``.
-
-    ``--skip-dependency-libs`` is read only inside build.py's ``if
-    args.wheel_dir`` branch, so leaving it outside the gate would put a flag on
-    the Debug command line that reads as staging control and does nothing.
-    """
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core library"\nci_type = "github"\n'
-        "\n[ci]\nwindows_wheel_repair = false\n",
-        encoding="utf-8",
-    )
-
-    run = _build_step_run(_github_jobs(toml_file, tmp_path)["windows"])
-
-    assert (
-        "${{ matrix.build_type == 'Release' && "
-        "'--wheel-dir wheelhouse --skip-dependency-libs' || '' }}" in run
-    )
-
-
 def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
     """Rendered GitHub CI build commands include --artifacts-dir test_artifacts."""
     output_dir = tmp_path / "output"
@@ -1419,6 +1370,73 @@ def test_github_windows_repair_can_be_switched_off(tmp_path):
     assert any("--platform linux" in run for run in other_runs)
     assert any("--platform macos" in run for run in other_runs)
     assert not any("--skip-dependency-libs" in run for run in other_runs)
+
+
+#: The build step's wheel request, as the GitHub expression that gates it.
+RELEASE_GATED_WHEEL_DIR = (
+    "${{ matrix.build_type == 'Release' && ' --wheel-dir wheelhouse' || '' }}"
+)
+
+
+def _build_step_run(job, job_name):
+    """Return the ``run:`` text of one job's Conan build step."""
+    for step in job["steps"]:
+        if step.get("name") == "Build the Conan Packages":
+            return str(step["run"])
+    raise AssertionError(f"no build step in the {job_name} job")
+
+
+def _building_jobs(jobs):
+    """The jobs that run build.py, keyed by job name."""
+    return {
+        name: job for name, job in jobs.items()
+        if any(step.get("name") == "Build the Conan Packages" for step in job.get("steps", []))
+    }
+
+
+def test_github_build_step_requests_a_wheel_only_on_the_release_leg(tmp_path):
+    """Every platform's build step asks for a wheel dir on Release and only there.
+
+    build.py exits 1 when --wheel-dir extracts no complete set of wheels, and
+    [matrix].pybind_build_types defaults to Release only -- so an unguarded
+    --wheel-dir fails every Debug leg of every repository on the default
+    configuration. Asserted per job, and with the guard removed from the text
+    so a second, unguarded request cannot hide behind the guarded one.
+    """
+    toml_file = write_github_toml(tmp_path, linux_arm=True)
+    building = _building_jobs(_github_jobs(toml_file, tmp_path))
+    assert set(building) == {"mac", "linux", "linux-arm", "windows"}
+
+    for name, job in building.items():
+        run = _build_step_run(job, name)
+        assert RELEASE_GATED_WHEEL_DIR in run, name
+        assert "--wheel-dir" not in run.replace(RELEASE_GATED_WHEEL_DIR, ""), name
+
+
+def test_github_wheel_steps_stay_release_only(tmp_path):
+    """The steps that consume the wheel run on the same leg that stages it.
+
+    The guard above is only correct while every wheel step is Release-gated;
+    if one loses its ``if:`` it would run on a Debug leg with no wheelhouse.
+    """
+    jobs = _github_jobs(write_github_toml(tmp_path, linux_arm=True), tmp_path)
+
+    def consumes_a_wheel(step):
+        """A step is a wheel step when it repairs, deploys, or uploads one."""
+        run = str(step.get("run", ""))
+        path = str(step.get("with", {}).get("path", ""))
+        commands = ("xmsconan_wheel_repair", "xmsconan_wheel_deploy")
+        return any(cmd in run for cmd in commands) or path.startswith("wheelhouse/")
+
+    wheel_steps = [
+        (name, step)
+        for name, job in jobs.items()
+        for step in job.get("steps", [])
+        if consumes_a_wheel(step)
+    ]
+    assert len(wheel_steps) == 12, [name for name, _ in wheel_steps]
+    for name, step in wheel_steps:
+        assert "matrix.build_type == 'Release'" in str(step["if"]), (name, step.get("name"))
 
 
 def test_gitlab_windows_wheel_deploy_exists_and_is_tag_only(tmp_path):
