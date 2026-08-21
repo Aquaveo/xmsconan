@@ -16,6 +16,26 @@ from xmsconan.toml_utils import load_toml
 
 LOGGER = logging.getLogger(__name__)
 
+#: The GitHub build step's wheel request, gated to the leg that publishes one.
+#:
+#: Every step that consumes the wheel -- repair, artifact upload, devpi deploy
+#: -- is gated on ``matrix.build_type == 'Release'``, and
+#: ``[matrix].pybind_build_types`` defaults to Release only, so a Debug leg has
+#: no pybind configuration to extract a wheel from. ``build.py`` exits 1 when
+#: ``--wheel-dir`` yields no complete set of wheels, which is the right answer
+#: on a Release leg and wrong on a Debug one: on Windows a Debug pybind
+#: configuration produces no wheel by design (USAGE section 7.5), and on Linux
+#: and macOS a Debug wheel would only be built and discarded. Asking for the
+#: wheel where one is expected keeps that check at full strength where it
+#: matters.
+#:
+#: GitLab needs no equivalent: its build step runs the whole matrix in one
+#: invocation with no build-type filter, so the Release pybind configuration is
+#: always in scope.
+RELEASE_ONLY_WHEEL_DIR = (
+    "${{ matrix.build_type == 'Release' && ' --wheel-dir wheelhouse' || '' }}"
+)
+
 
 def _configure_logging(args):
     """Configure logger from CLI verbosity flags."""
@@ -204,12 +224,13 @@ def generate_ci(
             )
     if ci_type == "github":
         # Every wheel step in the GitHub workflow is gated on
-        # `matrix.build_type == 'Release'`, so a library whose pybind
-        # configurations exclude Release publishes nothing: on Linux and macOS
-        # the Debug leg builds a wheel and discards it, on Windows it builds
-        # none at all (see USAGE section 7.5), and either way the Release leg
-        # dies inside xmsconan_wheel_repair with "No .whl files found". Same
-        # class of check as the two above.
+        # `matrix.build_type == 'Release'` -- including the build step's
+        # --wheel-dir -- so a library whose pybind configurations exclude
+        # Release publishes nothing: the Release leg is the only leg that asks
+        # for a wheel and it has no pybind configuration to get one from, so it
+        # dies in build.py with "no complete set of wheels was extracted". The
+        # Debug leg that could have produced one never stages it. Same class of
+        # check as the two above.
         pybind_build_types = toml_data.get("matrix", {}).get("pybind_build_types")
         if pybind_build_types and "Release" not in pybind_build_types:
             raise ValueError(
@@ -292,6 +313,7 @@ def generate_ci(
         "ci_mac_python_versions": ci_mac_python_versions,
         "ci_linux_python_versions": ci_linux_python_versions,
         "ci_mac_py_suffix": _py_suffix(ci_mac_python_versions),
+        "ci_wheel_dir_flag": RELEASE_ONLY_WHEEL_DIR,
         "gitlab_linux_fanout": len(ci_linux_python_versions) > 1,
         "gitlab_linux_image_py": (
             "${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1

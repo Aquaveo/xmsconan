@@ -460,7 +460,7 @@ python build.py   --version 0.0.0 --wheel-dir wheelhouse --artifacts-dir test_ar
 | `--python-only` | Equivalent to `--filter '{"options": {"pybind": true}}'`. |
 | `--preview` | Print the configuration table and exit. Nothing is built. |
 | `--build-missing` | Pass `--build=missing` to `conan create`. |
-| `--wheel-dir DIR` | After the build, copy each `pybind` package's wheel into `DIR`. With `python_versions=["3.10","3.13"]`, you get one wheel per version. |
+| `--wheel-dir DIR` | After the build, copy each `pybind` package's wheel into `DIR`. With `python_versions=["3.10","3.13"]`, you get one wheel per version. **A run that asked for wheels and got no complete set exits 1** — the flag is a request, not a hint, so only pass it where a wheel is expected. A matrix with no pybind configuration at all (`--filter '{"build_type": "Debug"}'` with the default `[matrix].pybind_build_types`, §5.4.1) is that case. |
 | `--repair` | Run `repair_linux_wheel` after extraction (Docker required). |
 | `--artifacts-dir DIR` | Save per-config test artifacts (LastTest.log, runner binary, `_package/`, `test_files/`) for debugging. |
 | `--test-shards N\|auto` | Run gtest sharding for testing builds. |
@@ -510,7 +510,7 @@ The generated jobs follow the pattern:
 
 1. **Setup Python + Conan** (`xmsconan_conan_setup --remote-url … --login`)
 2. **Generate build files** (`xmsconan_gen --version …`)
-3. **Build** (`python build.py --filter='{"build_type": "<type>"}' --wheel-dir wheelhouse --artifacts-dir test_artifacts`)
+3. **Build** (`python build.py --filter='{"build_type": "<type>"}' --artifacts-dir test_artifacts`, plus `--wheel-dir wheelhouse` on the Release leg only — see §10.1)
 4. **Repair wheel** on Release (`xmsconan_wheel_repair --wheel-dir wheelhouse`)
 5. **On tag pushes:** `xmsconan_wheel_deploy` and `xmsconan_conan_deploy … --upload`
 
@@ -522,6 +522,7 @@ The generated jobs follow the pattern:
 - **Windows** matrix: `build_type × compiler-version × python-version=ci_python_versions`.
 - Wheel artifacts carry `-py${{ matrix.python-version }}` on any platform that fans out; a single-version platform keeps its bare `wheel-${{ runner.os }}` name.
 - Linux containers resolve to `conan-gcc13-py${{ matrix.python-version }}:latest`.
+- **`--wheel-dir` is passed on the Release leg only.** Every step that consumes the wheel — repair, artifact upload, devpi deploy — is gated on `matrix.build_type == 'Release'`, and `[matrix].pybind_build_types` defaults to Release only (§5.4.1), so a Debug leg has no pybind configuration to extract a wheel from. `build.py` exits 1 when `--wheel-dir` yields no complete set of wheels (§9.1), which is the right answer on a Release leg and wrong on a Debug one: on Windows a Debug pybind configuration produces no wheel by design (§7.5), and on Linux and macOS a Debug wheel would only be built and discarded. GitLab is unaffected — its build step runs the whole matrix in one invocation, so the Release pybind configuration is always in scope.
 - `flake` deliberately stays on a single hardcoded interpreter — linting is ABI-independent, and pinning it keeps lint results identical across repos.
 - The `flake` job installs xmsconan, runs `xmsconan_gen build.toml` to render `.flake8`, then runs plain `flake8 _package`. It deliberately does **not** pass flake8 settings on the command line: that duplicates `.flake8.jinja`, and the two copies drift apart silently (CI once used a different `ignore` list and a stale `conf.py` exclude, so a clean local run did not imply a clean CI run). Change lint settings in `.flake8.jinja` only.
 

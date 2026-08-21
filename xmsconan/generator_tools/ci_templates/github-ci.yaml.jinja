@@ -147,7 +147,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<< ci_wheel_dir_flag >> --artifacts-dir test_artifacts"
         shell: bash
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -290,7 +290,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<< ci_wheel_dir_flag >> --artifacts-dir test_artifacts"
         shell: bash
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -434,7 +434,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<< ci_wheel_dir_flag >> --artifacts-dir test_artifacts"
         shell: bash
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -586,7 +586,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\" --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %> --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<< ci_wheel_dir_flag >><% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %> --artifacts-dir test_artifacts"
         shell: cmd
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
