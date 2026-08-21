@@ -184,13 +184,16 @@ class XmsConanPackager(object):
                 or to ``DEFAULT_PYTHON_VERSIONS``. Each pybind variant is
                 duplicated per version with the matching ``python_version``
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
-            coverage: If True, allow Debug+pybind combinations in
-                ``generate_configurations`` so ``xmsconan_coverage`` can
-                instrument the pybind variant for Python coverage. Also
-                exports ``XMS_COVERAGE=1`` into each profile's ``[buildenv]``
-                so CMake adds ``--coverage``. The testing-only Debug variant
-                that drives C++ coverage is always emitted (it does not
-                require this flag). When None, defaults to ``True`` iff
+            coverage: If True, exports ``XMS_COVERAGE=1`` into the
+                ``[buildenv]`` of every non-pybind profile so CMake adds
+                ``--coverage``. It does not change which configurations are
+                produced: the testing-only Debug variant that drives C++
+                coverage is always emitted, and the Python half of coverage
+                uses whatever pybind configuration ``[matrix]`` already names.
+                Pybind profiles are left uninstrumented -- gcovr never reads
+                their ``.gcda`` -- though the recipe still collects pytest-cov
+                output, which it keys off the process environment rather than
+                the buildenv. When None, defaults to ``True`` iff
                 ``XMS_COVERAGE=1`` is set in the environment.
             matrix: Which configurations the fan-out should produce, from the
                 ``[matrix]`` table of ``build.toml``. ``compiler_runtime``
@@ -626,25 +629,23 @@ class XmsConanPackager(object):
     def _pybind_build_types(self) -> set:
         """Return the build types a pybind variant is produced for.
 
-        ``[matrix].pybind_build_types`` decides this, defaulting to Release
-        only: for most libraries the Release wheel is what ships and a Debug
-        module is redundant. A library whose consumers link a Debug module names
-        Debug as well.
+        ``[matrix].pybind_build_types`` decides this alone, defaulting to
+        Release only: for most libraries the Release wheel is what ships and a
+        Debug module is redundant. A library whose consumers link a Debug module
+        names Debug as well.
 
-        Coverage is added on top rather than obeyed, because
-        ``xmsconan_coverage`` needs a Debug+pybind build to instrument the
-        Python-reachable C++ surface. The two used to be the same switch, which
-        made the Debug module unreachable for any library that cannot run
-        coverage at all -- ``XMS_COVERAGE`` is a ``FATAL_ERROR`` on MSVC, so a
-        Windows-only library could never ask for one.
+        Coverage used to add Debug on top, for a Debug+pybind build to
+        instrument the Python-reachable C++ surface. Nothing ever read that
+        instrumentation -- ``xmsconan coverage`` runs gcovr against the
+        testing build folder only -- while requiring the combination cost every
+        dependency a Debug+pybind binary, which is the one combination the xms
+        libraries do not publish. The Python half of coverage now uses the
+        Release pybind configuration the matrix already produces.
 
         Returns:
             The build-type names, as a set.
         """
-        build_types = set(self._matrix['pybind_build_types'])
-        if self._coverage:
-            build_types.add('Debug')
-        return build_types
+        return set(self._matrix['pybind_build_types'])
 
     def _pybind_variants(self, combinations):
         """Return the pybind copies of ``combinations``, one per python version.
@@ -673,6 +674,14 @@ class XmsConanPackager(object):
                         'python_version': py_version,
                     })
                     pybind_options['buildenv']['PYTHON_TARGET_VERSION'] = py_version
+                    # A pybind build is never the one gcovr reads, so it does
+                    # not need --coverage. The CMake guard tests the profile's
+                    # [buildenv] (see the injection above and issue #69), so
+                    # dropping the key here leaves the module uninstrumented
+                    # while the recipe's run_python_tests still sees
+                    # XMS_COVERAGE in the inherited process environment and
+                    # still collects pytest-cov output.
+                    pybind_options['buildenv'].pop('XMS_COVERAGE', None)
                     variants.append(pybind_options)
         return variants
 

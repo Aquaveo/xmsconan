@@ -166,7 +166,7 @@ def _fake_conan_list_output(packages, *, library_ref="xmscore/1.0.0"):
 
 
 class TestFindCoveragePackage:
-    """Conan cache parsing — picks the newest pybind-only OR testing-only Debug package."""
+    """Conan cache parsing — newest match per kind, Debug testing / Release pybind."""
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_picks_newest_matching_package(self, mock_run):
@@ -174,11 +174,11 @@ class TestFindCoveragePackage:
         mock_run.return_value = _fake_conan_list_output([
             {"options": {"pybind": "True", "testing": "False",
                          "python_version": "3.13"},
-             "settings": {"build_type": "Debug"},
+             "settings": {"build_type": "Release"},
              "ts": 100, "pid": "old_pid"},
             {"options": {"pybind": "True", "testing": "False",
                          "python_version": "3.13"},
-             "settings": {"build_type": "Debug"},
+             "settings": {"build_type": "Release"},
              "ts": 200, "pid": "new_pid"},
         ])
         ref, pid = _find_coverage_package(
@@ -205,7 +205,7 @@ class TestFindCoveragePackage:
             # bool True/False (not the strings "True"/"False")
             {"options": {"pybind": True, "testing": False,
                          "python_version": "3.13"},
-             "settings": {"build_type": "Debug"},
+             "settings": {"build_type": "Release"},
              "ts": 100, "pid": "pid"},
         ])
         ref, pid = _find_coverage_package(
@@ -215,13 +215,19 @@ class TestFindCoveragePackage:
         assert pid == "pid"
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
-    def test_skips_release_builds(self, mock_run):
-        """Release build_type must not match — we only want Debug for instrumentation."""
+    def test_pybind_kind_skips_debug_builds(self, mock_run):
+        """kind='pybind' wants Release; a Debug pybind package must not match.
+
+        The build type is per kind. Matching a Debug pybind build here would
+        find whatever a library that names Debug in [matrix].pybind_build_types
+        happens to have produced, rather than the Release build run_coverage
+        asked for.
+        """
         mock_run.return_value = _fake_conan_list_output([
             {"options": {"pybind": "True", "testing": "False",
                          "python_version": "3.13"},
-             "settings": {"build_type": "Release"},
-             "ts": 100, "pid": "release_pid"},
+             "settings": {"build_type": "Debug"},
+             "ts": 100, "pid": "debug_pid"},
         ])
         with pytest.raises(RuntimeError):
             _find_coverage_package(
@@ -229,12 +235,23 @@ class TestFindCoveragePackage:
             )
 
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_testing_kind_skips_release_builds(self, mock_run):
+        """kind='testing' wants Debug; gcov instruments an unoptimized build."""
+        mock_run.return_value = _fake_conan_list_output([
+            {"options": {"testing": "True", "pybind": "False"},
+             "settings": {"build_type": "Release"},
+             "ts": 100, "pid": "release_pid"},
+        ])
+        with pytest.raises(RuntimeError):
+            _find_coverage_package("xmscore", kind="testing")
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
     def test_pybind_kind_rejects_combined_testing_true_pybind_true(self, mock_run):
         """kind='pybind' DOES NOT match a combined ``testing=True+pybind=True`` record.
 
         The new two-build coverage flow (issue #65 follow-up) carves out
-        TWO disjoint Debug configs: one ``testing=True+pybind=False`` and
-        one ``testing=False+pybind=True``. ``kind='pybind'`` must
+        TWO disjoint configs: a Debug ``testing=True+pybind=False`` and a
+        Release ``testing=False+pybind=True``. ``kind='pybind'`` must
         specifically pick the latter — a stale combined-config package
         left over from the prior flow must not be silently matched (it
         would conflate the two layers' coverage roles and reintroduce
@@ -262,11 +279,11 @@ class TestFindCoveragePackage:
         mock_run.return_value = _fake_conan_list_output([
             {"options": {"pybind": "True", "testing": "False",
                          "python_version": "3.10"},
-             "settings": {"build_type": "Debug"},
+             "settings": {"build_type": "Release"},
              "ts": 999, "pid": "pid_310"},  # newer
             {"options": {"pybind": "True", "testing": "False",
                          "python_version": "3.13"},
-             "settings": {"build_type": "Debug"},
+             "settings": {"build_type": "Release"},
              "ts": 100, "pid": "pid_313"},  # older
         ])
         ref, pid = _find_coverage_package(
@@ -285,7 +302,7 @@ class TestFindCoveragePackage:
                  "settings": {"build_type": "Debug"}, "ts": 1},
                 {"options": {"testing": "False", "pybind": "True",
                              "python_version": "3.13"},
-                 "settings": {"build_type": "Debug"}, "ts": 2},
+                 "settings": {"build_type": "Release"}, "ts": 2},
             ]),
         )
         ref, pid = _find_coverage_package(
@@ -294,7 +311,7 @@ class TestFindCoveragePackage:
         assert ref and pid
 
     def test_find_pybind_package_matches_pybind_only_pinned_python(self, monkeypatch):
-        """kind='pybind' matches testing=False, pybind=True, Debug, pinned python."""
+        """kind='pybind' matches testing=False, pybind=True, Release, pinned python."""
         monkeypatch.setattr(
             "xmsconan.coverage_tools.coverage_generator.subprocess.run",
             lambda *a, **kw: _fake_conan_list_output([
@@ -302,10 +319,10 @@ class TestFindCoveragePackage:
                  "settings": {"build_type": "Debug"}, "ts": 1},
                 {"options": {"testing": "False", "pybind": "True",
                              "python_version": "3.10"},
-                 "settings": {"build_type": "Debug"}, "ts": 2},
+                 "settings": {"build_type": "Release"}, "ts": 2},
                 {"options": {"testing": "False", "pybind": "True",
                              "python_version": "3.13"},
-                 "settings": {"build_type": "Debug"}, "ts": 3},
+                 "settings": {"build_type": "Release"}, "ts": 3},
             ]),
         )
         ref, pid = _find_coverage_package(
@@ -932,7 +949,12 @@ class TestRunCoverageThresholdGating:
         for cmd in build_cmds:
             filter_idx = cmd.index("--filter")
             filter_dict = json.loads(cmd[filter_idx + 1])
-            assert filter_dict["build_type"] == "Debug"
+            # Debug for the C++ build gcov instruments, Release for the pybind
+            # build that only produces pytest-cov output.
+            expected = (
+                "Release" if filter_dict["options"].get("pybind") else "Debug"
+            )
+            assert filter_dict["build_type"] == expected
             # Options must live under "options", never at the top level.
             assert "pybind" not in filter_dict
             assert "testing" not in filter_dict
@@ -1000,10 +1022,12 @@ class TestRunCoverageThresholdGating:
         assert filter_dicts[0]["build_type"] == "Debug"
 
         # Second build is the pybind-only one (Python coverage), pinned to
-        # one Python ABI.
+        # one Python ABI, and Release: pytest-cov measures Python lines, and
+        # gcovr never reads this build folder, so instrumenting it would only
+        # cost every dependency a Debug+pybind binary.
         assert filter_dicts[1]["options"]["pybind"] is True
         assert filter_dicts[1]["options"]["testing"] is False
-        assert filter_dicts[1]["build_type"] == "Debug"
+        assert filter_dicts[1]["build_type"] == "Release"
         assert "python_version" in filter_dicts[1]["options"]
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
