@@ -1,12 +1,18 @@
 """Unified coverage runner for xmsconan libraries.
 
-Runs two independent instrumented builds under XMS_COVERAGE=1:
+Runs two independent builds under XMS_COVERAGE=1:
 
-  * ``testing=True, pybind=False, Debug`` — drives CxxTest. gcovr reads
-    the .gcda set from this build folder for C++ line coverage.
-  * ``pybind=True, testing=False, Debug`` (pinned ``python_version``) —
+  * ``testing=True, pybind=False, Debug`` — drives CxxTest under
+    ``--coverage``. gcovr reads the .gcda set from this build folder for C++
+    line coverage. Debug is required: gcov instruments an unoptimized build.
+  * ``pybind=True, testing=False, Release`` (pinned ``python_version``) —
     drives ``pytest-cov`` against the wheel. The pytest-cov JSON/XML/HTML
     artifacts are copied up out of this build folder for Python coverage.
+    Release because nothing here needs an instrumented module: pytest-cov
+    measures Python lines, and gcovr is pointed at the testing build only.
+    Asking for Debug cost every dependency a Debug+pybind binary -- the one
+    combination the xms libraries do not publish -- and on Windows would
+    demand a debug interpreter.
 
 Combining the two flags in one Conan config was a fragile carve-out that
 existed nowhere else in the matrix; this split lets the coverage configs
@@ -121,16 +127,22 @@ def _find_coverage_package(
         testing build does not depend on a Python ABI — and is ignored
         if passed.
       * ``kind="pybind"`` matches ``testing=False``, ``pybind=True``,
-        ``build_type=Debug``, and the pinned ``python_version``. Passing
+        ``build_type=Release``, and the pinned ``python_version``. Passing
         ``python_version=None`` for this kind is a programming error and
         raises ``ValueError``; the multi-version fan-out would otherwise
         non-deterministically pick whichever ABI finished last (#65).
+
+    The build type is per kind rather than one value for both, and must stay
+    in step with the filters ``run_coverage`` builds with: a matcher looking
+    for a build nothing produced reports "did the build complete?" for a build
+    that completed fine.
 
     Returns (exact_ref, package_id) for the newest matching revision.
     """
     if kind == "testing":
         want_pybind = False
         want_testing = True
+        want_build_type = "Debug"
         match_python_version = None
     elif kind == "pybind":
         if python_version is None:
@@ -140,6 +152,7 @@ def _find_coverage_package(
             )
         want_pybind = True
         want_testing = False
+        want_build_type = "Release"
         match_python_version = python_version
     else:
         raise ValueError(
@@ -163,7 +176,7 @@ def _find_coverage_package(
                     continue
                 if _opt_is_truthy(opts.get("testing")) != want_testing:
                     continue
-                if settings.get("build_type") != "Debug":
+                if settings.get("build_type") != want_build_type:
                     continue
                 if match_python_version is not None and \
                         opts.get("python_version") != match_python_version:
@@ -172,7 +185,7 @@ def _find_coverage_package(
     if not candidates:
         desc = (
             "testing=True, pybind=False, Debug" if kind == "testing"
-            else f"pybind=True, testing=False, Debug, "
+            else f"pybind=True, testing=False, Release, "
                  f"python_version={match_python_version}"
         )
         raise RuntimeError(
@@ -469,12 +482,13 @@ def _append_github_summary(rows: list[tuple[str, float, float, bool]]):
 def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
-    The packager emits a Debug+testing-only config and a Debug+pybind-only
+    The packager emits a Debug+testing-only config and a Release+pybind-only
     config independently; this function builds each in sequence, runs
     gcovr against the testing build folder, and copies pytest-cov
     artifacts out of the pybind build folder. The two builds never
     share a binary shape, so changes to CxxTest linkage or pybind
-    options cannot break the other layer.
+    options cannot break the other layer. Only the testing build is
+    instrumented -- it is the one gcovr reads.
 
     Returns the process exit code (0 = pass, non-zero = threshold failure
     or a build.py failure in either layer).
@@ -525,11 +539,13 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             exc.returncode,
         )
 
-    # 3. Python coverage build: pybind=True, testing=False, Debug, pinned
+    # 3. Python coverage build: pybind=True, testing=False, Release, pinned
     #    to one Python ABI. Drives pytest-cov against the wheel inside the
-    #    recipe's run_python_tests.
+    #    recipe's run_python_tests. Release rather than Debug: pytest-cov
+    #    reports Python lines, and step 5 points gcovr at the testing build
+    #    folder alone, so an instrumented module would buy nothing.
     py_filter = json.dumps({
-        "build_type": "Debug",
+        "build_type": "Release",
         "options": {
             "pybind": True,
             "testing": False,
