@@ -86,7 +86,6 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
@@ -97,7 +96,7 @@ from tabulate import tabulate
 
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
-from xmsconan.ci_tools.credentials import load_conan_credentials
+from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
 from xmsconan.constants import (
     MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
 )
@@ -338,17 +337,8 @@ def resolve_credentials(password_file=None, username=None):
             secret never landed in it looks exactly like a typo'd path from
             the other end of the login.
     """
-    password = None
     if password_file:
-        path = Path(password_file)
-        if not path.is_file():
-            raise ValueError(f"password file not found: {password_file}")
-        try:
-            password = path.read_text(encoding="utf-8").rstrip()
-        except OSError as exc:
-            raise ValueError(f"could not read password file {password_file}: {exc}") from exc
-        if not password:
-            raise ValueError(f"password file is empty: {password_file}")
+        password = read_password_file(password_file)
     else:
         password = os.environ.get("CONAN_PASSWORD")
     username = username or os.environ.get("CONAN_LOGIN_USERNAME")
@@ -720,7 +710,7 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         configurations generated yet.
 
     Raises:
-        ValueError: When ``matrix`` is malformed, from ``_resolve_matrix``.
+        ValueError: When ``matrix`` is malformed, from ``resolve_matrix``.
     """
     return XmsConanPackager(
         library,
@@ -729,7 +719,7 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         apply_boost_defaults=False,
         python_versions=python_versions,
         # Passed through rather than `matrix or None`: a falsey non-dict
-        # (matrix = []) has to reach _resolve_matrix and be rejected, the way it
+        # (matrix = []) has to reach resolve_matrix and be rejected, the way it
         # is on every other entry point, instead of being read as "no
         # restriction" and quietly restoring the full fan-out.
         matrix=matrix,

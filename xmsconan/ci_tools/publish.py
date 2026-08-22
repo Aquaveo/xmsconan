@@ -279,10 +279,13 @@ def main():
 
     if args.docker:
         from xmsconan.ci_tools.docker_run import docker_publish
-        try:
-            docker_publish(args)
-        except SystemExit as exc:
-            sys.exit(exc.code if isinstance(exc.code, int) else 1)
+        # No try/except: sys.exit already does the right thing with either code
+        # docker_publish raises. An int (the container's returncode) becomes the
+        # exit status; a str is printed to stderr and the status becomes 1. The
+        # isinstance(int) guard that used to be here substituted a bare 1 for
+        # the string, so `xmsconan publish --docker` on a machine without Docker
+        # exited 1 with no explanation of why.
+        docker_publish(args)
         return
 
     deploy_wheel = not args.no_deploy and not args.no_wheel

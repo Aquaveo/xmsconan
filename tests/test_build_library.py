@@ -115,18 +115,20 @@ def test_main_non_dry_run_executes_subprocess():
         assert mock_run.call_args_list[1][0][0] == ["cmake", "-S", ".", "-B", "build"]
 
 
-def test_parse_bool_option_wchar_t_compatibility():
-    """wchar_t string values should not map to True in compatibility mode."""
-    assert build_library._parse_bool_option("builtin", allow_string_aliases=False) == "False"
-    assert build_library._parse_bool_option("typedef", allow_string_aliases=False) == "False"
-    assert build_library._parse_bool_option("true", allow_string_aliases=False) == "True"
+@pytest.mark.parametrize("wchar_t,expected", [
+    ("builtin", "-DUSE_TYPEDEF_WCHAR_T=False"),
+    ("typedef", "-DUSE_TYPEDEF_WCHAR_T=True"),
+])
+def test_get_cmake_options_forwards_wchar_t(wchar_t, expected, tmp_path):
+    """The profile's wchar_t reaches CMake as the variable CMake actually reads.
 
-
-def test_get_cmake_options_sets_xms_build_false_for_wchar_builtin(tmp_path):
-    """XMS_BUILD should remain False when profile sets wchar_t=builtin."""
+    It used to go through _parse_bool_option, which collapsed BOTH legal values
+    to False, and be emitted as -DXMS_BUILD, which no CMakeLists.txt in the
+    tree reads. USE_TYPEDEF_WCHAR_T is what gates /Zc:wchar_t-.
+    """
     profile = tmp_path / "profile"
     profile.write_text(
-        "[options]\ntesting=True\npybind=False\nwchar_t=builtin\n",
+        f"[options]\ntesting=True\npybind=False\nwchar_t={wchar_t}\n",
         encoding="utf-8",
     )
 
@@ -145,7 +147,8 @@ def test_get_cmake_options_sets_xms_build_false_for_wchar_builtin(tmp_path):
     )
 
     options = build_library.get_cmake_options(args)
-    assert "-DXMS_BUILD=False" in options
+    assert expected in options
+    assert not any(opt.startswith("-DXMS_BUILD=") for opt in options)
 
 
 # --- New tests ---
@@ -153,18 +156,24 @@ def test_get_cmake_options_sets_xms_build_false_for_wchar_builtin(tmp_path):
 
 @pytest.mark.parametrize("value", ["true", "1", "yes", "on"])
 def test_parse_bool_option_true_values(value):
-    """Standard true-ish strings map to 'True'."""
-    assert build_library._parse_bool_option(value) == "True"
+    """Standard true-ish strings map to True."""
+    assert build_library._parse_bool_option(value) is True
 
 
 def test_parse_bool_option_none_returns_false():
-    """None maps to 'False'."""
-    assert build_library._parse_bool_option(None) == "False"
+    """None maps to False."""
+    assert build_library._parse_bool_option(None) is False
 
 
-def test_parse_bool_option_builtin_with_aliases():
-    """'builtin' maps to 'True' when allow_string_aliases is True."""
-    assert build_library._parse_bool_option("builtin", allow_string_aliases=True) == "True"
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", "builtin", "typedef", ""])
+def test_parse_bool_option_false_values(value):
+    """Anything not explicitly true-ish is False.
+
+    "builtin" used to be a true-ish alias here, for the sole benefit of the
+    wchar_t option -- which is a two-valued string, not a boolean, and no
+    longer goes through this function at all.
+    """
+    assert build_library._parse_bool_option(value) is False
 
 
 def test_resolve_tool_found_on_path():

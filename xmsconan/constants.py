@@ -22,6 +22,22 @@ import re
 SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.13", "3.14")
 
 
+#: Accepted values of ``build.toml``'s ``testing_framework``.
+#:
+#: Repeats ``XmsConan2File.TESTING_FRAMEWORKS`` for the standalone-copy reason
+#: above; ``test_vocabularies_match_the_recipe`` pins the two together. A value
+#: outside this set used to add no test framework at all and surface as a CMake
+#: "cannot find cxxtest" much later.
+TESTING_FRAMEWORKS = ("cxxtest", "gtest")
+
+#: Accepted values of ``build.toml``'s ``python_binding_type``.
+#:
+#: Repeats ``XmsConan2File.PYTHON_BINDING_TYPES``, pinned by the same test. A
+#: value outside this set was silent end to end and shipped a Python package
+#: with no native module in it.
+PYTHON_BINDING_TYPES = ("pybind11", "vtk_wrap")
+
+
 def version_sort_key(version) -> tuple:
     """Sort a ``"3.10"``-style version string numerically, not lexically.
 

@@ -8,13 +8,22 @@ Credentials are resolved in order:
   1. CLI arguments
   2. Environment variables (``AQUAPI_URL``, ``AQUAPI_USERNAME``, ``AQUAPI_PASSWORD``)
   3. ``~/.xmsconan.toml`` config file (see :mod:`xmsconan.ci_tools.credentials`)
+
+Prefer sources 2 and 3 for the password.  ``--password`` puts it in this
+process's argv, and from there into shell history, ``ps`` output, and the
+Windows Event 4688 / Sysmon record that ships to the SIEM in cleartext.  It
+is also passed on to ``devpi login`` below, which is the part that has no
+fix yet: devpi-client reads no password environment variable, and its
+``getpass`` fallback reads the console rather than a pipe, so there is no
+drop-in replacement.  This is the one credential xmsconan still hands to a
+subprocess on a command line -- ``conan-setup`` and ``vs2019 setup`` do not.
 """
 import argparse
 import os
 import subprocess
 import sys
 
-from xmsconan.ci_tools.credentials import load_credentials
+from xmsconan.ci_tools.credentials import CredentialsError, load_credentials
 
 
 def wheel_deploy(wheel_dir="wheelhouse", url=None, username=None, password=None):
@@ -70,7 +79,11 @@ def main():
     )
     parser.add_argument("--url", default=None, help="devpi index URL.")
     parser.add_argument("--username", default=None, help="devpi username.")
-    parser.add_argument("--password", default=None, help="devpi password.")
+    parser.add_argument(
+        "--password", default=None,
+        help="devpi password. Prefer $AQUAPI_PASSWORD or ~/.xmsconan.toml -- a "
+             "password given here appears in this process's command line.",
+    )
     args = parser.parse_args()
     try:
         wheel_deploy(
@@ -79,5 +92,11 @@ def main():
             username=args.username,
             password=args.password,
         )
+    except CredentialsError as exc:
+        # An unusable ~/.xmsconan.toml is a usage error, and the two sibling
+        # entry points (`conan-setup`, `vs2019 setup`) already report it as one.
+        # Without this it arrived here as a traceback, and the widened checks in
+        # credentials.py gave it more ways to arrive.
+        parser.error(str(exc))
     except subprocess.CalledProcessError as exc:
         sys.exit(exc.returncode)

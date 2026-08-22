@@ -89,7 +89,16 @@ def _reexec_under_xvfb():
         return
     env = os.environ.copy()
     env[_XVFB_REEXEC_FLAG] = "1"
-    cmd = [xvfb_run, "-a", "-s", "-screen 0 1280x1024x24", sys.executable, *sys.argv]
+    # Re-exec through `-m <module>`, not through sys.argv[0]: the `xmsconan`
+    # dispatcher rewrites argv[0] to the literal "xmsconan coverage"
+    # (cli.py), so passing it to the interpreter ran
+    # `python "xmsconan coverage"` and died with "can't open file". The module
+    # has a __main__ guard for exactly this entry.
+    cmd = [
+        xvfb_run, "-a", "-s", "-screen 0 1280x1024x24",
+        sys.executable, "-m", "xmsconan.coverage_tools.coverage_generator",
+        *sys.argv[1:],
+    ]
     LOGGER.info("Re-execing under xvfb-run: %s", " ".join(cmd))
     os.execvpe(xvfb_run, cmd, env)
 
@@ -217,6 +226,10 @@ def _find_pytest_cov_artifact(build_folder: Path, name: str, kind: Optional[str]
             f"kind must be 'file', 'dir', or None; got {kind!r}"
         )
     if not matches:
+        LOGGER.warning(
+            "No %s found under %s; the artifact it feeds will be missing.",
+            name, build_folder,
+        )
         return None
     matches.sort()
     if len(matches) > 1:
@@ -582,7 +595,21 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     cpp_threshold = coverage_cfg["cpp_threshold"]
     py_threshold = coverage_cfg["python_threshold"]
     cpp_pass = cpp_raw >= cpp_threshold
-    py_pass = py_raw >= py_threshold
+    # An absent summary is not 0% coverage, it is *no measurement*, and the two
+    # have to be told apart: python_threshold defaults to 0, so 0.0 >= 0.0
+    # reports "Python: 0.0% -> PASS" for a layer that never ran. Step 3 always
+    # builds pybind with XMS_COVERAGE=1 and the coverage job is Linux-only in
+    # both CI templates, so there is no configuration where the file is
+    # legitimately absent.
+    py_measured = py_summary_src is not None
+    if not py_measured:
+        LOGGER.error(
+            "No cov-py-summary.json under %s. The pybind coverage build ran, "
+            "so run_python_tests should have written one -- failing the gate "
+            "rather than reporting an unmeasured layer as passing.",
+            py_build_folder,
+        )
+    py_pass = py_measured and py_raw >= py_threshold
 
     rows = [
         ("C++", cpp_threshold, round(cpp_raw, 1), cpp_pass),

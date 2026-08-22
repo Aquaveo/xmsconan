@@ -70,7 +70,7 @@ All commands live under the `xmsconan` umbrella:
 | `xmsconan build` | Run `conan install` + `cmake configure` against a single profile. Used by the generated `build.py`; also useful for one-off configures. |
 | `xmsconan coverage` | Run the unified C++/Python coverage pipeline and enforce the `[coverage]` thresholds (see §11). |
 | `xmsconan vs2019` | Drive the manual Visual Studio 2019 (msvc 192) build and publish it to the `aquaveo-vs2019` remote (see §16). Never runs in CI. |
-| `xmsconan conan-setup` | Detect a Conan profile, add the aquaveo remote, optionally login. |
+| `xmsconan conan-setup` | Detect a Conan profile, add the aquaveo remote, optionally login. The password comes from `--password-file`, `$CONAN_PASSWORD`, or `~/.xmsconan.toml` — there is no `--password` flag (§17). |
 | `xmsconan wheel-repair` | Run platform-appropriate wheel repair (auditwheel / delocate / delvewheel). |
 | `xmsconan wheel-deploy` | Upload repaired wheels to devpi. |
 | `xmsconan conan-deploy` | Save / restore / upload Conan packages between CI stages. |
@@ -83,6 +83,8 @@ Run `xmsconan <cmd> --help` for the full flag set. The legacy underscored names 
 ## 5. `build.toml` reference
 
 `build.toml` is the **only** file you author for the build system. It controls everything xmsconan generates.
+
+**An unknown top-level key is an error.** `xmsconan gen`, `xmsconan ci` and `xmsconan profiles` all reject a key that is not in the tables below, naming it and listing what is accepted. Every optional key has a default that is applied with `setdefault`, so a misspelling otherwise had no symptom at all — the default was kept and the generated artifact quietly was not what the file asked for. The same rule already applied to the `[ci]`, `[matrix]`, `conan_profile_variants` and `vs2019_dependency_overrides` sub-tables; it now covers the top level too. `testing_framework`, `python_binding_type` and the keys of `xms_dependency_options` are checked against their vocabularies at the same point.
 
 ### 5.1 Required
 
@@ -136,7 +138,7 @@ option-overridden configurations.
 | `xms_python_dependencies` | array[string] | `[]` | Extra **Python** requirements written into `_package/pyproject.toml`, in pip requirement form (`"geopandas"`, `"data_objects>=4.0.0"`). For runtime imports that are not XMS sister libraries and so have no entry in `xms_dependencies`. Appended after the XMS entries, in the order given. The Conan *dependency graph* is unaffected — nothing is added to `conanfile.py` — but these are real wheel requirements, so pip resolves them from an index during the Conan build when `pybind` is on (see §5.3). |
 | `extra_dependencies` | array[string] | `[]` | Extra Conan deps in `"name/version"` form. Each entry is also wired into the generated `CMakeLists.txt` — a `find_package(<name> REQUIRED)` in the non-conda branch plus the matching `EXT_INCLUDE_DIRS` / `EXT_LIB_DIRS` / `EXT_LIBS` appends, exactly as `xms_dependencies` entries are. A header-only package defines no `_LIBRARY_DIRS` or `_LIBRARIES`; CMake expands an undefined variable to nothing, so those appends are harmless. Entries the generated `CMakeLists.txt` already finds are dropped from the CMake side — every `xms_dependencies` entry, plus `boost`, `zlib`, `pybind11`, `cxxtest` and `gtest`. That is not cosmetic: Conan publishes boost's and zlib's configs as `Boost` and `ZLIB`, so a lowercase duplicate is a hard configure error, and `pybind11` is found inside the `IS_PYTHON_BUILD` block where Python is available. So the CMake side and the recipe side apply the same rule. Deduplicated by package name against the deps the recipe adds itself (boost, zlib, the test framework, `pybind11`, every `xms_dependencies` entry) and against the rest of this list, keeping the first reference. Conan's duplicate check is by name, so a clash is a hard graph error no version dodges — this is what lets a library whose *static* half needs `pybind11` list it here without breaking its `pybind=True` configurations. An exact duplicate is dropped silently; an entry whose *version* differs from the reference that wins is a **warning** naming both, since what is being discarded is a pin somebody wrote on purpose. Entries are whitespace-stripped, and an empty entry is an error. |
 | `extra_dependency_cmake_names` | object | `{}` | Override the **CMake** package name `find_package` is called with for an `extra_dependencies` entry, keyed on its Conan package name: `{ "xmdf" = "Xmdf" }`. Needed only when a package's CMake config does not use its Conan reference name. An empty string (`{ "somepkg" = "" }`) keeps the dependency in the Conan graph but leaves it out of the generated `CMakeLists.txt` entirely — for a package that ships no CMake config. Values must be strings, and a key naming a package that is not in `extra_dependencies` is **rejected**, not ignored: an ignored key's only symptom was a `find_package` failing on the *dependency*, pointing nowhere near the misspelled key. |
-| `xms_dependency_options` | object | `{}` | Override an XMS dep's options. e.g. `{ "xmscore" = { "pybind" = false } }`. |
+| `xms_dependency_options` | object | `{}` | Override an XMS dep's options. e.g. `{ "xmscore" = { "pybind" = false } }`. A key naming a package that is not in `xms_dependencies` is **rejected**, not ignored — an ignored key meant the override (usually one turning a dependency's `pybind` off) never applied, and the only symptom was a heavier build than asked for. |
 | `vs2019_dependency_overrides` | object | `{}` | Replace an XMS dep's *reference* — but only on a Visual Studio 2019 (msvc 192) build. e.g. `{ "xmscore" = "xmscore/[>=6.0.1 <7.0.0]" }`. Matched on the package name before the first `/`; every other toolchain ignores it entirely. An entry may change the version or range only — renaming the package, or naming one that is not in `xms_dependencies`, fails the msvc 192 build. See §7.4. |
 | `conan_profile_conf` | object | see §5.3 note | `[conf]` entries written into the `[conf]` section of every generated profile. Defaults to `{ "tools.cmake.cmaketoolchain:generator" = "Ninja Multi-Config", "tools.cmake.cmaketoolchain:user_presets" = "" }` — the generator is pinned so it does not vary by machine, and Conan's own `CMakeUserPresets.json` is disabled because `xmsconan` writes `CMakePresets.json` instead. An empty table (`{}`) omits the section entirely; with no generator pinned there is nothing to express, so no `CMakePresets.json` is written either. |
 | `conan_profile_variants` | array[object] | `[]` | Additional renderings of the same settings under a different generator — the same configuration built with both Ninja and Visual Studio, for instance. Object shape: `{ name = "vs", platforms = ["windows"], kinds = ["testing", "python"], conf = { "tools.cmake.cmaketoolchain:generator" = "Visual Studio 17 2022" } }`. Only `name` is required. `platforms` accepts `linux`, `mac_os` (note the underscore — it is the profile-filename spelling of Conan's `Macos`), and `windows`; `kinds` accepts `library`, `python`, and `testing`. An omitted filter means "no restriction". A variant overlays `[conf]` only — settings and options are identical to the base rendering, which is what makes the pair comparable — and each match is written as `<stem>_<name>.txt` with its own CMake preset. Unknown keys and unknown `platforms` / `kinds` values are rejected when the profiles are generated, rather than silently producing no variant. |
@@ -148,8 +150,8 @@ Boost (`1.86.0`) and zlib (`1.3.1`) are added automatically by the recipe. On a 
 
 | Field | Default | Description |
 |---|---|---|
-| `testing_framework` | `"cxxtest"` | `"cxxtest"` or `"gtest"`. Selects the test discovery / runner template in CMake. |
-| `python_binding_type` | `"pybind11"` | `"pybind11"` or `"vtk_wrap"`. |
+| `testing_framework` | `"cxxtest"` | `"cxxtest"` or `"gtest"`. Selects the test discovery / runner template in CMake. Any other value is rejected at generate time and again in the recipe's `configure()` — it used to add no framework requirement at all and fail much later with a CMake "cannot find cxxtest". |
+| `python_binding_type` | `"pybind11"` | `"pybind11"` or `"vtk_wrap"`. Any other value is rejected the same way; it used to be silent end to end and ship a Python package with no native module in it. |
 | `python_namespaced_dir` | derived | The submodule under `xms.<...>`. e.g. `"core"` produces `xms.core`. Defaults to `library_name` minus the `xms` prefix when omitted. |
 | `pybind_root` | `false` | Whether this library hosts the root `xms` namespace. |
 | `pybind_advertises_module` | `false` | Advertise the pybind module's import library (`_<name>`) to C++ consumers instead of the static library, and install the module to `bin/` + `lib/`. Windows-only in effect, and only for `pybind = True` packages. Opt-in because a consumer of the module sees only its exported symbols, and because `pybind` propagates down the dependency graph. See §7.5. |
@@ -196,7 +198,7 @@ These drive the CI templates. All optional.
 | `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
 | `[ci].xvfb` | `false` | Wrap test execution in `xvfb-run` (use for libraries that link X11/VTK). |
 | `[ci].split_tests` | `false` | Split build and C++ test into two stages so testing artifacts can be reused. |
-| `[ci].test_shards` | `0` | When >1 (and `split_tests=true`), shard C++ tests over N parallel jobs using gtest sharding. |
+| `[ci].test_shards` | `0` | When >1 (and `split_tests=true`), shard C++ tests over N parallel jobs using gtest sharding. The recipe skips `cmake.test()` in this mode, so the shards are the only thing that runs the C++ tests — a missing runner binary fails the build rather than being skipped. |
 | `[ci].docker_image` | `""` | Override the build container image (skips the default Aquaveo images). |
 | `[ci].python_versions` | `["3.13"]` | Python versions to build **on Windows**. macOS and Linux take the highest entry unless they are given their own list below. Set to `["3.10", "3.13"]` to build a Windows 3.10 wheel + Conan binary in addition to 3.13. See §8. |
 | `[ci].mac_python_versions` | highest of `[ci].python_versions` | Python versions the macOS matrix fans out across. Separate from `python_versions` so a Windows-only ABI (3.10 ships in Windows wheels for the desktop products) does not silently multiply the mac matrix. See §8. |
@@ -282,14 +284,16 @@ Standard Conan: `os`, `compiler`, `build_type`, `arch`.
 
 | Option | Values | Default | What it controls |
 |---|---|---|---|
-| `wchar_t` | `"builtin"` / `"typedef"` | `"builtin"` | MSVC `/Zc:wchar_t-` toggle. Only `"typedef"` is built on MSVC (and is excluded from non-MSVC). |
+| `wchar_t` | `"builtin"` / `"typedef"` | `"builtin"` | MSVC `/Zc:wchar_t-` toggle. Only `"typedef"` is built on MSVC (and is excluded from non-MSVC). The recipe sets `USE_TYPEDEF_WCHAR_T` from it, which is what the generated `CMakeLists.txt` gates the flag on. **Typedef packages published before the release carrying this fix do not carry `/Zc:wchar_t-`** — nothing set that variable between the Conan 2 migration and that release, so those binaries are builtin builds with a typedef `package_id`. Nothing in the package metadata distinguishes them -- it records the option, not the flag it failed to produce -- so age is the only signal: rebuild and republish the typedef variants of a library before consuming them (see the rollout order in §7.4). |
 | `pybind` | `True` / `False` | `False` | Build the Python binding module + wheel. Allowed for any `build_type`. |
 | `testing` | `True` / `False` | `False` | Build the test runner. Mutually exclusive with `pybind=True` in the standard packager fan-out — the coverage runner instruments each shape in a separate Conan create rather than combining them. |
 | `python_version` | `"3.10"` / `"3.13"` / `"3.14"` | `"3.13"` | Which Python ABI to target when `pybind=True`. **Dropped from `package_id` when `pybind=False`**, so non-Python builds remain a single binary regardless. |
 
 ### 7.3 Required CMake variables (set by the recipe via `tc.variables`)
 
-`PYTHON_TARGET_VERSION`, `IS_PYTHON_BUILD`, `BUILD_TESTING`, `XMS_TESTING_FRAMEWORK`, `XMS_VERSION`. The generated `CMakeLists.txt` already wires these up; only relevant if you write `extra_cmake_text`.
+`PYTHON_TARGET_VERSION`, `IS_PYTHON_BUILD`, `BUILD_TESTING`, `XMS_TESTING_FRAMEWORK`, `XMS_VERSION`, `USE_TYPEDEF_WCHAR_T`. The generated `CMakeLists.txt` already wires these up; only relevant if you write `extra_cmake_text`.
+
+All of them come from a single `_cmake_variables()` on the recipe, which feeds both `generate()` (the toolchain file) and `build()` (`cmake.configure`). Those were two hand-kept copies, and `USE_TYPEDEF_WCHAR_T` is what that cost: neither of them set it. `XMS_COVERAGE` is the one variable deliberately outside the shared set — it is added in `build()` only, so an instrumented build is never baked into a cached toolchain file.
 
 ### 7.4 Third-party requirements and the VS2019 fork
 
@@ -456,7 +460,7 @@ python build.py   --version 0.0.0 --wheel-dir wheelhouse --artifacts-dir test_ar
 
 | Flag | Effect |
 |---|---|
-| `--filter '{"build_type": "Release"}'` | Restrict to a subset of the matrix. Keys match the configuration dict (`build_type`, `arch`, `compiler`, `options.pybind`, `options.python_version`, …). |
+| `--filter '{"build_type": "Release"}'` | Restrict to a subset of the matrix. Keys match the configuration dict (`build_type`, `arch`, `compiler`, `options.pybind`, `options.python_version`, …). A configuration that does not carry the filtered key does **not** match it — `'{"options": {"python_version": "3.13"}}'` selects only pybind configurations, since `python_version` is set on those alone. The same rule applies to `buildenv`, which is filtered identically. |
 | `--python-only` | Equivalent to `--filter '{"options": {"pybind": true}}'`. |
 | `--preview` | Print the configuration table and exit. Nothing is built. |
 | `--build-missing` | Pass `--build=missing` to `conan create`. |
@@ -465,7 +469,8 @@ python build.py   --version 0.0.0 --wheel-dir wheelhouse --artifacts-dir test_ar
 | `--artifacts-dir DIR` | Save per-config test artifacts (LastTest.log, runner binary, `_package/`, `test_files/`) for debugging. |
 | `--test-shards N\|auto` | Run gtest sharding for testing builds. |
 | `--skip-dependency-libs` | Do not stage the Conan cache's shared libraries into `<wheel-dir>/libs`. They exist only so the repair tools can resolve imports, so this is for a build whose wheel is not repaired — the generated CI passes it automatically when `[ci].windows_wheel_repair` is off (§12.1). |
-| `--skip-build --upload` | After a successful build, push the matrix to the Conan remote. |
+| `--version VERSION` | The version `--upload` publishes and `--wheel-dir` stages. Defaults to `$XMS_VERSION` — the variable every generated CI leg sets — and falls back to the glob `*`. |
+| `--skip-build --upload` | After a successful build, push the matrix to the Conan remote. **Refuses to run without a concrete version** -- `*`, or empty, which is what an exported-but-unset `XMS_VERSION` yields: as a glob it matched every version of the library in the local cache, and whatever it matched is on the shared remote afterwards. Pass `--version` or set `XMS_VERSION`. |
 
 `xmsconan gen` and `xmsconan profiles` also **remove** any `.txt` profile in `conan_profiles/` that the current matrix does not produce, so narrowing `[matrix]` does not leave stale profiles behind for an IDE to pick. `CMakePresets.json` is a single rewritten file and was always clean; the two now agree. Non-`.txt` files in that directory are left alone.
 
@@ -523,7 +528,8 @@ The generated jobs follow the pattern:
 - Wheel artifacts carry `-py${{ matrix.python-version }}` on any platform that fans out; a single-version platform keeps its bare `wheel-${{ runner.os }}` name.
 - Linux containers resolve to `conan-gcc13-py${{ matrix.python-version }}:latest`.
 - `flake` deliberately stays on a single hardcoded interpreter — linting is ABI-independent, and pinning it keeps lint results identical across repos.
-- The `flake` job installs xmsconan, runs `xmsconan_gen build.toml` to render `.flake8`, then runs plain `flake8 _package`. It deliberately does **not** pass flake8 settings on the command line: that duplicates `.flake8.jinja`, and the two copies drift apart silently (CI once used a different `ignore` list and a stale `conf.py` exclude, so a clean local run did not imply a clean CI run). Change lint settings in `.flake8.jinja` only.
+- Third-party actions are referenced by **commit SHA**, with the tag in a trailing comment (`uses: nelonoel/branch-name@1ea5c86…  # v1.0.1`). A tag is a movable ref in a repository Aquaveo does not control, and the job it runs in holds the Conan and devpi secrets. `actions/*` stays on tags — a compromise of GitHub's own namespace is a compromise of the runner regardless. To move a pin, resolve the new tag with `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` and edit the **template**. `test_github_ci_pins_third_party_actions_to_a_sha` fails on any third-party action added by tag.
+- The `flake` job installs xmsconan, runs `xmsconan_gen build.toml` to render `.flake8`, then runs plain `flake8 _package`. It deliberately does **not** pass flake8 settings on the command line: that duplicates `.flake8.jinja`, and the two copies drift apart silently (CI once used a different `ignore` list and a stale `conf.py` exclude, so a clean local run did not imply a clean CI run). Change lint settings in `.flake8.jinja` only. It installs `flake8-tidy-imports` alongside the other plugins because `.flake8.jinja` sets `banned-modules` — an option only that plugin registers. flake8 accepts config options no installed plugin claims and enforces nothing, so without it the `osgeo.*` ban reported the same green as a run that had checked it, while GitLab (which already installed the plugin) linted to a stricter rule.
 
 ### 10.2 GitLab specifics
 
@@ -535,6 +541,7 @@ The generated jobs follow the pattern:
 - Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
 - `[ci].linux = false` yields a **Windows-only pipeline**: `Conan Build - Windows`, `Lint`, and (on tags) `Wheel Deploy - Windows` and `Conan Deploy - Windows`. Two combinations are rejected at generation time rather than producing a pipeline that fails opaquely later — `linux = false` together with `windows = false` (nothing would build), and `linux = false` with `coverage = true` (coverage compiles with `--coverage` under gcc, and the generated `CMakeLists.txt` rejects MSVC when `XMS_COVERAGE` is set).
 - **Each platform stages and publishes its own wheel.** Linux builds one, repairs it in the Package-stage `Repair Wheel` job, and uploads it from `Wheel Deploy`. Windows passes `--wheel-dir wheelhouse` and then repairs *in place* inside `Conan Build - Windows`, because `delvewheel` reads the DLL imports of a `win_amd64` `.pyd` and only runs on a Windows host — the manylinux container that repairs the Linux wheel cannot stand in. `Wheel Deploy - Windows` uploads the result on tags from a plain `python:3.13` image, since a devpi upload needs no MSVC toolchain. A Windows-only pipeline therefore publishes wheels, and the manual VS2019 track (§16.8) is no longer the only route. `[ci].windows_wheel_repair = false` drops the Windows repair step for a library that has nothing to vendor — see §12.1; the deploy job is unaffected either way.
+- **The Windows cache snapshot is best-effort, and says so.** `Conan Deploy - Windows` copies the Conan cache into a `conan_packages/` artifact for debugging after the upload has already succeeded. It used to end in `|| true`, which made "copied nothing" indistinguishable from "copied everything" — a runner whose home directory is not `/c/Users/admin` shipped an empty artifact with no line in the log. It now prints a warning instead, and stays non-fatal: nothing consumes the artifact, and the upload it follows fails loudly on its own.
 - **The Windows wheel jobs fan out with the build matrix.** `Conan Build - Windows` runs once per `PYTHON_TARGET_VERSION`, and each instance stages its own wheel into `wheelhouse/`. Each wheel's own ABI tag (`cp310` / `cp313` / `cp314`) keeps the files distinct, so the merged artifact holds every wheel and one `Wheel Deploy - Windows` job uploads the set.
 
 ### 10.3 Toolchain versions
@@ -544,7 +551,7 @@ Generated jobs constrain the two tools they install, in opposite directions:
 | Tool | Spec | Why |
 |---|---|---|
 | `xmsconan` | `>=<version that generated the file>`, always with `--upgrade` | An xmsconan fix reaches a repo on its next CI run, rather than requiring a regenerate-and-commit pass across the whole suite. The floor still rules out resolving a version older than the templates were generated against. |
-| `conan` | `~=2.31.0` (patch series) | Conan computes package_ids and runs the compatibility plugin; a minor bump can silently detach a build from binaries already on the remote. |
+| `conan` | `~=2.31.0` (patch series) | Conan computes package_ids and runs the compatibility plugin; a minor bump can silently detach a build from binaries already on the remote. The coverage workflow carries the same pin — it used to install conan unpinned, so the run that reports coverage could resolve different package ids than the run that builds. |
 
 **`--upgrade` is not optional on the xmsconan install.** pip treats an already-satisfied constraint as a no-op, so on a runner image with xmsconan baked in, the floor alone installs nothing and the job silently runs whatever version the image happens to carry. `test_xmsconan_installs_float_and_upgrade` asserts both halves — the `>=` and the `--upgrade` — across every CI option combination for both templates.
 
@@ -573,7 +580,7 @@ What it does:
    `XMS_COVERAGE=1` does two things: it tells `XmsConanPackager` to relax the usual "no Debug+pybind" gate so the Python coverage build can exist (normally Debug+pybind is redundant since the Release wheel is what ships), and it rides into each profile's `[buildenv]` so CMake adds `--coverage` to both builds. The testing-only Debug variant is part of the standard packager fan-out and is emitted whether `XMS_COVERAGE` is set or not. `python_version` on the pybind build is pinned to one ABI (highest of `[ci].linux_python_versions` by default, or `[coverage].python_version` when set) so multi-version fan-outs cannot non-deterministically pick whichever pybind config finished last.
 3. Locates the two build folders in the local Conan cache, runs gcovr against the testing build folder to produce `cov-cpp.xml`, `cov-cpp-summary.json`, and `coverage-html-cpp/`, and copies the pytest-cov artifacts out of the pybind build folder.
 4. Writes `cov-cpp.xml`, `cov-py.xml`, `cov-cpp-summary.json`, `cov-py-summary.json`, `coverage-html-cpp/`, and `coverage-html-py/` into `--output_dir`.
-5. Compares the line-coverage percent for each layer against `[coverage].cpp_threshold` / `[coverage].python_threshold` and exits non-zero on regression. The tool also exits non-zero if `build.py` reported a test failure in either layer — but only *after* still producing gcovr reports, copying artifacts, and (if `$GITHUB_STEP_SUMMARY` is set) appending the markdown summary, so the coverage data and the failing-test signal are both visible in the same run. If a coverage summary file is present but missing its expected keys (gcovr/pytest-cov schema drift, truncated write), the tool raises rather than reporting a misleading 0%.
+5. Compares the line-coverage percent for each layer against `[coverage].cpp_threshold` / `[coverage].python_threshold` and exits non-zero on regression. The tool also exits non-zero if `build.py` reported a test failure in either layer — but only *after* still producing gcovr reports, copying artifacts, and (if `$GITHUB_STEP_SUMMARY` is set) appending the markdown summary, so the coverage data and the failing-test signal are both visible in the same run. If a coverage summary file is present but missing its expected keys (gcovr/pytest-cov schema drift, truncated write), the tool raises rather than reporting a misleading 0%. A `cov-py-summary.json` that is *absent* fails the Python layer outright: the pybind build in step 2 always runs with `XMS_COVERAGE=1`, so there is no configuration in which pytest-cov legitimately writes nothing, and `python_threshold` defaults to `0` — treating the absent file as 0% would report PASS for a layer that was never measured.
 
 ### 11.1 What this requires of the recipe
 
@@ -668,6 +675,15 @@ xmsconan wheel-deploy --wheel-dir wheelhouse
 1. CLI flags: `--url`, `--username`, `--password`
 2. Environment: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD`
 3. `~/.xmsconan.toml` `[aquapi]` section
+
+**Prefer sources 2 and 3 for the password.** `--password` puts it in this
+process's argv, and from there into your shell history, `ps` output, and —
+on a managed Windows box — the Event 4688 / Sysmon record that gets shipped to
+the SIEM in cleartext. This is the one place xmsconan still passes a password
+on a command line: `devpi-client` reads no password environment variable and
+its `getpass` fallback reads the console rather than a pipe, so there is no
+drop-in replacement yet. Everything else (`conan-setup`, `vs2019 setup`,
+`publish --docker`) keeps the secret in an environment variable or a file.
 
 ---
 
@@ -956,7 +972,9 @@ username = "your_username"
 password = "your_password"
 ```
 
-Always overridden by CLI flags / env vars when present. The `[conan]` section is the last fallback for `xmsconan conan-setup --login` and for `xmsconan vs2019 setup` (§16.2). **Don't commit this file.** It's read-only as far as xmsconan is concerned.
+Always overridden by CLI flags / env vars when present. The `[conan]` section is the last fallback for `xmsconan conan-setup --login` and for `xmsconan vs2019 setup` (§16.2) — both resolve `--password-file`, then `$CONAN_PASSWORD`, then this file, and neither has a `--password` flag to put the secret on a command line. **Don't commit this file.** It's read-only as far as xmsconan is concerned.
+
+A missing file is fine — credentials can come from flags or the environment instead. A file that exists but is **not valid TOML** raises `Could not parse <path>` rather than being treated as absent, so a mistyped config reports itself instead of surfacing later as "No devpi URL provided (--url, `$AQUAPI_URL`, or `~/.xmsconan.toml`)" — advice to configure the very file that failed to parse.
 
 ---
 

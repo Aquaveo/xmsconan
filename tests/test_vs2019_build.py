@@ -688,7 +688,7 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
         # This checkout's build.toml declares no [matrix], so the fan-out is
         # unrestricted -- the table is read per library, not per run. Passed
         # through as the empty table rather than coerced to None, so a malformed
-        # value would reach _resolve_matrix and be rejected.
+        # value would reach resolve_matrix and be rejected.
         matrix={},
     )
     packager.generate_configurations.assert_called_once_with("windows_vs2019")

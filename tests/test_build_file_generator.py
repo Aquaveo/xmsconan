@@ -10,6 +10,7 @@ from xmsconan.generator_tools.build_file_generator import (
     copy_xms_conan2_file,
     render_template_with_toml,
 )
+from xmsconan.toml_utils import KNOWN_KEYS
 
 
 # --- Converted from existing unittest tests ---
@@ -1237,3 +1238,218 @@ def test_generation_rejects_a_malformed_matrix_table(tmp_path):
             template_dir=str(tpl_dir),
             output_dir=str(tmp_path / "output"),
         )
+
+
+# --- build.toml validation: a typo has to be an error, not a silent default ---
+
+
+def _render(toml_file, template_dir, tmp_path):
+    """Run the generator against *toml_file*."""
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(template_dir),
+        output_dir=str(tmp_path / "output"),
+    )
+
+
+@pytest.mark.parametrize("body,offender", [
+    ('library_name = "xmscore"\nhas_test_files = true\n', "has_test_files"),
+    ('library_name = "xmscore"\nlibrary_source = []\n', "library_source"),
+    ('library_name = "xmscore"\n[cci]\ncoverage = true\n', "cci"),
+])
+def test_unknown_top_level_key_raises(body, offender, template_dir, tmp_path):
+    """An unrecognized key fails, naming itself.
+
+    Every optional key is applied with setdefault, so a misspelling otherwise
+    had no symptom: the default was kept and the generated artifact quietly was
+    not what the file asked for.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(body, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=offender) as excinfo:
+        _render(toml_file, template_dir, tmp_path)
+
+    assert "Accepted keys" in str(excinfo.value)
+
+
+#: Keys that are real but carry no row in the USAGE.md option table: the three
+#: sub-tables, which get their own sections and their own validators, and
+#: `version`, which only ever arrives from the generator's --version flag.
+_KEYS_WITHOUT_AN_OPTION_TABLE_ROW = frozenset({"ci", "coverage", "matrix", "version"})
+
+
+def _keys_documented_in_usage():
+    """Return the build.toml keys the USAGE.md option table documents.
+
+    Scoped to section 5 (the ``build.toml`` reference) because the rest of the
+    document tables CLI flags, env vars and exit codes in the same shape. Rows
+    naming a sub-table field (``[ci].windows``, ``[matrix].compiler_runtime``)
+    are dropped -- those belong to the validators that own those tables.
+    """
+    usage = (Path(__file__).parent.parent / "docs" / "USAGE.md").read_text(encoding="utf-8")
+    section = usage[usage.index("\n## 5."):usage.index("\n## 6.")]
+    rows = re.findall(r"^\|\s*`([^`]+)`\s*\|", section, re.M)
+    return {row for row in rows if not row.startswith("[") and "." not in row}
+
+
+def test_known_keys_matches_the_documented_option_table():
+    """KNOWN_KEYS and the USAGE.md option table say the same thing.
+
+    The whitelist rejects on first contact inside every consumer's Generate
+    step, so the two ways it can be wrong are both expensive and neither is
+    visible from the whitelist alone: a key that is documented but missing
+    here takes a valid build.toml down, and a key that is accepted but
+    undocumented is a contract nobody can look up. Comparing against a source
+    outside the module is the only way to catch either -- deriving the
+    expected set from KNOWN_KEYS would make this test pass by construction.
+    """
+    documented = _keys_documented_in_usage()
+
+    assert documented == KNOWN_KEYS - _KEYS_WITHOUT_AN_OPTION_TABLE_ROW
+
+
+def test_every_documented_key_is_accepted(template_dir, tmp_path):
+    """A build.toml exercising the whole documented vocabulary generates cleanly.
+
+    Guards the reverse failure of the test above: a KNOWN_KEYS that forgot a
+    real key would reject a valid file, taking every consumer's CI down at the
+    Generate step. The key list comes from the docs rather than from
+    KNOWN_KEYS, so a key the whitelist forgot is still exercised here.
+    """
+    documented = sorted(_keys_documented_in_usage())
+    lines = ['library_name = "xmscore"']
+    for key in documented:
+        if key == "library_name":
+            continue
+        if key in ("description", "ci_type", "python_namespaced_dir",
+                   "extra_cmake_text", "post_library_cmake_text"):
+            lines.append(f'{key} = "github"' if key == "ci_type" else f'{key} = ""')
+        elif key in ("testing_framework",):
+            lines.append('testing_framework = "cxxtest"')
+        elif key in ("python_binding_type",):
+            lines.append('python_binding_type = "pybind11"')
+        elif key in ("pybind_root", "pybind_advertises_module"):
+            lines.append(f"{key} = false")
+        elif key in ("xms_dependency_options", "extra_dependency_cmake_names",
+                     "vs2019_dependency_overrides", "conan_profile_conf",
+                     "conan_profile_options"):
+            lines.append(f"{key} = {{}}")
+        else:
+            lines.append(f"{key} = []")
+    lines += ["[ci]", "coverage = true", "[coverage]", "cpp_threshold = 0", "[matrix]"]
+
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    _render(toml_file, template_dir, tmp_path)  # must not raise
+
+
+@pytest.mark.parametrize("body,offender", [
+    ('library_name = "xmscore"\ntesting_framework = "gtst"\n', "testing_framework"),
+    ('library_name = "xmscore"\npython_binding_type = "pybind"\n', "python_binding_type"),
+])
+def test_unknown_vocabulary_value_raises(body, offender, template_dir, tmp_path):
+    """A near-miss framework or binding name fails at generate time."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(body, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=offender):
+        _render(toml_file, template_dir, tmp_path)
+
+
+def test_dependency_options_for_undeclared_package_raises(template_dir, tmp_path):
+    """An xms_dependency_options key matching no dependency is a typo."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsgrid"\n'
+        'xms_dependencies = [{ name = "xmscore", version = "7.0.0" }]\n'
+        '[xms_dependency_options.xmscoer]\n'
+        'pybind = false\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="xmscoer") as excinfo:
+        _render(toml_file, template_dir, tmp_path)
+
+    assert "xmscore" in str(excinfo.value)
+
+
+def test_dependency_options_for_declared_package_is_accepted(template_dir, tmp_path):
+    """A key matching a declared dependency generates cleanly."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmsgrid"\n'
+        'xms_dependencies = [{ name = "xmscore", version = "7.0.0" }]\n'
+        '[xms_dependency_options.xmscore]\n'
+        'pybind = false\n',
+        encoding="utf-8",
+    )
+
+    _render(toml_file, template_dir, tmp_path)  # must not raise
+
+
+def test_generated_build_py_defaults_version_to_the_ci_env_var(tmp_path):
+    """--version falls back to $XMS_VERSION, and --upload refuses the glob.
+
+    The generated GitHub CI omits --version on its upload step, so the default
+    used to be the glob '*' -- which `conan upload <lib>/** -r aquaveo
+    --confirm` expanded to every version of the library in the local cache.
+    XMS_VERSION is job-level env in every GitHub leg, so the env default needs
+    no CI change; the guard is what catches a hand-run upload.
+    """
+    tpl_dir = tmp_path / "templates"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+
+    content = (output_dir / "build.py").read_text(encoding="utf-8")
+    assert 'default=os.environ.get("XMS_VERSION", "*")' in content
+    assert "--upload needs a concrete version" in content
+
+
+@pytest.mark.parametrize("xms_version", ["", "*"])
+def test_generated_build_py_refuses_to_upload_without_a_version(xms_version, tmp_path):
+    """The guard is executed, not just rendered.
+
+    An exported-but-empty XMS_VERSION makes `os.environ.get("XMS_VERSION", "*")`
+    return "" -- not the sentinel -- so the original `== "*"` test slipped past
+    and `conan upload` was handed the ref `<lib>/`. The neighbouring test only
+    asserts the guard's text appears in the file; this one runs it.
+    """
+    import os
+    import subprocess
+    import sys
+
+    from xmsconan import generator_tools
+
+    real_templates = Path(generator_tools.__file__).parent / "templates"
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8")
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(real_templates),
+        output_dir=str(output_dir),
+    )
+    copy_xms_conan2_file(str(output_dir))
+
+    result = subprocess.run(
+        [sys.executable, "build.py", "--skip-build", "--upload"],
+        cwd=str(output_dir), capture_output=True, text=True,
+        env={**os.environ, "XMS_VERSION": xms_version},
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "--upload needs a concrete version" in result.stdout

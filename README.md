@@ -177,7 +177,17 @@ xmsconan conan-setup
 
 # GitHub Actions: also login and remove conancenter
 xmsconan conan-setup --remote-url https://conan2.aquaveo.com/... --login --remove-conancenter
+
+# Log in from a workstation with the password read from a file
+xmsconan conan-setup --login --username myuser --password-file ~/.conan-password
 ```
+
+The password reaches Conan through the child process's environment
+(`CONAN_LOGIN_USERNAME_<REMOTE>` / `CONAN_PASSWORD_<REMOTE>`), never on a
+command line. `--password-file` falls back to `$CONAN_PASSWORD` and then the
+`[conan]` section of `~/.xmsconan.toml`; there is deliberately no `--password`
+flag. In CI, nothing is passed at all — the job's `CONAN_LOGIN_USERNAME` /
+`CONAN_PASSWORD` variables are read by Conan itself.
 
 #### Wheel Repair
 
@@ -199,12 +209,19 @@ the C++ runtime itself). See `docs/USAGE.md` §12.1.
 #### Wheel Deploy
 
 ```bash
-# Uses $AQUAPI_URL, $AQUAPI_USERNAME, $AQUAPI_PASSWORD env vars
+# Reads $AQUAPI_URL / $AQUAPI_USERNAME / $AQUAPI_PASSWORD, then ~/.xmsconan.toml
 xmsconan wheel-deploy --wheel-dir wheelhouse
 
-# Or pass credentials explicitly
-xmsconan wheel-deploy --wheel-dir wheelhouse --url https://... --username user --password pass
+# Point at a different index without moving the credentials
+xmsconan wheel-deploy --wheel-dir wheelhouse --url https://... --username user
 ```
+
+`--password` exists, but it puts the password in this process's command line —
+where your shell history, `ps`, and Windows process-creation auditing all read
+it. Use `$AQUAPI_PASSWORD` or the `[aquapi]` section of `~/.xmsconan.toml`
+(`docs/USAGE.md` §17) instead. This is the one credential xmsconan still hands
+to a subprocess on a command line; the Conan side does not (see
+`xmsconan conan-setup --password-file` and `docs/USAGE.md` §16.2).
 
 #### Conan Deploy
 
@@ -255,14 +272,23 @@ volumes:
   - ~/.xmsconan.toml:/root/.xmsconan.toml:ro
 ```
 
-Alternatively, pass credentials as environment variables:
+Alternatively, keep the same three variables in an env file and let Docker read
+them out of it — `-e VAR=value` would copy the password into the docker
+client's own command line, which `ps` and process-creation auditing read:
 
 ```bash
-docker exec -e AQUAPI_URL=https://public.aquapi.aquaveo.com/aquaveo/dev/ \
-            -e AQUAPI_USERNAME=user \
-            -e AQUAPI_PASSWORD=pass \
+# ~/.aquapi.env, chmod 600 — VAR=value lines, no quotes, no export
+#   AQUAPI_URL=https://public.aquapi.aquaveo.com/aquaveo/dev/
+#   AQUAPI_USERNAME=user
+#   AQUAPI_PASSWORD=...
+docker exec --env-file ~/.aquapi.env \
             nextms-dev-arm bash -c "cd /workspace/xmscore && xmsconan publish --version 7.0.0"
 ```
+
+`xmsconan publish --docker` does the same thing for you: it forwards
+`AQUAPI_URL`, `AQUAPI_USERNAME`, and `AQUAPI_PASSWORD` as bare `-e NAME` flags,
+so the values travel through the docker client's environment rather than its
+argv, and it mounts `~/.xmsconan.toml` read-only when the file exists.
 
 ### Building a Single Library
 

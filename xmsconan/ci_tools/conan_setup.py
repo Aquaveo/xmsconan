@@ -3,14 +3,18 @@
 Usage::
 
     xmsconan_conan_setup [--remote-url URL] [--login] [--remove-conancenter]
-    xmsconan_conan_setup --login --username USER --password PASS
+    xmsconan_conan_setup --login --username USER --password-file PATH
 """
 import argparse
 import os
 import subprocess
 import sys
 
-from xmsconan.ci_tools.credentials import load_conan_credentials
+from xmsconan.ci_tools.credentials import (
+    CredentialsError,
+    load_conan_credentials,
+    read_password_file,
+)
 from xmsconan.constants import DEFAULT_REMOTE_NAME, DEFAULT_REMOTE_URL
 
 
@@ -112,6 +116,33 @@ def conan_setup(
         )
 
 
+def _resolve_password(password_file):
+    """Resolve the remote password from the sources that are not argv.
+
+    ``--password-file`` first, then ``$CONAN_PASSWORD``.  A ``None`` result
+    is not "no password": it means the two sources this function knows about
+    are empty, and :func:`conan_setup` still has ``~/.xmsconan.toml`` to
+    consult (and Conan itself still has its own reading of ``$CONAN_PASSWORD``
+    if nothing at all turns up).
+
+    There is no ``--password`` flag to resolve here, and that is the point --
+    see :func:`_login_environment` for why a password on a command line is
+    worth nothing on a SIEM-audited workstation.
+
+    Args:
+        password_file: Value of ``--password-file``, or None.
+
+    Returns:
+        The password, or None when neither source supplies one.
+
+    Raises:
+        ValueError: ``password_file`` was given but is unusable.
+    """
+    if password_file:
+        return read_password_file(password_file)
+    return os.environ.get("CONAN_PASSWORD")
+
+
 def main():
     """CLI entry point for ``xmsconan_conan_setup``."""
     parser = argparse.ArgumentParser(
@@ -132,16 +163,52 @@ def main():
         action="store_true",
         help="Remove the conancenter remote.",
     )
-    parser.add_argument("--username", default=None, help="Conan remote username.")
-    parser.add_argument("--password", default=None, help="Conan remote password.")
+    parser.add_argument(
+        "--username", default=None,
+        help="Conan remote username. Falls back to ~/.xmsconan.toml.",
+    )
+    parser.add_argument(
+        "--password-file", default=None,
+        help="Path to a file holding the remote password on its own line. "
+             "Falls back to $CONAN_PASSWORD, then ~/.xmsconan.toml. There is "
+             "deliberately no --password: see the note in _login_environment.",
+    )
+    # Kept only to be refused. Dropping it outright would not have removed it:
+    # argparse expands unambiguous prefixes, so `--password secret` would have
+    # bound to --password-file and reported "password file not found: secret",
+    # with the secret in the argv either way and nothing said about the flag
+    # that replaced it.
+    parser.add_argument("--password", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.password is not None:
+        parser.error(
+            "--password was removed: its value lands in this process's argv, "
+            "which process-creation auditing copies into the event log in "
+            "cleartext. Use --password-file PATH, $CONAN_PASSWORD, or the "
+            "[conan] section of ~/.xmsconan.toml. Rotate the password you "
+            "just typed."
+        )
+    try:
+        password = _resolve_password(args.password_file)
+    except CredentialsError as exc:  # unusable --password-file
+        # A usage error, and exit 2 like every other one -- the same code
+        # `xmsconan vs2019 setup` returns for the same unusable file.
+        parser.error(str(exc))
     try:
         conan_setup(
             remote_url=args.remote_url,
             login=args.login,
             remove_conancenter=args.remove_conancenter,
             username=args.username,
-            password=args.password,
+            password=password,
         )
+    except CredentialsError as exc:
+        # load_conan_credentials() raises this for a ~/.xmsconan.toml that does
+        # not parse or whose [conan] is not a table. Same class of usage error
+        # as an unusable --password-file above, so it gets the same exit 2 and
+        # the same one-line message rather than a traceback. Narrower than
+        # ValueError deliberately: conan_setup() runs three subprocesses, and a
+        # ValueError out of one of those is not a usage error.
+        parser.error(str(exc))
     except subprocess.CalledProcessError as exc:
         sys.exit(exc.returncode)

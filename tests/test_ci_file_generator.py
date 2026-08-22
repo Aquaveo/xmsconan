@@ -1,5 +1,6 @@
 """Tests for generator_tools.ci_file_generator."""
 import logging
+import re
 
 import pytest
 import yaml
@@ -456,6 +457,62 @@ def test_github_flake_job_uses_generated_flake8_config(ci_toml, tmp_path):
     assert "xmsconan_gen build.toml" in content
 
 
+def test_generate_ci_rejects_an_unknown_top_level_key(tmp_path):
+    """`xmsconan ci` rejects what `gen` and `profiles` reject.
+
+    It reads the same build.toml with `.get()` and was the last of the three
+    entry points not validating, so it emitted a pipeline from a file the other
+    two refuse -- and the committed CI then kept whatever default the typo
+    produced, with no symptom anywhere.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        'has_test_files = true\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown top-level key\\(s\\) has_test_files"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+
+def test_gitlab_pins_conan_version(tmp_path):
+    """Conan installs in the GitLab pipeline are pinned, same as GitHub's.
+
+    Only the GitHub workflows were asserted; the GitLab template installs conan
+    on five separate lines and a bump slipping into any one of them detaches
+    that leg from the binaries the others resolved.
+    """
+    # coverage=True so the fifth install -- the coverage job's, the one the
+    # GitHub side already had a test for -- is rendered too.
+    toml_file = write_gitlab_toml(tmp_path, coverage=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    conan_installs = _conan_install_lines(content)
+
+    assert conan_installs
+    assert [line for line in conan_installs if '"conan~=' not in line] == []
+
+
+def _conan_install_lines(content):
+    """Return the rendered lines that pip-install conan itself.
+
+    `xmsconan` is excluded because it matches the substring and is pinned on
+    its own `>=` line. Checked per line rather than file-wide: the old
+    `'"conan~=' in content` was satisfied by any one pinned install anywhere,
+    and its `"pip install conan " not in content` half stayed true when the
+    conan install was dropped from the workflow altogether.
+    """
+    return [
+        line
+        for line in content.splitlines()
+        if "pip install" in line and "conan" in line and "xmsconan" not in line
+    ]
+
+
 def test_ci_pins_conan_version(ci_toml, tmp_path):
     """Conan is pinned to a patch series, not installed unpinned.
 
@@ -467,8 +524,10 @@ def test_ci_pins_conan_version(ci_toml, tmp_path):
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
 
-    assert '"conan~=' in content
-    assert "pip install conan " not in content
+    conan_installs = _conan_install_lines(content)
+
+    assert conan_installs
+    assert [line for line in conan_installs if '"conan~=' not in line] == []
 
 
 def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
@@ -1385,3 +1444,152 @@ def test_github_pybind_build_types_with_release_is_allowed(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     assert (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").exists()
+
+
+# --- third-party action pinning ---
+
+
+#: `uses: owner/repo@ref` in a rendered GitHub workflow. The repo half accepts
+#: `/` because a composite action is referenced as `owner/repo/subdir@ref`, which
+#: the stricter `[\w.-]+` matched not at all -- such a line would have passed the
+#: pin check by being invisible to it rather than by being pinned. No template
+#: emits one today; this is so the check still applies when one does.
+_USES_RE = re.compile(r"uses:\s+([\w.-]+)/([\w./-]+)@(\S+)")
+
+#: Owners whose actions may be referenced by tag. `actions/*` is GitHub's own
+#: namespace: a compromise there is a compromise of the runner regardless of
+#: how this workflow spells the reference.
+_UNPINNED_OWNERS = frozenset({"actions"})
+
+
+def _third_party_uses_lines(content):
+    """Return the rendered ``uses:`` lines that name a third-party action."""
+    return [
+        line
+        for line in content.splitlines()
+        if (match := _USES_RE.search(line)) and match.group(1) not in _UNPINNED_OWNERS
+    ]
+
+
+def _unpinned_third_party_actions(content):
+    """Return the `owner/repo@ref` references that are not commit SHAs."""
+    return [
+        f"{owner}/{repo}@{ref}"
+        for owner, repo, ref in _USES_RE.findall(content)
+        if owner not in _UNPINNED_OWNERS and not re.fullmatch(r"[0-9a-f]{40}", ref)
+    ]
+
+
+def test_github_ci_pins_third_party_actions_to_a_sha(ci_toml, tmp_path):
+    """Third-party actions are referenced by commit SHA, not by tag.
+
+    A tag is a movable ref in a repository we do not control: its owner can
+    retarget it at new code, which then runs in this job with the workflow's
+    Conan and devpi secrets in its environment. The tag stays in a trailing
+    comment so the reference is still readable.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
+        encoding="utf-8",
+    )
+
+    third_party = _third_party_uses_lines(content)
+
+    assert third_party
+    assert _unpinned_third_party_actions(content) == []
+    # And the pins are still legible -- a bare SHA nobody can place is how a
+    # pinned workflow ends up frozen on an action three years stale. Checked per
+    # line: `"  # v" in content` was satisfied by any one commented pin anywhere
+    # in the file, including a comment on a line with no `uses:` at all.
+    assert [line for line in third_party if "  # v" not in line] == []
+
+
+def test_github_coverage_pins_third_party_actions_to_a_sha(tmp_path):
+    """The coverage workflow gets the same treatment as the CI workflow."""
+    toml_file = write_github_toml(tmp_path, coverage=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(
+        encoding="utf-8",
+    )
+    third_party = _third_party_uses_lines(content)
+
+    # Same three assertions as its CI twin. On its own, `== []` is satisfied by
+    # a Coverage.yaml carrying no `uses:` line at all.
+    assert third_party
+    assert _unpinned_third_party_actions(content) == []
+    assert [line for line in third_party if "  # v" not in line] == []
+
+
+def test_github_ci_uses_a_current_setup_python(ci_toml, tmp_path):
+    """Every setup-python is v5.
+
+    The flake job sat on v2 while the build jobs used v5, so the one job that
+    lints the project ran on a Node action GitHub has since deprecated -- and
+    would have started failing on its own schedule, in the job least likely
+    to be looked at.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
+        encoding="utf-8",
+    )
+
+    assert "actions/setup-python@v5" in content
+    assert "actions/setup-python@v2" not in content
+
+
+def test_github_flake_job_installs_the_banned_modules_plugin(ci_toml, tmp_path):
+    """The flake job installs the plugin that `banned-modules` needs.
+
+    The .flake8 this job generates sets `banned-modules = osgeo.*`, an option
+    only flake8-tidy-imports registers. flake8 ignores options no installed
+    plugin claims, so the ban was accepted and enforced nothing while the job
+    reported the same green as a run that had checked it. GitLab already
+    installed the plugin, so the two pipelines linted to different rules.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
+        encoding="utf-8",
+    )
+
+    assert "flake8-tidy-imports" in content
+
+
+def test_github_coverage_pins_conan_version(tmp_path):
+    """The coverage workflow pins conan to the same series as the CI workflow.
+
+    A conan minor bump can change package_id computation; a coverage run that
+    resolves different package ids than the build workflow is measuring a
+    different set of binaries.
+    """
+    toml_file = write_github_toml(tmp_path, coverage=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(
+        encoding="utf-8",
+    )
+
+    conan_installs = _conan_install_lines(content)
+
+    assert conan_installs
+    assert [line for line in conan_installs if '"conan~=' not in line] == []
+
+
+def test_gitlab_windows_cache_snapshot_reports_an_empty_copy(tmp_path):
+    """The cache-snapshot copy says so when it finds nothing.
+
+    `|| true` made a failed copy indistinguishable from a successful one, so
+    a runner whose user is not `admin` shipped an empty conan_packages/
+    artifact with nothing in the log. It stays non-fatal -- the upload has
+    already succeeded by then and nothing consumes the artifact.
+    """
+    toml_file = write_gitlab_toml(tmp_path, windows=True, deploy=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+
+    assert "conan_packages/ || true" not in content
+    assert "conan_packages/ || echo" in content

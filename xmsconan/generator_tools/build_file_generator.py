@@ -12,8 +12,9 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
+from xmsconan.constants import PYTHON_BINDING_TYPES, TESTING_FRAMEWORKS
 from xmsconan.package_tools.packager import XmsConanPackager
-from xmsconan.toml_utils import load_toml
+from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 LOGGER = logging.getLogger(__name__)
 
@@ -118,6 +119,45 @@ def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
     return dependencies
 
 
+def _validate_vocabularies(toml_data, toml_file):
+    """Reject values that name a framework, binding, or dependency that does not exist.
+
+    The recipe performs the same checks in ``configure()``, but this function
+    writes ``conanfile.py`` *and* ``CMakeLists.txt`` from the same data, and
+    the CMake side is where a bad ``testing_framework`` actually bites. Failing
+    at generate time names the offending value in ``build.toml``; failing at
+    build time names a missing CMake package instead.
+
+    Args:
+        toml_data: The parsed build.toml, after defaults have been applied.
+        toml_file: Path the data came from, for the error messages.
+
+    Raises:
+        ValueError: On a value outside the documented vocabulary, or on an
+            ``xms_dependency_options`` key that names no declared dependency.
+    """
+    for key, accepted in (("testing_framework", TESTING_FRAMEWORKS),
+                          ("python_binding_type", PYTHON_BINDING_TYPES)):
+        value = toml_data[key]
+        if value not in accepted:
+            raise ValueError(
+                f'{toml_file}: {key} must be one of {", ".join(sorted(accepted))}; '
+                f'got {value!r}.'
+            )
+
+    declared = {
+        dependency["name"] if isinstance(dependency, dict) else str(dependency).split("/")[0]
+        for dependency in toml_data["xms_dependencies"]
+    }
+    unmatched = sorted(set(toml_data["xms_dependency_options"]) - declared)
+    if unmatched:
+        raise ValueError(
+            f'{toml_file}: xms_dependency_options names {", ".join(unmatched)}, which is '
+            f'not declared in xms_dependencies. Declared xms_dependencies: '
+            f'{", ".join(sorted(declared)) or "(none)"}.'
+        )
+
+
 def render_template_with_toml(
     toml_file_path: str,
     version: str,
@@ -147,6 +187,10 @@ def render_template_with_toml(
 
     # Parse the TOML file into a dictionary
     toml_data = load_toml(toml_file)
+    # Before the setdefault block below, which is what makes a misspelled key
+    # invisible: every optional key gets its default whether or not the file
+    # meant to set it.
+    validate_top_level_keys(toml_data, toml_file)
     toml_data["version"] = version
 
     # Set defaults for optional keys to prevent StrictUndefined template errors
@@ -185,7 +229,8 @@ def render_template_with_toml(
     # [matrix] verbatim into the generated conanfile.py, so a caller that renders
     # templates without going on to generate profiles would otherwise produce an
     # artifact from unvalidated input. XmsConanPackager owns the vocabulary.
-    XmsConanPackager._resolve_matrix(toml_data["matrix"])
+    XmsConanPackager.resolve_matrix(toml_data["matrix"])
+    _validate_vocabularies(toml_data, toml_file)
 
     toml_data["extra_cmake_dependencies"] = _extra_cmake_dependencies(
         toml_data["extra_dependencies"],

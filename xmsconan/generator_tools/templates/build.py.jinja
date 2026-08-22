@@ -13,7 +13,14 @@ import conanfile
 parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
 parser.add_argument("--upload", help="Complete the conan upload.", action="store_true")
-parser.add_argument("--version", help="Version to upload", default='*')
+# Defaults to $XMS_VERSION -- the variable every generated CI leg already sets --
+# rather than to '*'. As a *glob*, '*' silently widened `conan upload
+# <lib>/** -r aquaveo --confirm` to every version of this library sitting in
+# the local cache, and made --wheel-dir stage whichever wheel it found. Not
+# required=True, though: the generated GitHub CI omits --version on six
+# invocations per repo, and args.version also feeds extract_wheel.
+parser.add_argument("--version", help="Version to upload (default: $XMS_VERSION)",
+                    default=os.environ.get("XMS_VERSION", "*"))
 parser.add_argument("--preview", help="Preview the configurations that will be build", action="store_true")
 parser.add_argument("--filter", help="Filter dictionary in JSON format")
 parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
@@ -76,6 +83,15 @@ if __name__ == "__main__":
             builder.repair_linux_wheel(args.wheel_dir)
 
     if args.upload:
+        # `not args.version` as well as the sentinel: an exported-but-empty
+        # XMS_VERSION makes os.environ.get return "", which is not "*" and
+        # would have uploaded the ref `<lib>/`.
+        if not args.version or args.version == "*":
+            # Publishing is the one step where the glob is not recoverable:
+            # whatever it matched is on the shared remote afterwards.
+            print("error: --upload needs a concrete version. Pass --version, or set "
+                  "XMS_VERSION (every generated CI leg does).")
+            exit(1)
         if builder.upload(version=args.version) != 0:
             print("errors when uploading... exiting...")
             exit(1)

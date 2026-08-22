@@ -11,6 +11,7 @@ forwarding, and re-invocation of the publish command inside the container.
 """
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 
@@ -55,10 +56,19 @@ def resolve_docker_image(docker_image=None, toml_path="build.toml"):
 def _build_env_flags():
     """Build ``-e`` flags for devpi credential forwarding.
 
-    Forwards ``AQUAPI_*`` env vars if they are set on the host.
+    Forwards ``AQUAPI_*`` env vars if they are set on the host.  The flags
+    name the variables and stop there: ``docker run -e VAR`` makes the docker
+    client read ``VAR`` out of its own environment, which ``subprocess.run``
+    hands it unchanged, so the container sees the same value it would have
+    seen from ``-e VAR=value`` -- without ``AQUAPI_PASSWORD=<secret>`` sitting
+    in the argv of the docker process, where process-creation auditing
+    (Windows Event 4688, Sysmon Event ID 1, ``ps`` on Linux) can read it.
+    The rest of this package goes to some length to keep secrets off command
+    lines (see :func:`xmsconan.ci_tools.conan_setup._login_environment`);
+    this is the same rule applied to the one command that spawns another.
 
     Returns:
-        List of ``["-e", "VAR=value"]`` pairs.
+        List of ``["-e", "VAR"]`` pairs, for the vars that are set.
     """
     env_vars = [
         "AQUAPI_URL",
@@ -67,9 +77,11 @@ def _build_env_flags():
     ]
     flags = []
     for var in env_vars:
-        value = os.environ.get(var)
-        if value:
-            flags.extend(["-e", f"{var}={value}"])
+        # Still guarded on the value: `-e VAR` for an unset VAR asks docker to
+        # forward nothing, and an empty AQUAPI_URL inside the container reads
+        # as "configured, and configured wrong" rather than "not configured".
+        if os.environ.get(var):
+            flags.extend(["-e", var])
     return flags
 
 
@@ -172,7 +184,12 @@ def docker_publish(args):
     # Build inner shell command.
     install_cmd = _build_install_cmd(args.xmsconan_dir)
     publish_args = _build_publish_args(args)
-    publish_cmd = " ".join(["xmsconan", "publish"] + publish_args)
+    # shlex.join, not " ".join: this string is handed to the container's bash,
+    # which re-splits it on whitespace. The documented
+    # --filter '{"build_type": "Release"}' arrived inside the container as the
+    # two words {"build_type": and "Release"}, so every --docker run that
+    # passed a filter died in argparse before the build started.
+    publish_cmd = shlex.join(["xmsconan", "publish", *publish_args])
     inner_script = f"{install_cmd} && {publish_cmd}"
 
     docker_cmd.extend(["bash", "-c", inner_script])

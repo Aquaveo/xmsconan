@@ -31,15 +31,20 @@ def _configure_logging(args):
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
 
-def _parse_bool_option(value, allow_string_aliases=True):
-    """Parse profile option values to a boolean-like string used by CMake flags."""
+def _parse_bool_option(value):
+    """Parse a profile option value to a bool.
+
+    Returns a real bool, not the strings ``'True'``/``'False'``: callers
+    compared the result with ``!= 'False'``, which is true for any string a
+    future edit might return -- including ``'false'``.
+
+    ``allow_string_aliases`` (which made ``"builtin"`` mean True) is gone with
+    its only caller: ``wchar_t`` is a two-valued string option, not a boolean,
+    and is read directly now.
+    """
     if value is None:
-        return 'False'
-    normalized = str(value).strip().lower()
-    true_values = {'true', '1', 'yes', 'on'}
-    if allow_string_aliases:
-        true_values.add('builtin')
-    return 'True' if normalized in true_values else 'False'
+        return False
+    return str(value).strip().lower() in {'true', '1', 'yes', 'on'}
 
 
 def _parse_profile_options(profile_path, visited=None):
@@ -292,12 +297,15 @@ def get_cmake_options(args):
     profile = os.path.basename(args.profile)
     LOGGER.info(profile)
     profile_options = _parse_profile_options(args.profile)
-    conan_options['testing'] = _parse_bool_option(profile_options.get('testing', 'False'))
-    conan_options['pybind'] = _parse_bool_option(profile_options.get('pybind', 'False'))
-    conan_options['wchar_t'] = _parse_bool_option(
-        profile_options.get('wchar_t', 'False'),
-        allow_string_aliases=False,
-    )
+    conan_options['testing'] = _parse_bool_option(profile_options.get('testing'))
+    conan_options['pybind'] = _parse_bool_option(profile_options.get('pybind'))
+    # wchar_t is a two-valued string option ("builtin" / "typedef"), so running
+    # it through a boolean parser collapsed BOTH legal values to False. It also
+    # went out as -DXMS_BUILD, which no CMake file in the tree reads -- the only
+    # other XMS_BUILD is a [buildenv] variable in profiles/base/xms. The
+    # variable the generated CMakeLists.txt actually gates /Zc:wchar_t- on is
+    # USE_TYPEDEF_WCHAR_T.
+    conan_options['wchar_t'] = profile_options.get('wchar_t', 'builtin')
     LOGGER.debug("Parsed profile options: %s", profile_options)
 
     build_type = 'Release'
@@ -306,19 +314,19 @@ def get_cmake_options(args):
 
     cmake_options = []
     cmake_options.append('-DBUILD_TESTING={}'.format(
-        conan_options.get('testing', 'False')))
+        conan_options.get('testing', False)))
     cmake_options.append('-DIS_PYTHON_BUILD={}'.format(
-        conan_options.get('pybind', 'False')))
-    cmake_options.append('-DXMS_BUILD={}'.format(
-        conan_options.get('wchar_t', 'False')))
+        conan_options.get('pybind', False)))
+    cmake_options.append('-DUSE_TYPEDEF_WCHAR_T={}'.format(
+        conan_options.get('wchar_t') == 'typedef'))
     cmake_options.append('-DCMAKE_INSTALL_PREFIX={}'.format(
         os.path.join(args.build_dir, "install")
     ))
     cmake_options.append('-DCMAKE_BUILD_TYPE={}'.format(build_type))
 
-    uses_python = conan_options.get('pybind', 'False')
-    is_testing = conan_options.get('testing', 'False')
-    if uses_python != 'False':
+    uses_python = conan_options.get('pybind', False)
+    is_testing = conan_options.get('testing', False)
+    if uses_python:
         if args.python_version:
             python_target_version = args.python_version
         else:
@@ -326,7 +334,7 @@ def get_cmake_options(args):
         cmake_options.append('-DPYTHON_TARGET_VERSION={}'.format(
             python_target_version
         ))
-    elif is_testing != 'False':
+    elif is_testing:
         test_files = args.test_files
         if not test_files:
             test_files = "./test_files"
@@ -355,17 +363,10 @@ def get_cmake_options(args):
         lib_version = "99.99.99"
     cmake_options.append('-DXMS_VERSION={}'.format(lib_version))
 
-    toolchain_path = 'build/generators/conan_toolchain.cmake',
-    # if not os.name == 'nt':
     build_dir = args.build_dir if args.build_dir else "build"
-    toolchain_path = f'{build_dir}/build/generators/conan_toolchain.cmake'
-
-    # Extra toolchains
-    exta_toolchains = [
-        toolchain_path,
-    ]
-    for tc in exta_toolchains:
-        cmake_options.append(f'-DCMAKE_TOOLCHAIN_FILE={tc}')
+    cmake_options.append(
+        f'-DCMAKE_TOOLCHAIN_FILE={build_dir}/build/generators/conan_toolchain.cmake'
+    )
 
     LOGGER.info("Cmake Options:")
     for o in cmake_options:

@@ -1,5 +1,6 @@
 """Tests for ci_tools.docker_run."""
 import argparse
+import shlex
 from unittest.mock import patch
 
 import pytest
@@ -56,16 +57,37 @@ def test_resolve_image_xvfb_false(tmp_path):
     "AQUAPI_USERNAME": "user",
     "AQUAPI_PASSWORD": "pass",
 })
-def test_build_env_flags_forwards_set_vars():
-    """Forwards AQUAPI_* env vars that are set."""
+def test_build_env_flags_forwards_set_vars_by_name():
+    """Forwards the names of the AQUAPI_* vars that are set, not their values.
+
+    `docker run -e VAR` makes the docker client read VAR from its own
+    environment, which subprocess.run passes through, so the container sees
+    the same value -- without the password sitting in the docker process's
+    argv where `ps` and process-creation auditing read it.
+    """
     flags = _build_env_flags()
-    assert ["-e", "AQUAPI_URL=https://x/"] in [
-        flags[i:i + 2] for i in range(0, len(flags), 2)
+
+    assert flags == [
+        "-e", "AQUAPI_URL",
+        "-e", "AQUAPI_USERNAME",
+        "-e", "AQUAPI_PASSWORD",
     ]
-    assert ["-e", "AQUAPI_USERNAME=user"] in [
-        flags[i:i + 2] for i in range(0, len(flags), 2)
-    ]
-    assert len(flags) == 6  # 3 vars * 2
+    assert not any("=" in flag for flag in flags)
+    assert "pass" not in " ".join(flags)
+
+
+@patch_env({
+    "AQUAPI_URL": "https://x/",
+    "AQUAPI_PASSWORD": "",
+}, clear=True)
+def test_build_env_flags_skips_an_empty_var():
+    """An empty var is not forwarded at all.
+
+    `-e AQUAPI_PASSWORD` for an empty value would set it *empty* inside the
+    container, which reads as "configured, and configured wrong" rather than
+    leaving the container's own credential resolution to fall through.
+    """
+    assert _build_env_flags() == ["-e", "AQUAPI_URL"]
 
 
 @patch_env(clear=True)
@@ -159,6 +181,50 @@ def test_docker_publish_builds_correct_command(
     assert "/workspace" in " ".join(cmd)
     assert "bash" in cmd
     assert "--no-deploy" in " ".join(cmd)
+
+
+@patch("xmsconan.ci_tools.docker_run.subprocess.run")
+@patch("xmsconan.ci_tools.docker_run._build_config_mount", return_value=[])
+@patch("xmsconan.ci_tools.docker_run.shutil.which", return_value="/usr/bin/docker")
+def test_docker_publish_quotes_the_filter(mock_which, mock_config, mock_run, tmp_path):
+    """--filter survives the container's shell as one argument.
+
+    The inner command is a string handed to `bash -c`, so a JSON filter joined
+    with plain spaces reached argparse inside the container as the two words
+    {"build_type": and "Release"} -- making the documented
+    `xmsconan publish --docker --filter '{...}'` fail every time.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+
+    mock_run.return_value = argparse.Namespace(returncode=0)
+
+    build_filter = '{"build_type": "Release"}'
+    args = argparse.Namespace(
+        version="1.0.0",
+        wheel_dir="wheelhouse",
+        toml=str(toml_file),
+        build_filter=build_filter,
+        no_deploy=False,
+        no_wheel=False,
+        no_conan=False,
+        docker_image=None,
+        xmsconan_dir=None,
+    )
+
+    with patch_env(clear=True):
+        docker_publish(args)
+
+    cmd = mock_run.call_args[0][0]
+    # ... image bash -c <script>: the script is the argument after -c.
+    inner_script = cmd[cmd.index("-c", cmd.index("bash")) + 1]
+    _install, _sep, publish_cmd = inner_script.partition(" && ")
+    assert shlex.split(publish_cmd) == [
+        "xmsconan", "publish",
+        "--version", "1.0.0",
+        "--toml", str(toml_file),
+        "--filter", build_filter,
+    ]
 
 
 @patch("xmsconan.ci_tools.docker_run.subprocess.run")
