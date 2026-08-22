@@ -6,6 +6,8 @@ from unittest.mock import call, patch
 import pytest
 
 from xmsconan.ci_tools.conan_setup import conan_setup, DEFAULT_REMOTE_URL, main
+from xmsconan.ci_tools.credentials import CredentialsError
+from .utils import patch_env
 
 
 def _login_call(mock_run):
@@ -236,11 +238,14 @@ def test_custom_remote_name(mock_run):
 
 
 @patch("xmsconan.ci_tools.conan_setup.conan_setup")
-def test_main_passes_flags_through(mock_setup, monkeypatch):
+def test_main_passes_flags_through(mock_setup, monkeypatch, tmp_path):
     """main() forwards every CLI flag to conan_setup()."""
+    password_file = tmp_path / "p.txt"
+    password_file.write_text("p\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", [
         "xmsconan_conan_setup", "--remote-url", "https://example.com/conan",
-        "--login", "--remove-conancenter", "--username", "u", "--password", "p",
+        "--login", "--remove-conancenter", "--username", "u",
+        "--password-file", str(password_file),
     ])
 
     main()
@@ -254,6 +259,85 @@ def test_main_passes_flags_through(mock_setup, monkeypatch):
     )
 
 
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_has_no_password_flag(mock_setup, monkeypatch, capsys):
+    """There is no --password: the secret never goes on this process's argv.
+
+    _login_environment exists so the password stays out of argv on the way
+    *out* of this command; a --password flag put it on the argv on the way in,
+    which the same Event 4688 / Sysmon capture reads just as well.
+    """
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_setup", "--login", "--password", "secret",
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2  # argparse usage error
+    mock_setup.assert_not_called()
+    # And it is refused by name rather than swallowed by argparse's prefix
+    # matching, which would otherwise read "secret" as a --password-file path.
+    assert "--password-file" in capsys.readouterr().err
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_reads_the_password_file(mock_setup, monkeypatch, tmp_path):
+    """--password-file supplies the password, minus the editor's newline."""
+    password_file = tmp_path / "p.txt"
+    password_file.write_text("s3cret\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_setup", "--login", "--password-file", str(password_file),
+    ])
+
+    main()
+
+    assert mock_setup.call_args.kwargs["password"] == "s3cret"
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_rejects_an_unusable_password_file(mock_setup, monkeypatch, tmp_path, capsys):
+    """A named file that holds no password stops the run, without logging in."""
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_setup", "--login",
+        "--password-file", str(tmp_path / "missing.txt"),
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2  # the same usage exit `vs2019 setup` uses
+    assert "password file not found" in capsys.readouterr().err
+    mock_setup.assert_not_called()
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_falls_back_to_the_conan_password_env_var(mock_setup, monkeypatch):
+    """Without --password-file the password comes from $CONAN_PASSWORD."""
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_setup", "--login"])
+
+    with patch_env({"CONAN_PASSWORD": "from-env"}):
+        main()
+
+    assert mock_setup.call_args.kwargs["password"] == "from-env"
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_leaves_the_password_none_when_no_source_has_one(mock_setup, monkeypatch):
+    """No file and no env var is a resolved absence, not an empty string.
+
+    conan_setup() still has ~/.xmsconan.toml to consult, and past that Conan
+    prompts. An empty string would be a password as far as
+    ``if username and password`` is concerned, and would be handed to Conan.
+    """
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_setup", "--login"])
+
+    with patch_env(clear=True):
+        main()
+
+    assert mock_setup.call_args.kwargs["password"] is None
+
+
 @patch("xmsconan.ci_tools.conan_setup.conan_setup",
        side_effect=subprocess.CalledProcessError(4, "conan"))
 def test_main_exits_with_conan_return_code(mock_setup, monkeypatch):
@@ -264,3 +348,36 @@ def test_main_exits_with_conan_return_code(mock_setup, monkeypatch):
         main()
 
     assert exc_info.value.code == 4
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup",
+       side_effect=CredentialsError("Could not parse /home/u/.xmsconan.toml: bad"))
+def test_main_reports_an_unusable_config_file_as_a_usage_error(mock_setup, monkeypatch, capsys):
+    """An unparseable ~/.xmsconan.toml exits 2 with one line, not a traceback.
+
+    It is the same class of fault as an unusable --password-file, which exits 2
+    two lines earlier in the same function, and `xmsconan vs2019 setup` already
+    reports it that way. The handler is CredentialsError and not ValueError so
+    it cannot also absorb one raised by the three subprocesses conan_setup runs.
+    """
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_setup"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    assert "Could not parse" in capsys.readouterr().err
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup", side_effect=ValueError("boom from a subprocess"))
+def test_main_does_not_absorb_an_unrelated_value_error(mock_setup, monkeypatch):
+    """Only CredentialsError is a usage error; anything else keeps its traceback.
+
+    A bare `except ValueError` here would have relabelled a fault from any of
+    conan_setup()'s three subprocess.run calls as an argparse usage error,
+    which is the mislabelling this PR is otherwise busy removing.
+    """
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_setup"])
+
+    with pytest.raises(ValueError, match="boom from a subprocess"):
+        main()

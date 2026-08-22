@@ -240,3 +240,17 @@ def test_unrelated_files_in_the_profiles_directory_survive(tmp_path):
     generate_profiles(toml_file_path=str(toml_file), system_platform="linux")
 
     assert keep.exists()
+
+
+@patch_env(clear=True)
+def test_unknown_top_level_key_raises(tmp_path):
+    """`xmsconan profiles` rejects what `xmsconan gen` rejects.
+
+    This entry point reads the same build.toml with .get(), so without the
+    shared check it would happily emit profiles from a file the generator
+    refuses -- and the two would disagree about which configurations exist.
+    """
+    toml_file = _write_build_toml(tmp_path, has_test_files=True)
+
+    with pytest.raises(ValueError, match="has_test_files"):
+        generate_profiles(toml_file_path=str(toml_file), output_dir=str(tmp_path))

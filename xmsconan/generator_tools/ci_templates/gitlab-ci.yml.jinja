@@ -327,7 +327,13 @@ Repair Wheel:
     - xmsconan_conan_setup
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload
     - mkdir -p conan_packages
-    - cp -r /c/Users/admin/.conan2/p/* conan_packages/ || true
+    <# `|| echo`, not `|| true`: with nothing under the cache path -- a runner
+       whose user is not `admin`, or a restore that produced nothing -- the
+       job used to go green and ship an empty conan_packages/ artifact with
+       no line in the log saying so. It stays non-fatal because the upload
+       above has already succeeded by this point and nothing consumes this
+       artifact; it is a snapshot of the cache for debugging. #>
+    - cp -r /c/Users/admin/.conan2/p/* conan_packages/ || echo "warning - no Conan packages under /c/Users/admin/.conan2/p, conan_packages/ artifact will be empty"
   only:
     - tags
   tags:

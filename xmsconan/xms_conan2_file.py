@@ -44,8 +44,13 @@ class XmsConan2File(ConanFile):
     extra_dependencies = []
     extra_exports = []
     extra_export_sources = []
-    testing_framework = "cxxtest"  # Options: "cxxtest" or "gtest"
-    python_binding_type = "pybind11"  # Options: "pybind11" or "vtk_wrap"
+    # The accepted values are class attributes rather than literals in the
+    # validator so a subclass and the check cannot drift, and so the generator
+    # can import the same vocabulary.
+    TESTING_FRAMEWORKS = ("cxxtest", "gtest")
+    PYTHON_BINDING_TYPES = ("pybind11", "vtk_wrap")
+    testing_framework = "cxxtest"  # One of TESTING_FRAMEWORKS
+    python_binding_type = "pybind11"  # One of PYTHON_BINDING_TYPES
     # Submodule under xms.<...> (e.g. "core"). Set by the generated subclass; required
     # when XMS_COVERAGE=1 so pytest-cov scopes to xms.<python_namespaced_dir>.
     python_namespaced_dir = None
@@ -291,8 +296,53 @@ class XmsConan2File(ConanFile):
                 "recipe so pytest-cov measures only this library's namespace."
             )
 
+        self._validate_recipe_attributes()
         self._validate_settings()
         self._propagate_dependency_options()
+
+    def _validate_recipe_attributes(self):
+        """Reject recipe attributes whose values name something that does not exist.
+
+        These three are read with plain comparisons and dict lookups, so a
+        misspelling is invisible where it is written and expensive where it
+        lands:
+
+        * ``testing_framework = "gtst"`` adds no test framework requirement and
+          fails much later with a CMake "cannot find cxxtest".
+        * ``python_binding_type = "pybind"`` is silent end to end and ships a
+          Python package with no native module in it.
+        * an ``xms_dependency_options`` key that matches no declared
+          dependency is dropped, so the option override someone wrote --
+          typically to turn a dependency's ``pybind`` off -- never applies, and
+          the only symptom is a heavier build. This is the same check
+          ``vs2019_dependency_overrides`` gets in
+          :meth:`_validate_vs2019_dependency_overrides`, minus the msvc-192
+          gate: unlike that dict, this one is honored by every toolchain.
+
+        Raises:
+            ConanException: On a value outside the documented vocabulary, or on
+                an ``xms_dependency_options`` key naming an undeclared package.
+        """
+        if self.testing_framework not in self.TESTING_FRAMEWORKS:
+            raise ConanException(
+                f"testing_framework must be one of "
+                f"{', '.join(sorted(self.TESTING_FRAMEWORKS))}; got "
+                f"{self.testing_framework!r}."
+            )
+        if self.python_binding_type not in self.PYTHON_BINDING_TYPES:
+            raise ConanException(
+                f"python_binding_type must be one of "
+                f"{', '.join(sorted(self.PYTHON_BINDING_TYPES))}; got "
+                f"{self.python_binding_type!r}."
+            )
+        declared = {dependency.split('/')[0] for dependency in self.xms_dependencies}
+        unmatched = sorted(set(self.xms_dependency_options) - declared)
+        if unmatched:
+            raise ConanException(
+                f"xms_dependency_options names {', '.join(unmatched)}, which is not "
+                f"declared in xms_dependencies. Declared xms_dependencies: "
+                f"{', '.join(sorted(declared)) or '(none)'}."
+            )
 
     def _validate_settings(self):
         """Reject compiler / OS combinations this recipe does not support.
@@ -461,22 +511,55 @@ class XmsConan2File(ConanFile):
             "Python3_FIND_FRAMEWORK": "NEVER",
         }
 
+    def _cmake_variables(self):
+        """Return the CMake variables both ``generate()`` and ``build()`` set.
+
+        These were two hand-kept copies, and they had already drifted: nothing
+        set ``USE_TYPEDEF_WCHAR_T`` in either, so the ``wchar_t=typedef``
+        configurations got their own package_id, profile and build folder while
+        compiling with flags identical to ``builtin``. One source means a
+        variable added for the toolchain cannot go missing at configure time.
+
+        Returns:
+            The variable mapping, ready to hand to CMakeToolchain or
+            ``cmake.configure(variables=...)``.
+        """
+        variables = {
+            "IS_PYTHON_BUILD": self.options.pybind,
+            "BUILD_TESTING": self.options.testing,
+            "XMS_TESTING_FRAMEWORK": self.testing_framework,
+            # "XMS_TEST_PATH": "test_files",
+            # Version Info
+            "XMS_VERSION": '{}'.format(self.version),
+            "PYTHON_TARGET_VERSION": str(self.options.python_version),
+            # Gates `add_definitions(/Zc:wchar_t-)` in the generated
+            # CMakeLists.txt. The only thing that ever set it was the Conan 1
+            # recipe base, so from the Conan 2 migration until now every
+            # typedef package was a builtin build wearing a different
+            # package_id -- and a consumer that linked one against a genuinely
+            # /Zc:wchar_t- translation unit had a silent ABI mismatch, not a
+            # link error, wherever wchar_t crossed the boundary.
+            # Direct access, not get_safe: this recipe declares wchar_t
+            # unconditionally and never deletes it, and get_safe on a missing
+            # option would emit False -- a builtin build under a typedef
+            # package_id, which is the exact defect this variable fixes.
+            # _build_folder_name() reads the same option with get_safe on
+            # purpose and is not the same case: it is also called against
+            # partial option mappings (its own parametrized tests pass `{}`),
+            # and a dropped discriminator there costs a shared build folder,
+            # not a mislabelled binary.
+            "USE_TYPEDEF_WCHAR_T": str(self.options.wchar_t) == "typedef",
+        }
+        if self.options.pybind:
+            variables.update(self._get_python_cmake_hints())
+        return variables
+
     def generate(self):
         """The generate method for the conan class."""
         tc = CMakeToolchain(self)
 
-        tc.variables["IS_PYTHON_BUILD"] = self.options.pybind
-        tc.variables["BUILD_TESTING"] = self.options.testing
-        tc.variables["XMS_TESTING_FRAMEWORK"] = self.testing_framework
-        # tc.variables["XMS_TEST_PATH"] = "test_files"
-
-        # Version Info
-        tc.variables["XMS_VERSION"] = '{}'.format(self.version)
-        tc.variables["PYTHON_TARGET_VERSION"] = str(self.options.python_version)
-
-        if self.options.pybind:
-            for key, value in self._get_python_cmake_hints().items():
-                tc.variables[key] = value
+        for key, value in self._cmake_variables().items():
+            tc.variables[key] = value
 
         # Generate toolchain
         tc.generate()
@@ -491,15 +574,7 @@ class XmsConan2File(ConanFile):
         """The build method for the conan class."""
         cmake = CMake(self)
 
-        variables = {}
-        variables["IS_PYTHON_BUILD"] = self.options.pybind
-        variables["BUILD_TESTING"] = self.options.testing
-        variables["XMS_TESTING_FRAMEWORK"] = self.testing_framework
-        # variables["XMS_TEST_PATH"] = "test_files"
-
-        # Version Info
-        variables["XMS_VERSION"] = '{}'.format(self.version)
-        variables["PYTHON_TARGET_VERSION"] = str(self.options.python_version)
+        variables = self._cmake_variables()
 
         # Propagate XMS_COVERAGE as an explicit CMake -D variable when the
         # operator set it in the parent env (e.g., xmsconan_coverage). The
@@ -512,11 +587,11 @@ class XmsConan2File(ConanFile):
         # CMakeLists.txt.jinja was silently false even when XMS_COVERAGE
         # was set in [buildenv]. Passing it as a -D var bypasses every
         # layer of env-propagation uncertainty.
+        # Deliberately not in _cmake_variables(): this one belongs to the
+        # configure step alone. Adding it to the toolchain as well would bake
+        # an instrumented build into a cached toolchain file.
         if os.environ.get("XMS_COVERAGE"):
             variables["XMS_COVERAGE"] = "1"
-
-        if self.options.pybind:
-            variables.update(self._get_python_cmake_hints())
 
         cmake.configure(variables=variables)
         cmake.build()
@@ -717,6 +792,14 @@ class XmsConan2File(ConanFile):
             if runner_src:
                 shutil.copy2(runner_src, os.path.join(dest, runner_name))
                 self.output.info(f"  Copied {runner_name}")
+            else:
+                # Staging silently produced no runner here, and the packager's
+                # sharded run is what discovers it -- much later, in another
+                # process. Say it where the search happened.
+                self.output.warning(
+                    f"  No {runner_name} found in {search_dirs}; sharded test "
+                    f"runs for this configuration will have nothing to execute."
+                )
 
             # test_metadata.json — records paths needed by the parallel test runner
             test_path = os.path.join(self.source_folder, "test_files") + "/"
@@ -753,9 +836,9 @@ class XmsConan2File(ConanFile):
             os.environ["_PYTHON_HOST_PLATFORM"] = "macosx-15.0-arm64"
         try:
             if _has_uv():
-                self.run(f'uv build --wheel --no-build-logs --out-dir {dist_dir} {package_src}')
+                self.run(f'uv build --wheel --no-build-logs --out-dir "{dist_dir}" "{package_src}"')
             else:
-                self.run(f'"{sys.executable}" -m pip wheel . --no-deps --wheel-dir {dist_dir}', cwd=package_src)
+                self.run(f'"{sys.executable}" -m pip wheel . --no-deps --wheel-dir "{dist_dir}"', cwd=package_src)
         finally:
             if old_host_platform is None:
                 os.environ.pop("_PYTHON_HOST_PLATFORM", None)
@@ -784,9 +867,9 @@ class XmsConan2File(ConanFile):
 
         # Create a virtual environment
         if _has_uv():
-            self.run(f'uv venv --python {python_target_version} {build_venv_dir}')
+            self.run(f'uv venv --python {python_target_version} "{build_venv_dir}"')
         else:
-            self.run(f'"{sys.executable}" -m venv {build_venv_dir}')
+            self.run(f'"{sys.executable}" -m venv "{build_venv_dir}"')
 
         # Install general dependencies
         general_dependencies = ["numpy", "wheel", "pytest"]
@@ -806,11 +889,24 @@ class XmsConan2File(ConanFile):
                 dependency = self.dependencies.host[dependency_name]
                 if dependency.package_folder:
                     package_path = os.path.join(dependency.package_folder, "_package")
-                    self.run(_pip_install_cmd(python_executable, package_path, "--no-deps"))
+                    # A dependency forced to pybind=False via
+                    # xms_dependency_options packages no _package/ directory.
+                    # `pip install <missing path>` exits non-zero, which took
+                    # down the whole Python test phase of the consumer that
+                    # asked for the smaller dependency in the first place.
+                    if os.path.isdir(package_path):
+                        self.run(_pip_install_cmd(python_executable, f'"{package_path}"', "--no-deps"))
+                    else:
+                        self.output.info(
+                            f"Skipping {dependency_name}: {package_path} does not "
+                            f"exist, so there is no Python package to install "
+                            f"(usually because the dependency was built with "
+                            f"pybind=False)."
+                        )
 
         # Install from the pre-built wheel
         wheel_path = self._find_wheel()
-        self.run(_pip_install_cmd(python_executable, wheel_path))
+        self.run(_pip_install_cmd(python_executable, f'"{wheel_path}"'))
 
         # Copy the tests folder into the build directory
         tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
@@ -820,7 +916,7 @@ class XmsConan2File(ConanFile):
 
         # Run tests using the virtual environment's Python
         pytest_ini = os.path.join(self.source_folder, "pytest.ini")
-        pytest_command = f'"{python_executable}" -m pytest -c "{pytest_ini}" {tests_dest_dir} -v'
+        pytest_command = f'"{python_executable}" -m pytest -c "{pytest_ini}" "{tests_dest_dir}" -v'
         if coverage_enabled:
             if not self.python_namespaced_dir:
                 raise ConanException(

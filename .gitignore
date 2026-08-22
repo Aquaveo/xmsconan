@@ -72,6 +72,14 @@ coverage-html-py/
 # Claude Code ephemeral worktrees (never committed)
 .claude/worktrees/
 
+# Session-local session-context dumps. Same reason as the review write-ups
+# below, and the same accident: a `git add -A` sweeps one in.
+.remember/
+
+# Session-local review write-ups. Notes about the code, not part of it -- and
+# a `git add -A` during a review pass will otherwise sweep one in.
+.claude/reviews/
+
 .claude/settings.local.json
 .envrc
 .env

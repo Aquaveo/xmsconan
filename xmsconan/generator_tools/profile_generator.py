@@ -20,7 +20,7 @@ import sys
 
 # 3. Aquaveo modules
 from xmsconan.package_tools.packager import configurations, XmsConanPackager
-from xmsconan.toml_utils import load_toml
+from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +81,10 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
         List of paths (that would be) written.
     """
     data = load_toml(toml_file_path)
+    # Same check `xmsconan gen` makes. This entry point reads the same file with
+    # .get(), so without it `xmsconan profiles` would happily emit profiles from
+    # a build.toml that `xmsconan gen` rejects.
+    validate_top_level_keys(data, toml_file_path)
     library_name = data.get("library_name")
     if not library_name:
         raise ValueError(f"{toml_file_path} does not define library_name")

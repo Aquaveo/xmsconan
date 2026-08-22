@@ -178,3 +178,49 @@ def test_propagates_called_process_error(mock_glob, mock_run):
     """Verify CalledProcessError from pip/repair propagates."""
     with pytest.raises(subprocess.CalledProcessError):
         wheel_repair(wheel_dir="/tmp/wh", platform="linux")
+
+
+# --- wheel_repair against a real filesystem ---
+#
+# Every test above mocks rmtree and move, so none of them exercises the
+# directory swap that ends wheel_repair() -- which is exactly where the
+# trailing-separator bug lived. These drive the real filesystem and stub only
+# the external repair tool.
+
+
+def _stub_repair_tool(cmd, *args, **kwargs):
+    """Stand in for pip and auditwheel, writing what auditwheel would write."""
+    if "-w" in cmd:
+        out_dir = Path(cmd[cmd.index("-w") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        source = Path(cmd[cmd.index("repair") + 1])
+        (out_dir / f"{source.stem}-manylinux.whl").write_bytes(b"repaired")
+    return subprocess.CompletedProcess(cmd, 0)
+
+
+def _make_wheelhouse(tmp_path):
+    """Create a wheelhouse holding one built wheel and a staged libs/ dir."""
+    wheel_dir = tmp_path / "wheelhouse"
+    (wheel_dir / "libs").mkdir(parents=True)
+    (wheel_dir / "foo.whl").write_bytes(b"built")
+    return wheel_dir
+
+
+@pytest.mark.parametrize("trailing", ["", os.sep])
+def test_repaired_wheels_replace_the_originals(tmp_path, trailing):
+    """The repaired wheel ends up in wheel_dir and the originals are gone.
+
+    With a trailing separator the derived ``{wheel_dir}_repaired`` used to land
+    *inside* wheel_dir, so rmtree deleted the repaired wheels along with the
+    built ones and move() raised on the path it had just destroyed -- losing
+    both copies of a wheel that can take an hour to rebuild.
+    """
+    wheel_dir = _make_wheelhouse(tmp_path)
+
+    with patch("xmsconan.ci_tools.wheel_repair.subprocess.run", side_effect=_stub_repair_tool):
+        wheel_repair(wheel_dir=f"{wheel_dir}{trailing}", platform="linux")
+
+    assert wheel_dir.is_dir()
+    assert [p.name for p in wheel_dir.glob("*.whl")] == ["foo-manylinux.whl"]
+    assert not (tmp_path / "wheelhouse_repaired").exists()
+    assert not (wheel_dir / "_repaired").exists()

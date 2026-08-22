@@ -42,16 +42,23 @@ copy_worktree_includes() {
         for SRC in "$PROJECT_DIR"/$PATTERN; do
             [ -e "$SRC" ] || continue
             REL="${SRC#"$PROJECT_DIR"/}"
-            # exit 1 is "not ignored" (skip); anything else is fatal (128 =
-            # bad pathspec, unreadable repo) and must not look like a skip.
-            if ! git -C "$PROJECT_DIR" check-ignore -q "$REL"; then
-                STATUS=$?
-                if [ "$STATUS" -ne 1 ]; then
+            # Run as a plain statement, not `if ! ...`: inside the body of an
+            # `if !`, $? is the status of the negated pipeline (always 0), so
+            # the fatal branch could never fire and every matched-but-not-
+            # ignored path aborted provisioning with "failed (exit 0)".
+            # 0 is "ignored" (copy it); 1 is "not ignored" (skip); anything
+            # else is fatal (128 = bad pathspec, unreadable repo) and must not
+            # look like a skip.
+            git -C "$PROJECT_DIR" check-ignore -q "$REL"
+            STATUS=$?
+            case "$STATUS" in
+                0) ;;
+                1) continue ;;
+                *)
                     echo "provision_worktree: git check-ignore failed (exit $STATUS) for $REL" >&2
                     return 1
-                fi
-                continue
-            fi
+                    ;;
+            esac
             if [ -d "$SRC" ]; then
                 # Copy the contents, not the directory: `cp -R dir dest` nests
                 # as dest/dir when dest already exists (re-provisioning).

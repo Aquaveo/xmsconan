@@ -10,6 +10,8 @@ import argparse
 import subprocess
 import sys
 
+from xmsconan.constants import DEFAULT_REMOTE_NAME
+
 
 def conan_deploy(library, version, save=None, restore=None, upload=False):
     """Perform Conan cache save, restore, or upload operations.
@@ -19,7 +21,8 @@ def conan_deploy(library, version, save=None, restore=None, upload=False):
         version: Package version string.
         save: Path to write the cache tarball to (``conan cache save``).
         restore: Path to read a cache tarball from (``conan cache restore``).
-        upload: If ``True``, upload the package to the ``aquaveo`` remote.
+        upload: If ``True``, upload the package to the
+            :data:`~xmsconan.constants.DEFAULT_REMOTE_NAME` remote.
     """
     ref = f"{library}/{version}"
 
@@ -41,7 +44,7 @@ def conan_deploy(library, version, save=None, restore=None, upload=False):
 
     if upload:
         subprocess.run(
-            ["conan", "upload", ref, "-r", "aquaveo", "--confirm"],
+            ["conan", "upload", ref, "-r", DEFAULT_REMOTE_NAME, "--confirm"],
             check=True,
         )
 
@@ -66,7 +69,7 @@ def main():
     parser.add_argument(
         "--upload",
         action="store_true",
-        help="Upload the package to the aquaveo remote.",
+        help=f"Upload the package to the {DEFAULT_REMOTE_NAME} remote.",
     )
     args = parser.parse_args()
 

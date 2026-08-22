@@ -570,6 +570,24 @@ def test_filter_configurations_rejects_flat_option_key():
         p.filter_configurations({"build_type": "Debug", "pybind": True})
 
 
+@patch_env(clear=True)
+def test_filter_configurations_drops_configs_lacking_the_option():
+    """A configuration without the filtered option key does not match it.
+
+    python_version is set only on pybind variants, so treating an absent key
+    as a match kept every non-pybind configuration as well -- the coverage
+    run's one-ABI Python filter selected the whole Debug matrix.
+    """
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    assert any("python_version" not in c["options"] for c in p.configurations)
+
+    p.filter_configurations({"options": {"python_version": "3.13"}})
+
+    assert p.configurations
+    assert all(c["options"].get("python_version") == "3.13" for c in p.configurations)
+
+
 # --- create_build_profile ---
 
 
@@ -1211,6 +1229,72 @@ def test_run_no_skip_without_sharding(mock_run):
     call_kwargs = mock_run.call_args_list[0]
     env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
     assert env is None
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
+def test_run_fails_when_the_sharded_runner_is_missing(mock_run, tmp_path):
+    """A missing runner fails the run instead of reporting success.
+
+    With test_shards > 1 the recipe skips cmake.test() so these shards are the
+    only thing that runs the C++ tests. Warning and returning [] therefore
+    printed "All configurations built successfully" for a run in which no test
+    executed at all.
+    """
+    artifacts_dir = tmp_path / "artifacts"
+    (artifacts_dir / "Debug-testing").mkdir(parents=True)  # no runner inside
+
+    p = XmsConanPackager("xmscore", artifacts_dir=str(artifacts_dir), test_shards=2)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+
+    assert p.run() != 0
+
+
+@patch_env(clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run", return_value=subprocess.CompletedProcess([], 0))
+def test_run_reports_a_missing_runner_as_its_own_fault(mock_run, tmp_path, capsys):
+    """A runner that was never built is not reported as a shard that failed.
+
+    The two have different remedies -- fix the build vs. read the test output
+    -- and the summary line is where an operator looks first. Folding both into
+    "N test shard(s) failed" renamed the cause the ERROR above had already got
+    right. The internal `-runner-missing` marker `_run_sharded_tests` uses to
+    tell `run` apart must not reach that line either.
+    """
+    artifacts_dir = tmp_path / "artifacts"
+    (artifacts_dir / "Debug-testing").mkdir(parents=True)  # no runner inside
+
+    p = XmsConanPackager("xmscore", artifacts_dir=str(artifacts_dir), test_shards=2)
+    p.generate_configurations(system_platform="linux")
+    p.filter_configurations({"build_type": "Debug", "options": {"testing": True}})
+    p.run()
+
+    output = capsys.readouterr().out
+    assert "ran no C++ test at all -- test runner missing: Debug-testing" in output
+    assert "test shard(s) failed" not in output
+    assert "runner-missing" not in output.replace("test runner missing", "")
+
+
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_collect_dependency_libs_reports_an_unusable_conan_home(mock_run, tmp_path, capsys):
+    """A failed `conan config home` says so instead of staging nothing quietly.
+
+    Unchecked, its empty stdout made cache_pkg_dir the cwd-relative 'p', which
+    almost never exists -- so the wheel repair got no dependency libraries and
+    the only symptom was an import error much later, in a different tool.
+    """
+    mock_run.return_value = subprocess.CompletedProcess(
+        [], 1, stdout="", stderr="ERROR: conan home is not configured"
+    )
+    output_dir = tmp_path / "libs"
+
+    XmsConanPackager("xmsvtk").collect_dependency_libs(str(output_dir))
+
+    output = capsys.readouterr().out
+    assert "no dependency libraries will be staged" in output
+    assert "conan home is not configured" in output
+    assert not output_dir.exists()
 
 
 @patch_env(clear=True)

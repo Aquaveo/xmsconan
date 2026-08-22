@@ -31,8 +31,14 @@ _conan_stubs["conan.errors"].ConanException = type("ConanException", (Exception,
 sys.modules["conan.errors"].ConanException = _conan_stubs["conan.errors"].ConanException
 
 from conan.errors import ConanException  # noqa: E402,I100,I202
-from xmsconan.constants import MSVC_VS2019_VERSION, SUPPORTED_PYTHON_VERSIONS  # noqa: E402,I201
+from xmsconan.constants import (  # noqa: E402,I201
+    MSVC_VS2019_VERSION,
+    PYTHON_BINDING_TYPES,
+    SUPPORTED_PYTHON_VERSIONS,
+    TESTING_FRAMEWORKS,
+)
 from xmsconan.xms_conan2_file import XmsConan2File  # noqa: E402
+from .utils import patch_env  # noqa: E402,I100,I202
 
 
 def _make_conan_file(os_name, arch):
@@ -467,6 +473,7 @@ class TestCoverageWiring:
         obj.options.pybind = False
         obj.options.testing = False
         obj.options.python_version = "3.13"
+        obj.options.wchar_t = "builtin"
         obj.testing_framework = "cxxtest"
         obj.python_binding_type = "pybind11"
         obj.version = "0.0.0"
@@ -561,6 +568,65 @@ class TestCoverageWiring:
         assert "--cov-report=xml:" in pytest_cmd
         assert "--cov-report=html:" in pytest_cmd
         assert "--cov-report=json:" in pytest_cmd
+
+    def _python_test_recipe(self, tmp_path):
+        """Build the minimum recipe instance run_python_tests() needs."""
+        obj = object.__new__(XmsConan2File)
+        obj.build_folder = str(tmp_path / "build")
+        obj.source_folder = str(tmp_path / "source")
+        os.makedirs(obj.build_folder, exist_ok=True)
+        os.makedirs(os.path.join(obj.source_folder, "_package", "tests"), exist_ok=True)
+        with open(os.path.join(obj.source_folder, "pytest.ini"), "w") as f:
+            f.write("[pytest]\n")
+        obj.options = MagicMock()
+        obj.options.python_version = "3.13"
+        obj.python_namespaced_dir = "core"
+        obj.xms_dependencies = []
+        obj.dependencies = MagicMock()
+        obj.dependencies.host = {}
+        obj.run = MagicMock()
+        obj.output = MagicMock()
+        obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
+        return obj
+
+    def _dependency_at(self, package_folder):
+        """Return a stub conan dependency reporting *package_folder*."""
+        dependency = MagicMock()
+        dependency.package_folder = str(package_folder)
+        return dependency
+
+    def test_run_python_tests_installs_dependency_package(self, tmp_path):
+        """A dependency that ships _package/ is pip-installed from it."""
+        obj = self._python_test_recipe(tmp_path)
+        dep_folder = tmp_path / "xmscore-pkg"
+        (dep_folder / "_package").mkdir(parents=True)
+        obj.xms_dependencies = ["xmscore/[>=7.0.0]"]
+        obj.dependencies.host = {"xmscore": self._dependency_at(dep_folder)}
+
+        obj.run_python_tests()
+
+        installs = [str(c) for c in obj.run.call_args_list if "_package" in str(c)]
+        assert len(installs) == 1
+        assert "--no-deps" in installs[0]
+
+    def test_run_python_tests_skips_dependency_without_package_dir(self, tmp_path):
+        """A dependency built with pybind=False is skipped, not installed.
+
+        Such a dependency packages no _package/ directory, so
+        `pip install <missing path>` exited non-zero and took down the Python
+        test phase of the very consumer that asked for the smaller dependency
+        through xms_dependency_options.
+        """
+        obj = self._python_test_recipe(tmp_path)
+        dep_folder = tmp_path / "xmscore-pkg"
+        dep_folder.mkdir()  # packaged, but with no _package/ inside
+        obj.xms_dependencies = ["xmscore/[>=7.0.0]"]
+        obj.dependencies.host = {"xmscore": self._dependency_at(dep_folder)}
+
+        obj.run_python_tests()
+
+        assert not [c for c in obj.run.call_args_list if "_package" in str(c)]
+        assert any("xmscore" in str(c) for c in obj.output.info.call_args_list)
 
     def test_run_python_tests_does_not_add_cov_when_env_unset(self, tmp_path):
         """Without XMS_COVERAGE, no --cov flags are added."""
@@ -918,7 +984,11 @@ class TestRequirements:
         [
             ("cxxtest", ["cxxtest/4.4"]),
             ("gtest", ["gtest/1.17.0"]),
-            ("unknown", []),  # unrecognized framework adds nothing
+            # configure() now rejects an unrecognized framework outright (see
+            # TestValidateRecipeAttributes); requirements() keeps adding
+            # nothing for one as defense in depth, since a hand-written recipe
+            # can call it without going through configure().
+            ("unknown", []),
         ],
     )
     def test_testing_framework_requirement(self, framework, expected):
@@ -1158,3 +1228,160 @@ def test_supported_python_versions_matches_the_recipe():
     installed at the top of this file.
     """
     assert set(SUPPORTED_PYTHON_VERSIONS) == set(XmsConan2File.options["python_version"])
+
+
+def test_vocabularies_match_the_recipe():
+    """The generator's accepted values must agree with the recipe's.
+
+    Duplicated for the same standalone-copy reason as
+    SUPPORTED_PYTHON_VERSIONS. If they drift, `xmsconan gen` accepts a value
+    the recipe then rejects at configure time -- or worse, the reverse.
+    """
+    assert set(TESTING_FRAMEWORKS) == set(XmsConan2File.TESTING_FRAMEWORKS)
+    assert set(PYTHON_BINDING_TYPES) == set(XmsConan2File.PYTHON_BINDING_TYPES)
+
+
+class TestValidateRecipeAttributes:
+    """configure() rejects attribute values that name nothing that exists."""
+
+    def _make_obj(self, **attributes):
+        """Create a recipe stub carrying only what configure() validation reads."""
+        obj = object.__new__(XmsConan2File)
+        obj.testing_framework = "cxxtest"
+        obj.python_binding_type = "pybind11"
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        for name, value in attributes.items():
+            setattr(obj, name, value)
+        return obj
+
+    def test_configure_runs_the_validation(self):
+        """configure() is what actually reaches the check.
+
+        Every other case here calls _validate_recipe_attributes() directly, so
+        without this one the call configure() makes could be deleted outright
+        and the whole class would stay green while the check quietly stopped
+        running in every consumer's recipe.
+        """
+        obj = self._make_obj(testing_framework="gtst")
+        obj.python_namespaced_dir = "core"
+        obj.options = MagicMock()
+        obj.settings = _make_settings("msvc", "194")
+
+        with pytest.raises(ConanException, match="testing_framework"):
+            obj.configure()
+
+    @pytest.mark.parametrize("attribute,value,expected", [
+        ("testing_framework", "gtst", "testing_framework"),
+        ("python_binding_type", "pybind", "python_binding_type"),
+    ])
+    def test_misspelled_vocabulary_value_raises(self, attribute, value, expected):
+        """A near-miss value fails here rather than much later, or never.
+
+        "gtst" used to add no test framework requirement and fail at CMake
+        configure with "cannot find cxxtest"; "pybind" was silent end to end
+        and shipped a Python package with no native module in it.
+        """
+        obj = self._make_obj(**{attribute: value})
+
+        with pytest.raises(ConanException, match=expected) as excinfo:
+            obj._validate_recipe_attributes()
+
+        assert value in str(excinfo.value)
+
+    @pytest.mark.parametrize("framework", XmsConan2File.TESTING_FRAMEWORKS)
+    def test_documented_frameworks_are_accepted(self, framework):
+        """Every value the docs offer passes."""
+        self._make_obj(testing_framework=framework)._validate_recipe_attributes()
+
+    @pytest.mark.parametrize("binding", XmsConan2File.PYTHON_BINDING_TYPES)
+    def test_documented_binding_types_are_accepted(self, binding):
+        """Every value the docs offer passes."""
+        self._make_obj(python_binding_type=binding)._validate_recipe_attributes()
+
+    def test_dependency_options_for_undeclared_package_raises(self):
+        """An override keyed on a package that is not a dependency is a typo.
+
+        Dropping it silently meant the option someone wrote -- usually to turn
+        a dependency's pybind off -- never applied, and the only symptom was a
+        heavier build than asked for.
+        """
+        obj = self._make_obj(
+            xms_dependencies=["xmscore/[>=7.0.0]"],
+            xms_dependency_options={"xmscoer": {"pybind": False}},
+        )
+
+        with pytest.raises(ConanException, match="xmscoer") as excinfo:
+            obj._validate_recipe_attributes()
+
+        assert "xmscore" in str(excinfo.value)
+
+    def test_dependency_options_for_declared_package_is_accepted(self):
+        """A key matching a declared dependency passes."""
+        obj = self._make_obj(
+            xms_dependencies=["xmscore/[>=7.0.0]"],
+            xms_dependency_options={"xmscore": {"pybind": False}},
+        )
+
+        obj._validate_recipe_attributes()
+
+
+class TestCMakeVariables:
+    """generate() and build() must seed CMake from one place, and gate wchar_t."""
+
+    def _make_recipe(self, wchar_t="builtin", pybind=False):
+        """Build a stub recipe carrying what _cmake_variables() reads."""
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.pybind = pybind
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.options.wchar_t = wchar_t
+        obj.testing_framework = "cxxtest"
+        obj.python_binding_type = "pybind11"
+        obj.version = "0.0.0"
+        obj.output = MagicMock()
+        obj._save_test_artifacts = MagicMock()
+        obj.run_cxx_tests = MagicMock()
+        return obj
+
+    @pytest.mark.parametrize("wchar_t,expected", [("typedef", True), ("builtin", False)])
+    def test_use_typedef_wchar_t_follows_the_option(self, wchar_t, expected):
+        """The variable that gates /Zc:wchar_t- tracks the wchar_t option.
+
+        Nothing set it before: the only setter in the tree was the Conan 1
+        recipe base. So every msvc wchar_t=typedef package built since the
+        Conan 2 migration is a builtin build carrying a different package_id.
+        """
+        variables = self._make_recipe(wchar_t=wchar_t)._cmake_variables()
+        assert variables["USE_TYPEDEF_WCHAR_T"] is expected
+
+    # Cleared, not merely overridden: build() adds XMS_COVERAGE to the configure
+    # set when it is set in the parent env, so on a developer machine that has
+    # exported it this test compared a toolchain set against a configure set
+    # carrying one extra key, and failed for a reason having nothing to do with
+    # drift. Nothing else under these mocks reads the environment.
+    @patch_env(clear=True)
+    @patch("xmsconan.xms_conan2_file.CMakeDeps")
+    @patch("xmsconan.xms_conan2_file.CMakeToolchain")
+    @patch("xmsconan.xms_conan2_file.CMake")
+    def test_generate_and_build_cannot_drift(self, mock_cmake, mock_toolchain, mock_deps):
+        """Both entry points set exactly the same variables, minus XMS_COVERAGE.
+
+        They were two hand-maintained copies, and USE_TYPEDEF_WCHAR_T is what
+        happened when one of them needed a new variable: neither got it.
+        """
+        toolchain_variables = {}
+        mock_toolchain.return_value.variables = toolchain_variables
+
+        self._make_recipe(wchar_t="typedef").generate()
+        self._make_recipe(wchar_t="typedef").build()
+
+        configure_variables = mock_cmake.return_value.configure.call_args.kwargs["variables"]
+        assert toolchain_variables == configure_variables
+        assert toolchain_variables["USE_TYPEDEF_WCHAR_T"] is True
+
+    @patch("xmsconan.xms_conan2_file.CMake")
+    def test_coverage_stays_out_of_the_toolchain(self, mock_cmake):
+        """XMS_COVERAGE belongs to configure() alone, not to the shared set."""
+        assert "XMS_COVERAGE" not in self._make_recipe()._cmake_variables()

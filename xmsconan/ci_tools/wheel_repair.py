@@ -42,6 +42,12 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
     if platform is None:
         platform = _detect_platform()
 
+    # Normalize before deriving the sibling directory. A trailing separator --
+    # which every shell tab-completion adds -- turns "wheelhouse/" into the
+    # *child* "wheelhouse/_repaired", so the rmtree below deletes the repaired
+    # wheels along with the originals and move() then raises on a path that no
+    # longer exists. Both the built and the repaired wheels are gone by then.
+    wheel_dir = os.path.normpath(wheel_dir)
     repaired_dir = f"{wheel_dir}_repaired"
     wheels = glob.glob(os.path.join(wheel_dir, "*.whl"))
     if not wheels:

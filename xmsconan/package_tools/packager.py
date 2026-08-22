@@ -25,6 +25,11 @@ from xmsconan.package_tools.printer import Printer
 
 LOGGER = logging.getLogger(__name__)
 
+#: Suffix `_run_sharded_tests` appends to a label when the runner was never
+#: built, so `run` can keep that fault out of the failed-shard count. The two
+#: methods communicate through this spelling; it is not for display.
+RUNNER_MISSING_SUFFIX = '-runner-missing'
+
 
 def get_current_arch():
     """Get the current architecture in Conan format."""
@@ -227,7 +232,7 @@ class XmsConanPackager(object):
         self._profile_conf = dict(DEFAULT_PROFILE_CONF) if profile_conf is None else dict(profile_conf)
         self._profile_variants = self._resolve_profile_variants(profile_variants)
         self._python_versions = self._resolve_python_versions(python_versions)
-        self._matrix = self._resolve_matrix(matrix)
+        self._matrix = self.resolve_matrix(matrix)
         self._coverage = (
             coverage if coverage is not None
             else os.environ.get('XMS_COVERAGE') == '1'
@@ -281,8 +286,14 @@ class XmsConanPackager(object):
     DEFAULT_PYBIND_BUILD_TYPES = ('Release',)
 
     @classmethod
-    def _resolve_matrix(cls, matrix: Optional[dict]) -> dict:
+    def resolve_matrix(cls, matrix: Optional[dict]) -> dict:
         """Validate the ``[matrix]`` table and fill in its defaults.
+
+        Public because it is a service to callers outside this package:
+        :func:`xmsconan.generator_tools.build_file_generator.render_template_with_toml`
+        validates ``[matrix]`` through this method before writing it verbatim
+        into a generated ``conanfile.py``. Renaming it breaks build-file
+        generation, not just this class.
 
         Both failure modes are silent otherwise. A misspelled key
         (``compiler_runtimes``) is simply never read, so the library keeps
@@ -730,8 +741,17 @@ class XmsConanPackager(object):
             include_configuration = True
             for key, value in filter_dict.items():
                 if key in ['options', 'buildenv']:
+                    # A configuration that lacks the filtered key does not
+                    # match it. The `option_key in ...` guard used to make an
+                    # absent key match *anything*, so filtering on
+                    # {'options': {'python_version': '3.13'}} kept every
+                    # non-pybind configuration too -- python_version is only
+                    # ever set on pybind variants (_pybind_variants), so the
+                    # filter that was supposed to select one wheel selected the
+                    # whole matrix.
+                    section = configuration.get(key, {})
                     for option_key, option_value in value.items():
-                        if option_key in configuration[key] and configuration[key].get(option_key) != option_value:
+                        if section.get(option_key) != option_value:
                             include_configuration = False
                 elif configuration.get(key) != value:
                     include_configuration = False
@@ -830,18 +850,33 @@ class XmsConanPackager(object):
             self.printer.print_message('*-' * 40 + '\n')
 
         # Run sharded tests after all builds complete
-        shard_failure_count = 0
+        shard_failures = []
         for label in sharded_test_runs:
-            shard_failures = self._run_sharded_tests(label)
-            shard_failure_count += len(shard_failures)
+            shard_failures.extend(self._run_sharded_tests(label))
+        # A runner that was never built is a different fault from a shard that
+        # ran and failed, and the ERROR already printed for it says so. Folding
+        # both into one "N test shard(s) failed" line renames the cause at the
+        # only place a reader looks for the summary.
+        missing_runners = [
+            f[:-len(RUNNER_MISSING_SUFFIX)]
+            for f in shard_failures
+            if f.endswith(RUNNER_MISSING_SUFFIX)
+        ]
+        shard_failure_count = len(shard_failures)
 
         total_failures = len(failing_configurations) + shard_failure_count
         if total_failures > 0:
             if failing_configurations:
                 self.printer.print_message('The following configurations failed to build:')
                 self.print_configuration_table(failing_configurations)
-            if shard_failure_count:
-                self.printer.print_message(f'{shard_failure_count} test shard(s) failed.')
+            if missing_runners:
+                self.printer.print_message(
+                    f'{len(missing_runners)} configuration(s) ran no C++ test at '
+                    f'all -- test runner missing: {", ".join(missing_runners)}'
+                )
+            failed_shards = shard_failure_count - len(missing_runners)
+            if failed_shards:
+                self.printer.print_message(f'{failed_shards} test shard(s) failed.')
             return total_failures
         else:
             self.printer.print_message('All configurations built successfully.')
@@ -919,14 +954,24 @@ class XmsConanPackager(object):
             label: The artifact label (e.g. "Debug-testing") to find the runner.
 
         Returns:
-            List of failed shard indices, or empty list if all passed.
+            List of failure labels, or an empty list if every shard passed. A
+            missing runner counts as a failure: with ``test_shards > 1`` the
+            recipe deliberately skips ``cmake.test()`` so these shards are the
+            only thing that runs the C++ tests, so returning [] for an absent
+            runner reported "All configurations built successfully" for a run
+            in which no test executed at all. The generated GitLab job exits 1
+            on the same condition.
         """
         artifact_dir = os.path.join(self._artifacts_dir, label)
         runner_name = "runner.exe" if sys.platform == "win32" else "runner"
         runner_path = os.path.join(artifact_dir, runner_name)
         if not os.path.isfile(runner_path):
-            self.printer.print_message(f'WARNING: Runner not found at {runner_path}, skipping sharded tests')
-            return []
+            self.printer.print_message(
+                f'ERROR: test runner not found at {runner_path}. With '
+                f'test_shards={self._test_shards} the recipe skips cmake.test(), '
+                f'so no C++ test ran for {label}.'
+            )
+            return [f'{label}{RUNNER_MISSING_SUFFIX}']
 
         os.chmod(runner_path, 0o755)
 
@@ -1034,7 +1079,14 @@ class XmsConanPackager(object):
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            self.printer.print_message(f'No packages found for {ref}')
+            # "No packages found" was printed for both an empty cache and a
+            # conan client that blew up -- and it dropped conan's stderr, which
+            # is the only place the real cause (bad remote, corrupt cache, a
+            # reference conan cannot parse) appears.
+            self.printer.print_message(
+                f'ERROR: `conan list {ref}:*` exited {result.returncode}; cannot '
+                f'tell whether any wheel exists. conan said:\n{result.stderr.strip()}'
+            )
             return False
 
         data = json.loads(result.stdout)
@@ -1086,6 +1138,17 @@ class XmsConanPackager(object):
                 capture_output=True, text=True
             )
             pkg_dir = path_result.stdout.strip()
+            if path_result.returncode != 0 or not pkg_dir:
+                # os.path.join('', 'dist') is 'dist' -- a cwd-relative path. On
+                # a build machine that happens to hold a stale ./dist, the
+                # staged wheel would come from there and get published as this
+                # package's.
+                self.printer.print_message(
+                    f'ERROR: `conan cache path {exact_ref}:{pid}` exited '
+                    f'{path_result.returncode} with no path; skipping this '
+                    f'package. conan said:\n{path_result.stderr.strip()}'
+                )
+                continue
             dist_dir = os.path.join(pkg_dir, 'dist')
             if not os.path.isdir(dist_dir):
                 continue
@@ -1132,6 +1195,16 @@ class XmsConanPackager(object):
             ['conan', 'config', 'home'], capture_output=True, text=True
         )
         conan_home = result.stdout.strip()
+        if result.returncode != 0 or not conan_home:
+            # Unchecked, an empty stdout makes cache_pkg_dir the cwd-relative
+            # 'p', which almost never exists -- so the repair silently gets no
+            # dependency libraries instead of reporting why.
+            self.printer.print_message(
+                f'ERROR: `conan config home` exited {result.returncode} with no '
+                f'path; no dependency libraries will be staged. conan said:\n'
+                f'{result.stderr.strip()}'
+            )
+            return
         cache_pkg_dir = os.path.join(conan_home, 'p')
 
         if not os.path.isdir(cache_pkg_dir):

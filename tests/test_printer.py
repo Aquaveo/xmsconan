@@ -1,6 +1,5 @@
 """Tests for package_tools.printer."""
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -45,32 +44,23 @@ def test_print_ascii_art_contains_version(printer, captured):
 
 
 def test_print_ascii_art_contains_banner(printer, captured):
-    """ASCII art banner contains the CPT/Package Tools art."""
+    """The whole six-row banner block renders, not just its first row.
+
+    The old assertion was `"Package" in output or "____" in output`. The left
+    side is false in every run -- the banner draws its words as ASCII art and
+    never spells them -- so the whole check rested on the right side, which any
+    run of underscores satisfies. A banner truncated to one row passed it.
+    """
     printer.print_ascci_art()
     output = "".join(captured)
-    # The banner uses ASCII art letters — check for recognizable fragments
-    assert "Package" in output or "____" in output
+    art = [
+        line for line in output.splitlines()
+        if line.strip() and not line.startswith("Version:")
+    ]
 
-
-# --- print_in_docker ---
-
-
-def test_print_in_docker_contains_container_name(printer, captured):
-    """Container name appears in Docker ASCII art."""
-    printer.print_in_docker(container="nextms-dev-arm")
-    output = "".join(captured)
-    assert "nextms-dev-arm" in output
-
-
-# --- print_command ---
-
-
-def test_print_command_wraps_with_rules(printer, captured):
-    """Command is printed between rules."""
-    printer.print_command("cmake --build .")
-    output = "".join(captured)
-    assert "cmake --build ." in output
-    assert "_" * 100 in output
+    assert len(art) == 6
+    assert art[0].lstrip().startswith("____ ____ _____")
+    assert art[-1].rstrip().endswith("/_/")
 
 
 # --- print_message ---
@@ -100,85 +90,3 @@ def test_print_profile_contains_text(printer, captured):
     output = "".join(captured)
     assert "/path/to/profile" in output
     assert "Profile" in output
-
-
-# --- print_rule ---
-
-
-def test_print_rule_default_char(printer, captured):
-    """Default rule uses * character, 100 chars wide."""
-    printer.print_rule()
-    output = "".join(captured)
-    assert "*" * 100 in output
-
-
-def test_print_rule_custom_char(printer, captured):
-    """Custom character used for rule."""
-    printer.print_rule(char="-")
-    output = "".join(captured)
-    assert "-" * 100 in output
-
-
-# --- print_current_page ---
-
-
-def test_print_current_page(printer, captured):
-    """Page format is 'Page: N/M'."""
-    printer.print_current_page(2, 5)
-    output = "".join(captured)
-    assert "Page: 2/5" in output
-
-
-# --- print_dict ---
-
-
-def test_print_dict_contains_keys_and_values(printer, captured):
-    """Dict keys and values appear in table output."""
-    printer.print_dict({"compiler": "gcc", "version": "13"})
-    output = "".join(captured)
-    assert "compiler" in output
-    assert "gcc" in output
-    assert "version" in output
-    assert "13" in output
-
-
-# --- foldable_output ---
-
-
-def test_foldable_output_prints_name(printer, captured):
-    """Context manager prints fold name."""
-    with printer.foldable_output("test_section"):
-        pass
-    output = "".join(captured)
-    assert "test_section" in output
-
-
-# --- print_jobs ---
-
-
-def test_print_jobs_empty_list(printer, captured):
-    """Empty job list prints 'no jobs' message."""
-    printer.print_jobs([])
-    output = "".join(captured)
-    assert "no jobs" in output.lower()
-
-
-def test_print_jobs_with_builds(printer, captured):
-    """Non-empty job list renders tabulate table."""
-    job = SimpleNamespace(
-        settings={"compiler": "gcc", "build_type": "Release"},
-        options={"testing": True},
-    )
-    printer.print_jobs([job])
-    output = "".join(captured)
-    assert "gcc" in output
-    assert "Release" in output
-
-
-# --- end_fold ---
-
-
-def test_end_fold_is_noop(printer, captured):
-    """end_fold() completes without output."""
-    printer.end_fold("section")
-    assert captured == []

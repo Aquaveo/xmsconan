@@ -97,7 +97,7 @@ jobs:
       # Get Tag Name
       - name: Get Tag
         id: gitTag
-        uses: little-core-labs/get-git-tag@v3.0.2
+        uses: little-core-labs/get-git-tag@2c292ff564c1a61b989e29f0410d131317f89b03  # v3.0.2
       # Check Tag
       - name: Check Tag Against Version
         run: |

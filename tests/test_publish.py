@@ -380,6 +380,29 @@ def test_main_docker_dispatches(mock_publish):
     mock_publish.assert_not_called()
 
 
+@pytest.mark.parametrize("code", [
+    "Error: 'docker' not found on PATH. Install Docker to use --docker.",
+    2,
+])
+@patch("xmsconan.ci_tools.publish.publish")
+@patch("sys.argv", ["xmsconan_publish", "--docker", "--version", "1.0.0"])
+def test_main_docker_preserves_exit_code(mock_publish, code):
+    """A SystemExit from docker_publish reaches the caller unchanged.
+
+    docker_run raises SystemExit with a string when docker is missing from
+    PATH and with the container's integer returncode otherwise. Both have to
+    survive: an earlier wrapper replaced any non-int code with a bare 1, so
+    the missing-docker message never reached the operator.
+    """
+    with patch("xmsconan.ci_tools.docker_run.docker_publish",
+               side_effect=SystemExit(code)):
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+
+    assert excinfo.value.code == code
+    mock_publish.assert_not_called()
+
+
 @patch("xmsconan.ci_tools.publish._check_xvfb", return_value=False)
 @patch("xmsconan.ci_tools.publish._conan_deploy")
 @patch("xmsconan.ci_tools.publish._wheel_deploy")

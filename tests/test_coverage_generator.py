@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _find_pytest_cov_artifact,
     _is_simple_relative_filter_pattern,
     _py_percent_from_summary,
+    _reexec_under_xvfb,
     _resolve_coverage_python_version,
     _resolve_gcovr_filters,
     run_coverage,
@@ -1367,3 +1369,46 @@ class TestMainErrorHandling:
         captured = capsys.readouterr()
         assert "kapow" in captured.err
         assert "Traceback" in captured.err
+
+
+class TestReexecUnderXvfb:
+    """The xvfb re-exec has to name a target the interpreter can actually run."""
+
+    def test_reexecs_through_the_module_not_argv0(self, monkeypatch):
+        """`python -m <module>`, because argv[0] is not a path.
+
+        The `xmsconan` dispatcher rewrites sys.argv[0] to the literal
+        "xmsconan coverage", so re-execing `python sys.argv[0]` asked the
+        interpreter to open a file by that name. Every ci.xvfb=true coverage
+        run died there.
+        """
+        recorded = {}
+
+        def _record(file, args, env):
+            recorded["file"] = file
+            recorded["args"] = args
+            recorded["env"] = env
+
+        monkeypatch.delenv("XMSCONAN_COVERAGE_XVFB_REEXEC", raising=False)
+        monkeypatch.setattr(
+            "sys.argv", ["xmsconan coverage", "--version", "1.0.0", "build.toml"],
+        )
+        with patch("xmsconan.coverage_tools.coverage_generator.shutil.which",
+                   return_value="/usr/bin/xvfb-run"), \
+             patch("xmsconan.coverage_tools.coverage_generator.os.execvpe", _record):
+            _reexec_under_xvfb()
+
+        args = recorded["args"]
+        assert args[0] == "/usr/bin/xvfb-run"
+        assert "xmsconan coverage" not in args
+        assert args[args.index("-m") - 1] == sys.executable
+        assert args[args.index("-m") + 1] == "xmsconan.coverage_tools.coverage_generator"
+        assert args[args.index("-m") + 2:] == ["--version", "1.0.0", "build.toml"]
+        assert recorded["env"]["XMSCONAN_COVERAGE_XVFB_REEXEC"] == "1"
+
+    def test_second_pass_does_not_recurse(self, monkeypatch):
+        """The re-exec flag short-circuits the nested call."""
+        monkeypatch.setenv("XMSCONAN_COVERAGE_XVFB_REEXEC", "1")
+        with patch("xmsconan.coverage_tools.coverage_generator.os.execvpe") as execvpe:
+            _reexec_under_xvfb()
+        execvpe.assert_not_called()

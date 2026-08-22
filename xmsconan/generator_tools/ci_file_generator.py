@@ -11,7 +11,7 @@ from jinja2 import Environment, StrictUndefined
 # 3. Aquaveo modules
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
-from xmsconan.toml_utils import load_toml
+from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 LOGGER = logging.getLogger(__name__)
@@ -166,6 +166,11 @@ def generate_ci(
 
     # Parse the TOML file
     toml_data = load_toml(toml_file)
+    # Third entry point reading this file with .get(), and the last one that
+    # was not validating. Without this, `xmsconan ci` emits a pipeline from a
+    # build.toml that `xmsconan gen` and `xmsconan profiles` both reject, and
+    # the committed CI keeps whatever defaults the typo produced.
+    validate_top_level_keys(toml_data, toml_file)
 
     ci_type = toml_data.get("ci_type")
     if not ci_type:
