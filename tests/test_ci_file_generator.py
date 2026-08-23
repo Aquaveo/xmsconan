@@ -530,6 +530,55 @@ def test_ci_pins_conan_version(ci_toml, tmp_path):
     assert [line for line in conan_installs if '"conan~=' not in line] == []
 
 
+def _build_step_run(job):
+    """The ``run:`` of one job's "Build the Conan Packages" step."""
+    for step in job["steps"]:
+        if step.get("name") == "Build the Conan Packages":
+            return step["run"]
+    raise AssertionError("job has no 'Build the Conan Packages' step")
+
+
+@pytest.mark.parametrize("job_name", ["mac", "linux", "windows"])
+def test_github_build_step_requests_a_wheel_only_on_release(ci_toml, tmp_path, job_name):
+    """``--wheel-dir`` reaches build.py on the Release leg alone.
+
+    ``[matrix].pybind_build_types`` defaults to Release, so a Debug leg builds
+    no pybind package -- and build.py treats ``--wheel-dir`` as a request it
+    must satisfy, exiting 1 when no complete set of wheels comes out. Passing
+    the flag unconditionally therefore failed every Debug leg of every
+    consumer, which is what it did between xmsconan 2.22.0 and this fix.
+
+    Asserted per job rather than over the whole document so a regression names
+    the platform that lost the gate.
+    """
+    run = _build_step_run(_github_jobs(ci_toml, tmp_path)[job_name])
+
+    assert run.count("--wheel-dir") == 1
+    assert "${{ matrix.build_type == 'Release' && '--wheel-dir wheelhouse" in run
+
+
+def test_github_windows_skip_dependency_libs_stays_inside_the_wheel_gate(tmp_path):
+    """The unrepaired-Windows companion flag is gated with ``--wheel-dir``.
+
+    ``--skip-dependency-libs`` is read only inside build.py's ``if
+    args.wheel_dir`` branch, so leaving it outside the gate would put a flag on
+    the Debug command line that reads as staging control and does nothing.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core library"\nci_type = "github"\n'
+        "\n[ci]\nwindows_wheel_repair = false\n",
+        encoding="utf-8",
+    )
+
+    run = _build_step_run(_github_jobs(toml_file, tmp_path)["windows"])
+
+    assert (
+        "${{ matrix.build_type == 'Release' && "
+        "'--wheel-dir wheelhouse --skip-dependency-libs' || '' }}" in run
+    )
+
+
 def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
     """Rendered GitHub CI build commands include --artifacts-dir test_artifacts."""
     output_dir = tmp_path / "output"
