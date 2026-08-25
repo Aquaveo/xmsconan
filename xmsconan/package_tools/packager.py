@@ -647,13 +647,15 @@ class XmsConanPackager(object):
         Debug module is redundant. A library whose consumers link a Debug module
         names Debug as well.
 
-        Coverage used to add Debug on top, for a Debug+pybind build to
-        instrument the Python-reachable C++ surface. Nothing ever read that
-        instrumentation -- ``xmsconan coverage`` runs gcovr against the
-        testing build folder only -- while requiring the combination cost every
-        dependency a Debug+pybind binary, which is the one combination the xms
-        libraries do not publish. The Python half of coverage now uses the
-        Release pybind configuration the matrix already produces.
+        Coverage used to add Debug on top, so that a Debug+pybind build could
+        instrument the Python-reachable C++ surface. It no longer needs its own
+        build type to do that: ``xmsconan coverage`` instruments the pybind
+        configuration the matrix already produces and merges its ``.gcda`` into
+        the C++ report, so the binding layer is still measured. Requiring Debug
+        specifically cost every dependency a Debug+pybind binary -- the one
+        combination the xms libraries do not publish -- while buying nothing,
+        because the ``XMS_COVERAGE`` CMake block appends ``-O0 -g`` after
+        CMake's ``-O3`` and a Release build is therefore unoptimized anyway.
 
         Returns:
             The build-type names, as a set.
