@@ -189,17 +189,19 @@ class XmsConanPackager(object):
                 or to ``DEFAULT_PYTHON_VERSIONS``. Each pybind variant is
                 duplicated per version with the matching ``python_version``
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
-            coverage: If True, exports ``XMS_COVERAGE=1`` into the
-                ``[buildenv]`` of every non-pybind profile so CMake adds
-                ``--coverage``. It does not change which configurations are
-                produced: the testing-only Debug variant that drives C++
-                coverage is always emitted, and the Python half of coverage
-                uses whatever pybind configuration ``[matrix]`` already names.
-                Pybind profiles are left uninstrumented -- gcovr never reads
-                their ``.gcda`` -- though the recipe still collects pytest-cov
-                output, which it keys off the process environment rather than
-                the buildenv. When None, defaults to ``True`` iff
-                ``XMS_COVERAGE=1`` is set in the environment.
+            coverage: If True, exports ``XMS_COVERAGE=1`` into every profile's
+                ``[buildenv]`` so CMake adds ``--coverage -O0 -g``. It does not
+                change which configurations are produced: the testing-only
+                Debug variant that drives C++ coverage is always emitted, and
+                the Python half of coverage uses whatever pybind configuration
+                ``[matrix]`` already names. Pybind profiles are instrumented
+                too, so the binding layer -- C++ reachable only from Python --
+                produces its own ``.gcda``. Because the CMake block forces
+                ``-O0`` after CMake's own ``-O3``, a Release pybind build is
+                unoptimized and its line data is as usable as a Debug build's,
+                while still resolving against Release dependencies. When None,
+                defaults to ``True`` iff ``XMS_COVERAGE=1`` is set in the
+                environment.
             matrix: Which configurations the fan-out should produce, from the
                 ``[matrix]`` table of ``build.toml``. ``compiler_runtime``
                 restricts the platform's ``compiler.runtime`` values (a subset of
@@ -685,14 +687,6 @@ class XmsConanPackager(object):
                         'python_version': py_version,
                     })
                     pybind_options['buildenv']['PYTHON_TARGET_VERSION'] = py_version
-                    # A pybind build is never the one gcovr reads, so it does
-                    # not need --coverage. The CMake guard tests the profile's
-                    # [buildenv] (see the injection above and issue #69), so
-                    # dropping the key here leaves the module uninstrumented
-                    # while the recipe's run_python_tests still sees
-                    # XMS_COVERAGE in the inherited process environment and
-                    # still collects pytest-cov output.
-                    pybind_options['buildenv'].pop('XMS_COVERAGE', None)
                     variants.append(pybind_options)
         return variants
 
