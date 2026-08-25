@@ -1,4 +1,5 @@
 """Tests for generator_tools.build_file_generator."""
+import ast
 import os
 from pathlib import Path
 import re
@@ -1266,6 +1267,18 @@ CONAN_MATRIX = {}
 """
 
 
+# Env names that steer the matrix. The generated build.py runs in a subprocess,
+# so a developer's ambient XMS_COVERAGE or PYTHON_TARGET_VERSION would change
+# the configurations under test; sibling tests get the same isolation from
+# @patch_env(clear=True).
+_MATRIX_ENV_NAMES = (
+    "XMS_COVERAGE", "PYTHON_TARGET_VERSION", "XMS_VERSION",
+    "CI_COMMIT_TAG", "RELEASE_PYTHON",
+)
+
+_BUILD_PY_TIMEOUT = 120
+
+
 def _render_build_py(toml_text, tmp_path):
     """Render build.py from the real template into an isolated dir, return the dir."""
     toml_file = tmp_path / "build.toml"
@@ -1291,6 +1304,8 @@ def _render_build_py(toml_text, tmp_path):
 def _run_build_py(output_dir, *args):
     """Run the generated build.py with xmsconan importable, return the CompletedProcess."""
     env = os.environ.copy()
+    for name in _MATRIX_ENV_NAMES:
+        env.pop(name, None)
     repo_root = Path(xmsconan.__file__).resolve().parent.parent
     env["PYTHONPATH"] = os.pathsep.join(
         [str(repo_root)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
@@ -1298,43 +1313,107 @@ def _run_build_py(output_dir, *args):
     return subprocess.run(
         [sys.executable, "build.py", *args],
         cwd=str(output_dir), env=env, capture_output=True, text=True,
+        timeout=_BUILD_PY_TIMEOUT,
     )
 
 
-def test_build_py_defaults_to_no_build_filter(build_toml, tmp_path):
-    """Without a [filter] table build.py carries an empty BUILD_FILTER."""
-    output_dir = _render_build_py(build_toml.read_text(encoding="utf-8"), tmp_path)
-    assert "BUILD_FILTER = {}" in (output_dir / "build.py").read_text(encoding="utf-8")
+def _embedded_build_filter(output_dir):
+    """Parse the BUILD_FILTER literal back out of the generated build.py."""
+    for line in (output_dir / "build.py").read_text(encoding="utf-8").splitlines():
+        if line.startswith("BUILD_FILTER = "):
+            return ast.literal_eval(line[len("BUILD_FILTER = "):])
+    raise AssertionError("generated build.py has no BUILD_FILTER assignment")
 
 
-def test_build_py_embeds_filter_table(tmp_path):
-    """The [filter] table is baked into build.py as a Python dict literal."""
-    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
-    content = (output_dir / "build.py").read_text(encoding="utf-8")
-    assert "BUILD_FILTER = {'build_type': 'Release', 'options': {'pybind': False}}" in content
-    assert "--ignore-build-filter" in content
+def _table_build_types(stdout):
+    """Build types named in the configuration table build.py --preview prints."""
+    types = []
+    for line in stdout.splitlines():
+        cells = [cell.strip() for cell in line.split("|")]
+        # Column order comes from print_configuration_table's headers.
+        if len(cells) > 4 and cells[1].isdigit():
+            types.append(cells[4])
+    return types
 
 
-def test_gen_rejects_invalid_filter_table(tmp_path):
-    """A filter key that could never match fails generation, not every later build."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        _FILTER_TOML.replace('build_type = "Release"', "pybind = true"), encoding="utf-8"
-    )
-    tpl_dir = tmp_path / "tpl"
-    tpl_dir.mkdir()
-    _copy_template("build.py.jinja", tpl_dir)
+class TestBuildFilterTable:
+    """The [filter] table's trip from build.toml through the generated build.py."""
 
-    with pytest.raises(ValueError, match=r"Invalid \[filter\] table in build.toml"):
-        render_template_with_toml(
-            toml_file_path=str(toml_file),
-            version="1.0.0",
-            template_dir=str(tpl_dir),
-            output_dir=str(tmp_path / "output"),
-        )
+    def test_defaults_to_no_build_filter(self, build_toml, tmp_path):
+        """Without a [filter] table build.py carries an empty BUILD_FILTER."""
+        output_dir = _render_build_py(build_toml.read_text(encoding="utf-8"), tmp_path)
+        assert _embedded_build_filter(output_dir) == {}
 
+    def test_embeds_filter_table(self, tmp_path):
+        """The [filter] table is baked into build.py as a Python dict literal."""
+        output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+        assert _embedded_build_filter(output_dir) == {
+            "build_type": "Release",
+            "options": {"pybind": False},
+        }
+        assert "--ignore-build-filter" in (output_dir / "build.py").read_text(encoding="utf-8")
 
-# --- build.toml validation: a typo has to be an error, not a silent default ---
+    @pytest.mark.parametrize("bad_filter,expected_message", [
+        pytest.param("pybind = true", r"Invalid \[filter\] table in build.toml", id="flat-option"),
+        pytest.param('build_type = "release"', "must be one of", id="unmatchable-value"),
+        pytest.param(
+            "[filter.options]\ntesting = true\npybind = true",
+            "matches no configuration on any platform",
+            id="impossible-combination",
+        ),
+    ])
+    def test_gen_rejects_invalid_filter_table(self, bad_filter, expected_message, tmp_path):
+        """A filter that could never match fails generation, not every later build."""
+        toml_text = _FILTER_TOML.split("[filter]")[0] + "[filter]\n" + bad_filter + "\n"
+        with pytest.raises(ValueError, match=expected_message):
+            _render_build_py(toml_text, tmp_path)
+
+    def test_generated_build_py_applies_filter_table(self, tmp_path):
+        """The embedded filter narrows the matrix build.py would actually build."""
+        output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+        result = _run_build_py(output_dir, "--preview")
+
+        assert result.returncode == 0, result.stderr
+        assert "Applying build.toml [filter]" in result.stdout
+        build_types = _table_build_types(result.stdout)
+        assert build_types, "preview printed no configuration rows"
+        assert set(build_types) == {"Release"}
+
+    def test_ignore_flag_restores_full_matrix(self, tmp_path):
+        """--ignore-build-filter builds what build.toml filtered away."""
+        output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+        filtered = _run_build_py(output_dir, "--preview")
+        unfiltered = _run_build_py(output_dir, "--preview", "--ignore-build-filter")
+
+        assert unfiltered.returncode == 0, unfiltered.stderr
+        assert "Applying build.toml [filter]" not in unfiltered.stdout
+        assert "Debug" in set(_table_build_types(unfiltered.stdout))
+        assert len(_table_build_types(unfiltered.stdout)) > len(_table_build_types(filtered.stdout))
+
+    def test_fails_when_filters_cancel_out(self, tmp_path):
+        """A --filter the build.toml filter excludes fails loudly instead of no-opping.
+
+        Nothing survives the filters, so the guard fires before any conan call.
+        """
+        output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+        result = _run_build_py(output_dir, "--filter", '{"build_type": "Debug"}')
+
+        assert result.returncode == 1
+        assert "No configurations match the requested filters" in result.stdout
+        assert '--filter={"build_type": "Debug"}' in result.stdout
+
+    def test_preview_reports_empty_matrix_without_failing(self, tmp_path):
+        """--preview is the flag you reach for to diagnose this, so it still exits 0."""
+        output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+        result = _run_build_py(output_dir, "--preview", "--filter", '{"build_type": "Debug"}')
+
+        assert result.returncode == 0, result.stderr
+        assert "No configurations match the requested filters" in result.stdout
+        assert _table_build_types(result.stdout) == []
 
 
 def _render(toml_file, template_dir, tmp_path):
@@ -1550,41 +1629,3 @@ def test_generated_build_py_refuses_to_upload_without_a_version(xms_version, tmp
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "--upload needs a concrete version" in result.stdout
-
-
-def test_generated_build_py_applies_filter_table(tmp_path):
-    """The embedded filter narrows the matrix build.py would actually build."""
-    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
-
-    result = _run_build_py(output_dir, "--preview")
-
-    assert result.returncode == 0, result.stderr
-    assert "Applying build.toml [filter]" in result.stdout
-    assert "Debug" not in result.stdout
-
-
-def test_generated_build_py_ignore_flag_restores_full_matrix(tmp_path):
-    """--ignore-build-filter builds what build.toml filtered away."""
-    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
-
-    filtered = _run_build_py(output_dir, "--preview")
-    unfiltered = _run_build_py(output_dir, "--preview", "--ignore-build-filter")
-
-    assert unfiltered.returncode == 0, unfiltered.stderr
-    assert "Applying build.toml [filter]" not in unfiltered.stdout
-    assert "Debug" in unfiltered.stdout
-    assert len(unfiltered.stdout) > len(filtered.stdout)
-
-
-def test_generated_build_py_fails_when_filters_cancel_out(tmp_path):
-    """A --filter the build.toml filter excludes fails loudly instead of no-opping.
-
-    Nothing survives the filters, so the guard fires before any conan call.
-    """
-    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
-
-    result = _run_build_py(output_dir, "--filter", '{"build_type": "Debug"}')
-
-    assert result.returncode == 1
-    assert "No configurations match the requested filters" in result.stdout
-    assert '--filter={"build_type": "Debug"}' in result.stdout

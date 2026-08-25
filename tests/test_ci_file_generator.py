@@ -1691,7 +1691,7 @@ def test_gitlab_windows_cache_snapshot_reports_an_empty_copy(tmp_path):
     assert "conan_packages/ || echo" in content
 
 
-# --- [filter] table -> CI matrix ---
+# --- [filter] table -> CI matrix, wheel steps, and warnings ---
 
 
 _FILTERED_TOML = """\
@@ -1699,34 +1699,62 @@ library_name = "xmscore"
 description = "Core library"
 python_namespaced_dir = "core"
 ci_type = "{ci_type}"
-{ci_table}
+{ci_table}{filter_table}"""
+
+_RELEASE_ONLY_FILTER = """
 [filter]
 build_type = "Release"
 """
 
+_NO_PYBIND_FILTER = """
+[filter.options]
+pybind = false
+"""
 
 _LINUX_ARM_CI_TABLE = """
 [ci]
 linux_arm = true
 """
 
+_COVERAGE_CI_TABLE = """
+[ci]
+coverage = true
+"""
 
-def _write_filtered_toml(tmp_path, ci_type="github", ci_table=""):
-    """Write a build.toml whose [filter] pins build_type to Release."""
+
+def _write_filtered_toml(tmp_path, ci_type="github", ci_table="", filter_table=_RELEASE_ONLY_FILTER):
+    """Write a build.toml carrying a [filter] table."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        _FILTERED_TOML.format(ci_type=ci_type, ci_table=ci_table), encoding="utf-8"
+        _FILTERED_TOML.format(ci_type=ci_type, ci_table=ci_table, filter_table=filter_table),
+        encoding="utf-8",
     )
     return toml_file
 
 
+def _github_workflow(tmp_path):
+    """Parse the generated GitHub workflow."""
+    path = tmp_path / ".github" / "workflows" / "XmsCore-CI.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8")), path.read_text(encoding="utf-8")
+
+
+def _build_type_matrices(workflow):
+    """Map job name to its build_type matrix axis, for jobs that have one."""
+    return {
+        name: job["strategy"]["matrix"]["build_type"]
+        for name, job in workflow["jobs"].items()
+        if "build_type" in job.get("strategy", {}).get("matrix", {})
+    }
+
+
 def test_github_matrix_fans_out_over_both_build_types_by_default(ci_toml, tmp_path):
-    """With no [filter] table every job keeps the Release + Debug matrix."""
+    """With no [filter] table every build job keeps the Release + Debug matrix."""
     generate_ci(str(ci_toml), "1.0.0", str(tmp_path))
 
-    content = (tmp_path / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
-    # mac + linux + windows; the linux-ARM job is opt-in and not emitted here.
-    assert content.count('build_type: ["Release", "Debug"]') == 3
+    workflow, _ = _github_workflow(tmp_path)
+    matrices = _build_type_matrices(workflow)
+    assert matrices, "no job carries a build_type matrix"
+    assert all(types == ["Release", "Debug"] for types in matrices.values()), matrices
 
 
 def test_github_matrix_narrows_to_pinned_build_type(tmp_path):
@@ -1734,33 +1762,160 @@ def test_github_matrix_narrows_to_pinned_build_type(tmp_path):
     toml_file = _write_filtered_toml(tmp_path, ci_table=_LINUX_ARM_CI_TABLE)
     generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
-    content = (tmp_path / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
-    # Every job block — mac, linux, linux-ARM, windows — follows the filter.
-    assert content.count('build_type: ["Release"]') == 4
-    assert "Debug" not in content
+    workflow, _ = _github_workflow(tmp_path)
+    matrices = _build_type_matrices(workflow)
+    # Every emitted job block — mac, linux, linux-ARM, windows — follows it.
+    assert len(matrices) == 4, matrices
+    assert all(types == ["Release"] for types in matrices.values()), matrices
 
 
 def test_invalid_filter_table_fails_ci_generation(tmp_path):
     """`xmsconan ci` rejects the same bad filters as `xmsconan gen`."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "d"\nci_type = "github"\n'
-        '\n[filter]\npybind = true\n',
-        encoding="utf-8",
-    )
+    toml_file = _write_filtered_toml(tmp_path, filter_table="\n[filter]\npybind = true\n")
     with pytest.raises(ValueError, match=r"Invalid \[filter\] table in build.toml"):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
 
-def test_coverage_job_warns_about_conflicting_filter(tmp_path, caplog):
-    """A Release-only filter can't satisfy the coverage job, so generation warns."""
-    toml_file = _write_filtered_toml(tmp_path, ci_table="\n[ci]\ncoverage = true\n")
+# --- wheel steps ---
+
+
+def test_github_keeps_wheel_steps_by_default(ci_toml, tmp_path):
+    """An unfiltered library still repairs and uploads its wheel."""
+    generate_ci(str(ci_toml), "1.0.0", str(tmp_path))
+
+    _, content = _github_workflow(tmp_path)
+    assert "xmsconan_wheel_repair" in content
+    assert "xmsconan_wheel_deploy" in content
+    assert "--wheel-dir wheelhouse" in content
+
+
+def test_github_drops_wheel_steps_when_pybind_filtered_off(tmp_path):
+    """A library that builds no pybind config gets no wheel steps.
+
+    xmsconan_wheel_repair raises on an empty wheelhouse, and the repair step is
+    gated on build_type only — so leaving it in reddens every Release leg.
+    """
+    toml_file = _write_filtered_toml(tmp_path, filter_table=_NO_PYBIND_FILTER)
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    workflow, content = _github_workflow(tmp_path)
+    assert "xmsconan_wheel_repair" not in content
+    assert "xmsconan_wheel_deploy" not in content
+    assert "--wheel-dir" not in content, "build.py would warn about a wheel nobody wants"
+    assert workflow["jobs"], "the rest of the pipeline survives"
+
+
+def test_gitlab_drops_wheel_jobs_when_pybind_filtered_off(tmp_path):
+    """The GitLab wheel work is whole jobs, not steps, so those come out entirely."""
+    toml_file = _write_filtered_toml(tmp_path, ci_type="gitlab", filter_table=_NO_PYBIND_FILTER)
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    parsed = yaml.safe_load((tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert "Repair Wheel" not in parsed
+    assert "Wheel Deploy" not in parsed
+    assert "Conan Build" in parsed, "the rest of the pipeline survives"
+
+
+def test_gitlab_keeps_wheel_jobs_by_default(tmp_path):
+    """The unfiltered GitLab pipeline still carries both wheel jobs."""
+    toml_file = _write_filtered_toml(tmp_path, ci_type="gitlab", filter_table="")
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    parsed = yaml.safe_load((tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert "Repair Wheel" in parsed
+    assert "Wheel Deploy" in parsed
+
+
+# --- generation-time warnings ---
+
+
+def test_warns_about_job_the_filter_empties(tmp_path, caplog):
+    """os/arch/compiler are fixed per job block, so pinning one empties whole jobs."""
+    toml_file = _write_filtered_toml(
+        tmp_path, filter_table='\n[filter]\nos = "Windows"\n',
+    )
 
     with caplog.at_level(logging.WARNING):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
-    assert "coverage" in caplog.text
-    assert "Debug" in caplog.text
+    warned = [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
+    assert len(warned) == 2, warned  # mac + linux; linux-ARM is opt-in, windows matches
+    assert any("'mac'" in message for message in warned), warned
+    assert any("'linux'" in message for message in warned), warned
+
+
+def test_no_empty_job_warning_for_a_job_ci_turned_off(tmp_path, caplog):
+    """A filter cannot empty the GitLab Linux job when [ci].linux never wrote it.
+
+    An os = "Windows" pin excludes everything the Linux "Conan Build" job builds,
+    but that job is generated only under [ci].linux -- so warning about it points
+    at a job that is not in the pipeline.
+    """
+    toml_file = _write_filtered_toml(
+        tmp_path, ci_type="gitlab", ci_table="\n[ci]\nlinux = false\n",
+        filter_table='\n[filter]\nos = "Windows"\n',
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    warned = [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
+    assert not any("Conan Build'" in message for message in warned), warned
+
+
+def test_no_empty_job_warning_for_build_type_pin(tmp_path, caplog):
+    """build_type is narrowed rather than warned about."""
+    toml_file = _write_filtered_toml(tmp_path)
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    assert [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()] == []
+
+
+def test_coverage_job_warns_about_conflicting_filter(tmp_path, caplog):
+    """A Release-only filter can't satisfy the coverage job, so generation warns."""
+    toml_file = _write_filtered_toml(tmp_path, ci_table=_COVERAGE_CI_TABLE)
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    warned = [r.getMessage() for r in caplog.records if "xmsconan coverage" in r.getMessage()]
+    assert len(warned) == 1, warned
+    assert "Debug" in warned[0]
+
+
+def test_coverage_warning_covers_the_inclusion_direction(tmp_path, caplog):
+    """Requiring pybind cancels the C++ coverage build just as excluding it cancels Python."""
+    toml_file = _write_filtered_toml(
+        tmp_path, ci_table=_COVERAGE_CI_TABLE,
+        filter_table="\n[filter.options]\npybind = true\n",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    warned = [r.getMessage() for r in caplog.records if "xmsconan coverage" in r.getMessage()]
+    assert len(warned) == 1, warned
+    assert "C++" in warned[0]
+
+
+def test_coverage_warning_uses_the_resolved_coverage_python_version(tmp_path, caplog):
+    """The Python coverage build pins one ABI; [coverage].python_version picks it."""
+    toml_file = _write_filtered_toml(
+        tmp_path,
+        # 3.10 has to be a version CI builds, or the filter is rejected outright.
+        ci_table=_COVERAGE_CI_TABLE + 'python_versions = ["3.10", "3.13"]\n'
+        '\n[coverage]\npython_version = "3.13"\n',
+        filter_table='\n[filter.options]\npython_version = "3.10"\n',
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    warned = [r.getMessage() for r in caplog.records if "xmsconan coverage" in r.getMessage()]
+    assert len(warned) == 1, warned
+    assert "python_version" in warned[0]
 
 
 def test_no_coverage_warning_without_coverage_job(tmp_path, caplog):
@@ -1770,4 +1925,34 @@ def test_no_coverage_warning_without_coverage_job(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
-    assert "coverage" not in caplog.text
+    assert [r.getMessage() for r in caplog.records if "xmsconan coverage" in r.getMessage()] == []
+
+
+def test_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):
+    """A job [ci].windows switched off isn't reported as emptied by the filter."""
+    toml_file = _write_filtered_toml(
+        tmp_path, ci_table="\n[ci]\nwindows = false\n",
+        filter_table='\n[filter]\ncompiler = "gcc"\n',
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    warned = [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
+    assert len(warned) == 1, warned  # mac only — windows isn't generated
+    assert "'mac'" in warned[0]
+
+
+def test_gitlab_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):
+    """The same job accounting applies to the GitLab job names."""
+    toml_file = _write_filtered_toml(
+        tmp_path, ci_type="gitlab", ci_table="\n[ci]\nwindows = false\n",
+        filter_table='\n[filter]\ncompiler = "msvc"\n',
+    )
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    warned = [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
+    assert len(warned) == 1, warned  # the Linux build job; the Windows one is off
+    assert "'Conan Build'" in warned[0]

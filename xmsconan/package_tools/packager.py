@@ -1,6 +1,7 @@
 """The packager module."""
 import concurrent.futures
 import copy
+import functools
 import itertools
 import json
 import logging
@@ -139,37 +140,114 @@ configurations = {
 }
 
 
-# Every settings key that appears in any platform's block above. Filters are
-# validated against the union rather than the running platform's keys so a
-# ``build.toml`` ``[filter]`` can pin a Windows-only setting (e.g.
-# ``compiler.runtime``) without breaking the Linux and macOS builds that never
-# see that key.
-FILTER_SETTING_KEYS = frozenset(
-    key for platform_config in configurations.values() for key in platform_config
-)
+def _collect_setting_values():
+    """Map each settings key to every value any platform emits for it."""
+    values = {}
+    for platform_config in configurations.values():
+        for key, key_values in platform_config.items():
+            values.setdefault(key, set()).update(key_values)
+    return {key: frozenset(key_values) for key, key_values in values.items()}
 
-# Option keys ``generate_configurations`` actually emits. Filtering on anything
-# else is a silent no-op, so it is rejected instead.
-FILTER_OPTION_KEYS = frozenset({'wchar_t', 'pybind', 'testing', 'python_version'})
+
+# Every settings key/value pair that appears in any platform's block above.
+# Filters are validated against the union rather than the running platform's
+# keys so a ``build.toml`` ``[filter]`` can pin a Windows-only setting (e.g.
+# ``compiler.runtime``) without breaking the Linux and macOS builds that never
+# see that key. Values are validated too: filters match by equality, so
+# ``build_type = "release"`` can no more match a configuration than a list can.
+FILTER_SETTING_VALUES = _collect_setting_values()
+FILTER_SETTING_KEYS = frozenset(FILTER_SETTING_VALUES)
+
+# Option keys ``generate_configurations`` emits, and how their values are
+# checked. ``None`` means the value has a dedicated rule below rather than a
+# fixed set. Keep in sync with ``XmsConan2File.options`` — importing the recipe
+# here would drag conan into the generators, which only need this table.
+FILTER_OPTION_VALUES = {
+    'wchar_t': frozenset({'builtin', 'typedef'}),
+    'pybind': None,          # bool
+    'testing': None,         # bool
+    'python_version': None,  # "X.Y" string
+}
+FILTER_OPTION_KEYS = frozenset(FILTER_OPTION_VALUES)
 
 # Nested tables in a filter dict; their values are compared per-key.
 FILTER_NESTED_KEYS = ('options', 'buildenv')
 
+PYTHON_VERSION_RE = re.compile(r'^\d+\.\d+$')
+
+
+def _validate_scalar(value, where):
+    """Reject values the equality comparison could never match."""
+    if isinstance(value, (list, tuple, dict, set)):
+        raise ValueError(
+            f"Filter value for {where} must be a single value, not "
+            f"{type(value).__name__} — filters match by equality, so a "
+            f"collection can never match a configuration."
+        )
+    if not isinstance(value, (str, bool, int)):
+        # Anything else (a TOML float or date, say) is both unmatchable and
+        # unrenderable into the generated build.py, which imports no modules
+        # that could name it.
+        raise ValueError(
+            f"Filter value for {where} must be a string, bool, or int, not "
+            f"{type(value).__name__} — quote it if it is meant to be a string "
+            f"(TOML reads 3.13 as a float, \"3.13\" as a version)."
+        )
+
+
+def _validate_option(option_key, value):
+    """Validate one ``[filter.options]`` entry."""
+    if option_key not in FILTER_OPTION_KEYS:
+        raise ValueError(
+            f"Unknown filter option {option_key!r}: must be one of "
+            f"{sorted(FILTER_OPTION_KEYS)}."
+        )
+    _validate_scalar(value, f"option {option_key!r}")
+    allowed = FILTER_OPTION_VALUES[option_key]
+    if allowed is not None:
+        if value not in allowed:
+            raise ValueError(
+                f"Filter option {option_key!r} must be one of {sorted(allowed)}, got {value!r}."
+            )
+    elif option_key in ('pybind', 'testing'):
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"Filter option {option_key!r} must be true or false, got {value!r}."
+            )
+    elif not isinstance(value, str) or not PYTHON_VERSION_RE.match(value):
+        raise ValueError(
+            f"Filter option {option_key!r} must be a quoted \"X.Y\" version "
+            f"string, got {value!r}."
+        )
+
+
+def _validate_buildenv(env_key, value):
+    """Validate one ``[filter.buildenv]`` entry."""
+    if env_key not in emitted_buildenv_keys():
+        raise ValueError(
+            f"Unknown filter buildenv name {env_key!r}: the generated profiles "
+            f"set {sorted(emitted_buildenv_keys())}."
+        )
+    _validate_scalar(value, f"buildenv {env_key!r}")
+
 
 def validate_filter_dict(filter_dict):
     """
-    Validate the shape of a configuration filter dict.
+    Validate the shape and values of a configuration filter dict.
 
     Accepts the same shape as ``build.py --filter`` and the ``[filter]`` table
     in ``build.toml``: top-level Conan settings plus the nested ``options`` and
-    ``buildenv`` tables.
+    ``buildenv`` tables. Keys *and* values are checked against what
+    ``generate_configurations`` emits, so a filter that could never match any
+    configuration is rejected here rather than quietly narrowing the matrix to
+    nothing at build time.
 
     Args:
         filter_dict: The filter to validate.
 
     Raises:
-        ValueError: When a key would never match a generated configuration, or
-            when a value has a shape the equality comparison cannot use.
+        ValueError: When a key or value would never match a generated
+            configuration.
     """
     if not isinstance(filter_dict, dict):
         raise ValueError(f"Filter must be a table/dict, got {type(filter_dict).__name__}.")
@@ -180,13 +258,11 @@ def validate_filter_dict(filter_dict):
                     f"Filter key {key!r} must be a table/dict of "
                     f"{key} names to values, got {type(value).__name__}."
                 )
-            if key == 'options':
-                for option_key in value:
-                    if option_key not in FILTER_OPTION_KEYS:
-                        raise ValueError(
-                            f"Unknown filter option {option_key!r}: must be one of "
-                            f"{sorted(FILTER_OPTION_KEYS)}."
-                        )
+            for nested_key, nested_value in value.items():
+                if key == 'options':
+                    _validate_option(nested_key, nested_value)
+                else:
+                    _validate_buildenv(nested_key, nested_value)
             continue
         if key not in FILTER_SETTING_KEYS:
             raise ValueError(
@@ -194,12 +270,103 @@ def validate_filter_dict(filter_dict):
                 f"setting {sorted(FILTER_SETTING_KEYS)} or 'options'/'buildenv'. "
                 f"Did you mean {{'options': {{'{key}': ...}}}}?"
             )
-        if isinstance(value, (list, tuple, dict, set)):
+        _validate_scalar(value, repr(key))
+        if value not in FILTER_SETTING_VALUES[key]:
             raise ValueError(
-                f"Filter value for {key!r} must be a single value, not "
-                f"{type(value).__name__} — filters match by equality, so a "
-                f"collection can never match a configuration."
+                f"Filter value for {key!r} must be one of "
+                f"{sorted(FILTER_SETTING_VALUES[key])}, got {value!r}."
             )
+
+
+def _configuration_matches(configuration, filter_dict):
+    """Whether one generated configuration survives a filter.
+
+    A *setting* the configuration doesn't carry is skipped rather than excluding
+    it: ``compiler.runtime`` exists only on Windows, so a filter pinning it has
+    to stay usable on Linux and macOS.
+
+    A missing ``options``/``buildenv`` key is the opposite -- it does **not**
+    match. ``python_version`` is set only on pybind variants, so treating an
+    absent key as a match made ``{'options': {'python_version': '3.13'}}`` keep
+    every non-pybind configuration as well, and the filter that was supposed to
+    select one wheel selected the whole matrix.
+    """
+    for key, value in filter_dict.items():
+        if key in FILTER_NESTED_KEYS:
+            section = configuration.get(key, {})
+            for nested_key, nested_value in value.items():
+                if section.get(nested_key) != nested_value:
+                    return False
+        elif key in configuration and configuration.get(key) != value:
+            return False
+    return True
+
+
+def _reference_matrix(platform_name, python_versions=None, coverage=False):
+    """Generate one platform's configurations for validating a filter against.
+
+    Coverage defaults to off so the matrix a filter is checked against does not
+    depend on whether ``XMS_COVERAGE`` happens to be set in the environment
+    doing the generating; ``emitted_buildenv_keys`` turns it on because that
+    mode contributes a ``[buildenv]`` name of its own.
+    """
+    packager = XmsConanPackager(
+        '_filter_validation',
+        python_versions=list(python_versions) if python_versions else None,
+        coverage=coverage,
+        artifacts_dir='artifacts',
+    )
+    try:
+        return packager.generate_configurations(system_platform=platform_name)
+    finally:
+        packager._temp_dir.cleanup()
+
+
+@functools.lru_cache(maxsize=None)
+def emitted_buildenv_keys():
+    """Every ``[buildenv]`` name the generated profiles can carry.
+
+    Derived from the matrix itself rather than hand-listed, so a new
+    ``[buildenv]`` entry in ``generate_configurations`` becomes filterable
+    without a second edit here.
+    """
+    keys = set()
+    for platform_name in configurations:
+        for combination in _reference_matrix(platform_name, coverage=True):
+            keys.update(combination['buildenv'])
+    # run() adds this one per configuration when --artifacts-dir is in play.
+    keys.add('XMS_TEST_ARTIFACTS_LABEL')
+    return frozenset(keys)
+
+
+def summarize_filter_matches(filter_dict, python_versions=None):
+    """Report what a filter would keep on each platform.
+
+    Lets a generator answer "does this filter select anything at all?" without
+    waiting for a build to discover it.
+
+    Args:
+        filter_dict: A filter already through ``validate_filter_dict``.
+        python_versions: Python versions the pybind fan-out should assume,
+            e.g. ``[ci].python_versions`` from ``build.toml``. Defaults to the
+            packager's own resolution.
+
+    Returns:
+        ``{platform: {'total': int, 'pybind': int}}`` — the number of surviving
+        configurations, and how many of those build the Python bindings.
+    """
+    summary = {}
+    for platform_name in configurations:
+        kept = [
+            configuration
+            for configuration in _reference_matrix(platform_name, python_versions)
+            if _configuration_matches(configuration, filter_dict)
+        ]
+        summary[platform_name] = {
+            'total': len(kept),
+            'pybind': sum(1 for c in kept if c['options'].get('pybind')),
+        }
+    return summary
 
 
 class XmsConanPackager(object):
@@ -333,7 +500,7 @@ class XmsConanPackager(object):
             temp_dir.cleanup()
 
     DEFAULT_PYTHON_VERSIONS = ["3.13"]
-    _PYTHON_VERSION_RE = re.compile(r'^\d+\.\d+$')
+    _PYTHON_VERSION_RE = PYTHON_VERSION_RE
 
     #: Keys a ``conan_profile_variants`` entry may carry.
     _VARIANT_KEYS = frozenset({'name', 'conf', 'platforms', 'kinds'})
@@ -801,28 +968,10 @@ class XmsConanPackager(object):
         validate_filter_dict(filter_dict)
         if self.configurations is None:
             return
-        filtered_configurations = []
-        for configuration in self.configurations:
-            include_configuration = True
-            for key, value in filter_dict.items():
-                if key in FILTER_NESTED_KEYS:
-                    # A configuration that lacks the filtered key does not
-                    # match it. The `option_key in ...` guard used to make an
-                    # absent key match *anything*, so filtering on
-                    # {'options': {'python_version': '3.13'}} kept every
-                    # non-pybind configuration too -- python_version is only
-                    # ever set on pybind variants (_pybind_variants), so the
-                    # filter that was supposed to select one wheel selected the
-                    # whole matrix.
-                    section = configuration.get(key, {})
-                    for option_key, option_value in value.items():
-                        if section.get(option_key) != option_value:
-                            include_configuration = False
-                elif key in configuration and configuration.get(key) != value:
-                    include_configuration = False
-            if include_configuration:
-                filtered_configurations.append(configuration)
-        self._configurations = filtered_configurations
+        self._configurations = [
+            configuration for configuration in self.configurations
+            if _configuration_matches(configuration, filter_dict)
+        ]
 
     def _config_label(self, combination):
         """Return a human-readable label for a build configuration.

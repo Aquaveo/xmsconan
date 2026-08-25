@@ -3,7 +3,11 @@ import pytest
 
 from xmsconan.generator_tools.build_filter import (
     ci_build_types,
+    ci_python_versions,
+    ci_wheel_enabled,
     coverage_conflicts,
+    DEFAULT_CI_BUILD_TYPES,
+    empty_ci_jobs,
     load_build_filter,
 )
 
@@ -28,29 +32,136 @@ def test_load_build_filter_reports_build_toml_context():
         load_build_filter({"filter": {"pybind": True}})
 
 
+def test_load_build_filter_rejects_filter_matching_nothing():
+    """Individually valid options that cannot hold at once fail at generation.
+
+    No generated configuration sets both ``testing`` and ``pybind``, so this
+    filter empties the matrix on every platform — previously that surfaced only
+    as an exit-1 from every CI leg, after the workflow had been committed.
+    """
+    with pytest.raises(ValueError, match="matches no configuration on any platform"):
+        load_build_filter({"filter": {"options": {"testing": True, "pybind": True}}})
+
+
+def test_load_build_filter_rejects_python_version_outside_ci_versions():
+    """A python_version pin nothing builds is rejected rather than dropping the wheel.
+
+    The matrix stays non-empty (every non-pybind configuration survives), so
+    only the pybind-specific check catches this one.
+    """
+    with pytest.raises(ValueError, match="matches no pybind configuration"):
+        load_build_filter({"filter": {"options": {"python_version": "3.9"}}})
+
+
+def test_load_build_filter_accepts_python_version_from_ci_config():
+    """A pin that [ci].python_versions does build is accepted."""
+    toml_data = {
+        "ci": {"python_versions": ["3.10", "3.13"]},
+        "filter": {"options": {"python_version": "3.10"}},
+    }
+    assert load_build_filter(toml_data) == {"options": {"python_version": "3.10"}}
+
+
+def test_ci_python_versions_defaults_to_none():
+    """No [ci].python_versions means "let the packager decide"."""
+    assert ci_python_versions({}) is None
+    assert ci_python_versions({"ci": {"python_versions": ["3.13"]}}) == ["3.13"]
+
+
+def test_ci_python_versions_unions_the_per_platform_keys():
+    """Every [ci] python list counts, sorted numerically rather than lexically.
+
+    linux_python_versions and mac_python_versions override python_versions for
+    their platform, so a version named only there is still built.
+    """
+    toml_data = {"ci": {
+        "python_versions": ["3.13"],
+        "linux_python_versions": ["3.14"],
+        "mac_python_versions": ["3.9"],
+    }}
+
+    assert ci_python_versions(toml_data) == ["3.9", "3.13", "3.14"]
+
+
+def test_load_build_filter_accepts_python_version_from_a_platform_key():
+    """A pin only linux_python_versions names is accepted, not rejected.
+
+    Validating against [ci].python_versions alone would fail `xmsconan gen` on a
+    build.toml whose Linux legs really do build that ABI.
+    """
+    toml_data = {
+        "ci": {"python_versions": ["3.13"], "linux_python_versions": ["3.13", "3.14"]},
+        "filter": {"options": {"python_version": "3.14"}},
+    }
+
+    assert load_build_filter(toml_data) == {"options": {"python_version": "3.14"}}
+
+
 # --- ci_build_types ---
 
 
-def test_ci_build_types_defaults_to_both():
-    """Without a pinned build_type the CI matrix keeps its full fan-out."""
-    assert ci_build_types({}) == ["Release", "Debug"]
+@pytest.mark.parametrize("build_filter,expected", [
+    pytest.param({}, ["Release", "Debug"], id="no-filter"),
+    pytest.param({"build_type": "Release"}, ["Release"], id="pinned-release"),
+    pytest.param({"build_type": "Debug"}, ["Debug"], id="pinned-debug"),
+    pytest.param({"options": {"testing": True}}, ["Release", "Debug"], id="unrelated-key"),
+])
+def test_ci_build_types(build_filter, expected):
+    """The CI matrix follows a pinned build_type and ignores everything else."""
+    assert ci_build_types(build_filter) == expected
 
 
-def test_ci_build_types_follows_pinned_build_type():
-    """A pinned build_type drops the CI legs that could only build nothing."""
-    assert ci_build_types({"build_type": "Release"}) == ["Release"]
+def test_ci_build_types_returns_a_fresh_list():
+    """Callers get a list of their own, not the module default."""
+    assert ci_build_types({}) is not DEFAULT_CI_BUILD_TYPES
+    assert isinstance(DEFAULT_CI_BUILD_TYPES, tuple), "the default must not be mutable"
 
 
-def test_ci_build_types_ignores_unrelated_keys():
-    """Filters that don't touch build_type leave the matrix alone."""
-    assert ci_build_types({"options": {"pybind": False}}) == ["Release", "Debug"]
+# --- ci_wheel_enabled ---
 
 
-def test_ci_build_types_returns_a_copy():
-    """Callers mutating the result can't corrupt the module default."""
-    first = ci_build_types({})
-    first.append("RelWithDebInfo")
-    assert ci_build_types({}) == ["Release", "Debug"]
+@pytest.mark.parametrize("build_filter,expected", [
+    pytest.param({}, True, id="no-filter"),
+    pytest.param({"options": {"pybind": True}}, True, id="pybind-required"),
+    pytest.param({"options": {"testing": True}}, True, id="unrelated-option"),
+    pytest.param({"options": {"pybind": False}}, False, id="pybind-excluded"),
+])
+def test_ci_wheel_enabled(build_filter, expected):
+    """Wheel steps come out only when the filter excludes the pybind builds."""
+    assert ci_wheel_enabled(build_filter) is expected
+
+
+# --- empty_ci_jobs ---
+
+
+def test_empty_ci_jobs_none_for_build_type_only_filter():
+    """build_type is a matrix axis, so pinning it empties no job."""
+    jobs = ["mac", "linux", "windows"]
+    assert empty_ci_jobs({"build_type": "Release"}, "github", jobs) == []
+
+
+def test_empty_ci_jobs_flags_platform_pins():
+    """An os pin leaves every non-matching job block with nothing to build."""
+    jobs = ["mac", "linux", "linux-arm", "windows"]
+    assert empty_ci_jobs({"os": "Windows"}, "github", jobs) == ["mac", "linux", "linux-arm"]
+
+
+def test_empty_ci_jobs_flags_arch_and_compiler_pins():
+    """The arch and compiler settings are fixed per job block too."""
+    jobs = ["mac", "linux", "linux-arm", "windows"]
+    assert empty_ci_jobs({"arch": "armv8"}, "github", jobs) == ["linux", "windows"]
+    assert empty_ci_jobs({"compiler": "gcc"}, "github", jobs) == ["mac", "windows"]
+
+
+def test_empty_ci_jobs_only_considers_emitted_jobs():
+    """A job the [ci] toggles left out isn't reported as empty."""
+    assert empty_ci_jobs({"os": "Windows"}, "github", ["windows"]) == []
+
+
+def test_empty_ci_jobs_handles_gitlab_job_names():
+    """The GitLab build jobs are named differently from GitHub's blocks."""
+    jobs = ["Conan Build", "Conan Build - Windows"]
+    assert empty_ci_jobs({"os": "Windows"}, "gitlab", jobs) == ["Conan Build"]
 
 
 # --- coverage_conflicts ---
@@ -58,29 +169,51 @@ def test_ci_build_types_returns_a_copy():
 
 def test_coverage_conflicts_empty_for_compatible_filter():
     """A filter that leaves the Debug builds alone reports nothing."""
-    assert coverage_conflicts({"compiler.runtime": "dynamic"}) == []
+    assert coverage_conflicts({"compiler.runtime": "dynamic"}, "3.13") == []
 
 
 def test_coverage_conflicts_allows_debug_pin():
     """Pinning Debug is exactly what coverage builds, so it isn't a conflict."""
-    assert coverage_conflicts({"build_type": "Debug"}) == []
+    assert coverage_conflicts({"build_type": "Debug"}, "3.13") == []
 
 
-def test_coverage_conflicts_flags_non_debug_build_type():
-    """Release-only libraries can't run the coverage job."""
-    conflicts = coverage_conflicts({"build_type": "Release"})
+def test_coverage_conflicts_flags_non_debug_build_type_once():
+    """Release-only libraries can't run the coverage job — reported once, not per report."""
+    conflicts = coverage_conflicts({"build_type": "Release"}, "3.13")
     assert len(conflicts) == 1
     assert "Debug" in conflicts[0]
 
 
-def test_coverage_conflicts_flags_disabled_testing_and_pybind():
-    """Both coverage builds are reported when both options are filtered off."""
-    conflicts = coverage_conflicts({"options": {"testing": False, "pybind": False}})
-    assert len(conflicts) == 2
-    assert any("C++" in c for c in conflicts)
-    assert any("Python" in c for c in conflicts)
+@pytest.mark.parametrize("option,value,report", [
+    pytest.param("testing", False, "C++", id="testing-excluded"),
+    pytest.param("pybind", False, "Python", id="pybind-excluded"),
+    pytest.param("testing", True, "Python", id="testing-required"),
+    pytest.param("pybind", True, "C++", id="pybind-required"),
+])
+def test_coverage_conflicts_flags_both_directions(option, value, report):
+    """The two coverage builds pin inverse options, so requiring one cancels the other.
+
+    ``pybind = true`` is as fatal to the C++ coverage build as ``pybind = false``
+    is to the Python one — the ``is False``-only check missed that half.
+    """
+    conflicts = coverage_conflicts({"options": {option: value}}, "3.13")
+    assert len(conflicts) == 1
+    assert report in conflicts[0]
+    assert f"options.{option}" in conflicts[0]
 
 
-def test_coverage_conflicts_ignores_enabled_options():
-    """Requiring testing/pybind is compatible with the coverage builds."""
-    assert coverage_conflicts({"options": {"testing": True, "pybind": True}}) == []
+def test_coverage_conflicts_flags_mismatched_python_version():
+    """The Python coverage build pins one ABI; a filter pinning another cancels it."""
+    conflicts = coverage_conflicts({"options": {"python_version": "3.10"}}, "3.13")
+    assert len(conflicts) == 1
+    assert "python_version" in conflicts[0]
+
+
+def test_coverage_conflicts_accepts_matching_python_version():
+    """Pinning the ABI coverage already uses is not a conflict."""
+    assert coverage_conflicts({"options": {"python_version": "3.13"}}, "3.13") == []
+
+
+def test_coverage_conflicts_skips_python_version_when_unresolved():
+    """Callers without a resolved coverage ABI don't get a bogus conflict."""
+    assert coverage_conflicts({"options": {"python_version": "3.10"}}, None) == []

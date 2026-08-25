@@ -11,7 +11,13 @@ from jinja2 import Environment, StrictUndefined
 # 3. Aquaveo modules
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
-from xmsconan.generator_tools.build_filter import ci_build_types, coverage_conflicts, load_build_filter
+from xmsconan.generator_tools.build_filter import (
+    ci_build_types,
+    ci_wheel_enabled,
+    coverage_conflicts,
+    empty_ci_jobs,
+    load_build_filter,
+)
 from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
@@ -166,6 +172,50 @@ def _coverage_context(coverage_config: dict, library_name: str) -> dict:
         "filters": list(coverage_config.get("filters", default_filters)),
         "excludes": list(coverage_config.get("excludes", default_excludes)),
     }
+
+
+def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
+    """Names of the job blocks this generation writes, for the filter warnings."""
+    if ci_type == "github":
+        jobs = ["mac", "linux"]
+        if context["ci_linux_arm"]:
+            jobs.append("linux-arm")
+        if context["ci_windows"]:
+            jobs.append("windows")
+        return jobs
+    # [ci].linux is GitLab-only -- the GitHub linux job above is not gated on it
+    # -- and it takes "Conan Build" out with it, so a filter cannot empty a job
+    # that was never written.
+    jobs = ["Conan Build"] if context["ci_linux"] else []
+    if context["ci_windows"]:
+        jobs.append("Conan Build - Windows")
+    return jobs
+
+
+def _warn_filter_conflicts(build_filter: dict, toml_data: dict, ci_type: str, context: dict) -> None:
+    """Warn about pipelines the ``[filter]`` table leaves unbuildable.
+
+    Emptying a job is only reported, never fixed: the platform fan-out lives in
+    separate job blocks rather than a matrix axis, so unlike ``build_type``
+    there is nothing for the generator to narrow.
+    """
+    for job_name in empty_ci_jobs(build_filter, ci_type, _emitted_ci_jobs(ci_type, context)):
+        LOGGER.warning(
+            "The [filter] table excludes everything the %r job builds — that job "
+            "will fail with an empty matrix. Drop the setting from [filter], or "
+            "stop generating the job.", job_name,
+        )
+
+    if not context["ci_coverage"]:
+        return
+    # Deferred: coverage_generator imports _coverage_context from this module,
+    # so importing it at module scope would close a cycle.
+    from xmsconan.coverage_tools.coverage_generator import _resolve_coverage_python_version
+    for conflict in coverage_conflicts(build_filter, _resolve_coverage_python_version(toml_data)):
+        LOGGER.warning(
+            "[ci].coverage is enabled but the [filter] table %s — "
+            "`xmsconan coverage` will find no configurations to build.", conflict,
+        )
 
 
 def generate_ci(
@@ -339,14 +389,11 @@ def generate_ci(
         "coverage": _coverage_context(coverage_config, library_name),
         "coverage_python_version": _resolve_coverage_python_version(toml_data),
         "ci_build_types": ci_build_types(build_filter),
+        "ci_wheel_enabled": ci_wheel_enabled(build_filter),
     }
 
-    if context["ci_coverage"]:
-        for conflict in coverage_conflicts(build_filter):
-            LOGGER.warning(
-                "[ci].coverage is enabled but the [filter] table %s — "
-                "`xmsconan coverage` will find no configurations to build.", conflict,
-            )
+    if build_filter:
+        _warn_filter_conflicts(build_filter, toml_data, ci_type, context)
 
     # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"
