@@ -372,11 +372,16 @@ def test_explicit_coverage_false_overrides_env():
     p = XmsConanPackager("xmscore", coverage=False)
     p.generate_configurations(system_platform="linux")
 
-    debug_pybind = [
-        c for c in p.configurations
-        if c["build_type"] == "Debug" and c["options"].get("pybind") is True
-    ]
-    assert not debug_pybind
+    # Asserted on buildenv rather than on which configurations exist. Coverage
+    # no longer changes the configuration list, so a check counting Debug
+    # pybind configurations passes whichever way the precedence resolves.
+    assert p.configurations
+    for cfg in p.configurations:
+        assert "XMS_COVERAGE" not in cfg["buildenv"], (
+            f"coverage=False must beat XMS_COVERAGE=1 in the environment; "
+            f"{cfg.get('build_type')!r} / options={cfg.get('options')} was "
+            f"instrumented anyway"
+        )
 
 
 @patch_env(clear=True)
