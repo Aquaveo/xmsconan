@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
-import sysconfig
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +13,9 @@ from xmsconan.ci_tools.wheel_repair import (
     _repair_env,
     wheel_repair,
 )
+
+SYSCONFIG_GET_PATH = "xmsconan.ci_tools.wheel_repair.sysconfig.get_path"
+SCRIPT_DIR = os.path.join(os.sep, "tool-venv", "bin")
 
 # --- _detect_platform ---
 
@@ -65,11 +68,12 @@ def test_pip_install_cmd_falls_back_to_pip(mock_which):
 # --- wheel_repair ---
 
 
+@patch("xmsconan.ci_tools.wheel_repair._resolve_tool", side_effect=lambda tool, env: tool)
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
 @patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
 @patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/foo.whl"])
-def test_linux_repair(mock_glob, mock_run, mock_rmtree, mock_move):
+def test_linux_repair(mock_glob, mock_run, mock_rmtree, mock_move, mock_resolve):
     """Linux uses auditwheel with LD_LIBRARY_PATH."""
     wheel_repair(wheel_dir="/tmp/wh", platform="linux")
 
@@ -106,11 +110,12 @@ def test_linux_repair_absolutizes_relative_wheel_dir(mock_glob, mock_run, mock_r
     assert os.path.isabs(expected)
 
 
+@patch("xmsconan.ci_tools.wheel_repair._resolve_tool", side_effect=lambda tool, env: tool)
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
 @patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
 @patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/bar.whl"])
-def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move):
+def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move, mock_resolve):
     """Verify macOS uses delocate with DYLD_LIBRARY_PATH."""
     wheel_repair(wheel_dir="/tmp/wh", platform="macos")
 
@@ -124,11 +129,12 @@ def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move):
     assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path(os.path.abspath("/tmp/wh/libs"))
 
 
+@patch("xmsconan.ci_tools.wheel_repair._resolve_tool", side_effect=lambda tool, env: tool)
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
 @patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
 @patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/baz.whl"])
-def test_windows_repair(mock_glob, mock_run, mock_rmtree, mock_move):
+def test_windows_repair(mock_glob, mock_run, mock_rmtree, mock_move, mock_resolve):
     """Windows uses delvewheel with --add-path."""
     wheel_repair(wheel_dir="/tmp/wh", platform="windows")
 
@@ -235,27 +241,22 @@ def test_repaired_wheels_replace_the_originals(tmp_path, trailing):
 # --- _repair_env ---
 
 
-def test_repair_env_prepends_interpreter_script_dir():
-    """The running interpreter's script directory leads PATH."""
-    env = _repair_env()
-
-    assert env["PATH"].split(os.pathsep)[0] == sysconfig.get_path("scripts")
-
-
 def test_repair_env_preserves_inherited_path():
     """The inherited PATH is kept, after the prepended script directory."""
-    with patch.dict(os.environ, {"PATH": "/inherited/bin"}):
-        env = _repair_env()
+    with patch(SYSCONFIG_GET_PATH, return_value=SCRIPT_DIR):
+        with patch.dict(os.environ, {"PATH": "/inherited/bin"}):
+            env = _repair_env()
 
-    assert env["PATH"] == os.pathsep.join([sysconfig.get_path("scripts"), "/inherited/bin"])
+    assert env["PATH"] == os.pathsep.join([SCRIPT_DIR, "/inherited/bin"])
 
 
 def test_repair_env_without_inherited_path_has_no_empty_entry():
     """An absent PATH leaves no trailing empty entry, which would resolve to the cwd."""
-    with patch.dict(os.environ, {}, clear=True):
-        env = _repair_env()
+    with patch(SYSCONFIG_GET_PATH, return_value=SCRIPT_DIR):
+        with patch.dict(os.environ, {}, clear=True):
+            env = _repair_env()
 
-    assert env["PATH"] == sysconfig.get_path("scripts")
+    assert env["PATH"] == SCRIPT_DIR
 
 
 def test_repair_env_applies_overrides():
@@ -274,20 +275,53 @@ def test_repair_env_applies_overrides():
 )
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
-@patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
+@patch("xmsconan.ci_tools.wheel_repair.subprocess.run", autospec=True)
 @patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/foo.whl"])
-def test_repair_runs_tool_with_script_dir_on_path(
+def test_repair_invokes_the_resolved_tool_path(
     mock_glob, mock_run, mock_rmtree, mock_move, platform, tool
 ):
-    """Every platform invokes its repair tool with the interpreter script dir on PATH.
+    """Every platform invokes its repair tool by resolved absolute path.
 
-    Regression guard. The repair tool is installed into the interpreter running the
-    module, so a bare-name invocation only resolves when that interpreter's script
-    directory is on PATH. Under a ``uv tool`` install it is not, and the repair died
-    with FileNotFoundError despite the install having just succeeded.
+    Regression guard. The repair tool is installed into the interpreter running
+    this module, so a bare-name invocation only resolves when that interpreter's
+    script directory is on PATH -- which it is not under a ``uv tool`` install.
+    Asserting the *environment* handed to the child would not catch the failure:
+    Windows resolves an unqualified name against the calling process's PATH and
+    never consults that environment block, so the lookup would still fail while
+    the assertion passed. Pinning the resolved argv[0] is what closes the bug on
+    all three platforms.
     """
-    wheel_repair(wheel_dir="/tmp/wh", platform=platform)
+    resolved = os.path.join(SCRIPT_DIR, tool)
+    with patch(SYSCONFIG_GET_PATH, return_value=SCRIPT_DIR), \
+            patch("xmsconan.ci_tools.wheel_repair.shutil.which") as mock_which:
+        mock_which.side_effect = lambda name, path=None: resolved if name == tool else None
+        wheel_repair(wheel_dir="/tmp/wh", platform=platform)
 
-    repair_call = mock_run.call_args_list[1]
-    assert repair_call[0][0][0] == tool
-    assert repair_call[1]["env"]["PATH"].split(os.pathsep)[0] == sysconfig.get_path("scripts")
+    repair_call = next(c for c in mock_run.call_args_list if c.args[0][0] != sys.executable)
+    assert repair_call.args[0][0] == resolved, "repair tool must be invoked by absolute path"
+
+    # The lookup that produced it searched the interpreter's script directory.
+    which_call = next(c for c in mock_which.call_args_list if c.args[0] == tool)
+    assert which_call.kwargs["path"].split(os.pathsep)[0] == SCRIPT_DIR
+
+
+@pytest.mark.parametrize(
+    "platform,loader_var",
+    [("linux", "LD_LIBRARY_PATH"), ("macos", "DYLD_LIBRARY_PATH")],
+)
+@patch("xmsconan.ci_tools.wheel_repair.shutil.move")
+@patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
+@patch("xmsconan.ci_tools.wheel_repair.subprocess.run", autospec=True)
+@patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/foo.whl"])
+def test_repair_keeps_loader_path_alongside_script_dir(
+    mock_glob, mock_run, mock_rmtree, mock_move, platform, loader_var
+):
+    """Prepending the script dir does not displace the platform's loader path."""
+    with patch(SYSCONFIG_GET_PATH, return_value=SCRIPT_DIR), \
+            patch("xmsconan.ci_tools.wheel_repair.shutil.which", return_value=None):
+        wheel_repair(wheel_dir="/tmp/wh", platform=platform)
+
+    repair_call = next(c for c in mock_run.call_args_list if c.args[0][0] != sys.executable)
+    env = repair_call.kwargs["env"]
+    assert env["PATH"].split(os.pathsep)[0] == SCRIPT_DIR
+    assert env[loader_var] == os.path.abspath("/tmp/wh/libs")

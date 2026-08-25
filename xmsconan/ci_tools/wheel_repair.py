@@ -45,6 +45,27 @@ def _repair_env(**overrides):
     return env
 
 
+def _resolve_tool(tool, env):
+    """Return an absolute path to *tool*, falling back to the bare name.
+
+    Prepending the script directory to *env* is not enough on its own. Windows
+    resolves an unqualified program name against the *calling* process's ``PATH``
+    rather than the environment block handed to the child, so ``CreateProcess``
+    never sees the prepend and the lookup fails exactly as before. Resolving here
+    and passing an absolute ``argv[0]`` makes one mechanism carry every platform.
+
+    Args:
+        tool: Console-script name, such as ``'delvewheel'``.
+        env: Environment whose ``PATH`` is searched, from :func:`_repair_env`.
+
+    Returns:
+        str: The resolved absolute path, or *tool* unchanged when it is not found
+        -- in which case the invocation fails with the same ``FileNotFoundError``
+        it would have raised anyway.
+    """
+    return shutil.which(tool, path=env["PATH"]) or tool
+
+
 def _detect_platform():
     """Return ``'linux'``, ``'macos'``, or ``'windows'`` from *sys.platform*."""
     if sys.platform.startswith("linux"):
@@ -79,34 +100,33 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
     if not wheels:
         raise FileNotFoundError(f"No .whl files found in {wheel_dir}")
 
+    libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
+
     if platform == "linux":
         subprocess.run(_pip_install_cmd("auditwheel", "patchelf"), check=True)
-        libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = _repair_env(LD_LIBRARY_PATH=libs_path)
         for whl in wheels:
             subprocess.run(
-                ["auditwheel", "repair", whl, "-w", repaired_dir],
+                [_resolve_tool("auditwheel", env), "repair", whl, "-w", repaired_dir],
                 check=True,
                 env=env,
             )
     elif platform == "macos":
         subprocess.run(_pip_install_cmd("delocate"), check=True)
-        libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = _repair_env(DYLD_LIBRARY_PATH=libs_path)
         for whl in wheels:
             subprocess.run(
-                ["delocate-wheel", "-w", repaired_dir, "-v", whl],
+                [_resolve_tool("delocate-wheel", env), "-w", repaired_dir, "-v", whl],
                 check=True,
                 env=env,
             )
     elif platform == "windows":
         subprocess.run(_pip_install_cmd("delvewheel"), check=True)
-        libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
         env = _repair_env()
         for whl in wheels:
             subprocess.run(
                 [
-                    "delvewheel", "repair", whl,
+                    _resolve_tool("delvewheel", env), "repair", whl,
                     "--add-path", libs_path,
                     "--namespace-pkg", "xms",
                     "-w", repaired_dir,
