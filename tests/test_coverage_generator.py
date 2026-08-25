@@ -40,12 +40,19 @@ class TestCoverageContextDefaults:
         assert ctx["filters"] == ["xmsgrid/"]
 
     def test_excludes_baked_in_when_absent(self):
-        """Default excludes drop *.t.h, the pybind dir, and the package tests."""
+        """Default excludes drop *.t.h and the package tests, but NOT the bindings.
+
+        The binding directory used to be excluded, back when only the testing
+        build was read -- that build does not compile the bindings, so the
+        exclude removed nothing that existed. The pybind build is instrumented
+        and merged in now, so excluding it would collect the binding layer's
+        coverage and then throw it away.
+        """
         ctx = _coverage_context({}, "xmsgrid")
         excludes = ctx["excludes"]
         assert any(r".*\.t\.h$" in e for e in excludes)
-        assert any("xmsgrid/python" in e for e in excludes)
         assert any("_package/tests" in e for e in excludes)
+        assert not any("xmsgrid/python" in e for e in excludes)
 
     def test_user_supplied_filters_win(self):
         """User-supplied filters replace the defaults entirely."""
@@ -769,13 +776,22 @@ class TestRunCoverageThresholdGating:
         )
         (py_build_folder / "cov-py.xml").write_text("<coverage/>")
 
-        # gcovr is mocked to write the summary into the workspace.
+        # gcovr is mocked. It is invoked once per build folder to write a
+        # tracefile (--json), then once more to merge them into the reports
+        # (--json-summary), so the fake has to serve both shapes.
         def fake_run(cmd, env=None, cwd=None, **_kw):
             if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
-                idx = cmd.index("--json-summary")
-                Path(cmd[idx + 1]).write_text(
-                    json.dumps({"line_percent": cpp_percent}),
-                )
+                if "--json-summary" in cmd:
+                    idx = cmd.index("--json-summary")
+                    Path(cmd[idx + 1]).write_text(
+                        json.dumps({
+                            "line_percent": cpp_percent,
+                            "line_total": 100,
+                        }),
+                    )
+                if "--json" in cmd:
+                    idx = cmd.index("--json")
+                    Path(cmd[idx + 1]).write_text(json.dumps({"files": []}))
             return MagicMock(returncode=0)
 
         return toml_file, cpp_build_folder, py_build_folder, fake_run
@@ -1038,14 +1054,18 @@ class TestRunCoverageThresholdGating:
     def test_gcovr_runs_against_testing_build_folder_not_pybind(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """Run gcovr against the testing-only build folder, not pybind.
+        """Run gcovr against BOTH build folders, then merge the tracefiles.
 
-        The pybind-only build also has --coverage instrumentation, but the
-        C++ coverage signal comes from the CxxTest runner, which only
-        exists in the testing-only build. Running gcovr against the pybind
-        folder would either find no .gcda (tests never ran there) or only
-        the pybind-reachable surface — the very situation the original
-        pre-#64 design produced.
+        The testing build carries what CxxTest reaches; the pybind build
+        carries the binding layer and anything only a Python test exercises.
+        Each is read with its own ``--root`` — one invocation cannot span two
+        roots — and the tracefiles are combined with ``--add-tracefile`` so hit
+        counts sum per line.
+
+        Asserted over every gcovr invocation rather than just the first: a
+        check that only looked at ``gcovr_cmds[0]`` would keep passing if the
+        pybind folder were silently dropped again, since the testing folder is
+        read first either way.
         """
         toml_file, cpp_build_folder, py_build_folder, fake_run = (
             self._setup_workspace(
@@ -1078,12 +1098,29 @@ class TestRunCoverageThresholdGating:
             if isinstance(c, list) and c and c[0] == "gcovr"
         ]
         assert gcovr_cmds, "gcovr should have been invoked"
-        cmd = gcovr_cmds[0]
-        root_idx = cmd.index("--root")
-        assert cmd[root_idx + 1] == str(cpp_build_folder), (
-            f"gcovr --root must be the testing build folder ({cpp_build_folder}); "
-            f"got {cmd[root_idx + 1]!r}. The pybind folder does not contain "
-            "CxxTest .gcda data."
+
+        # One collection run per build folder, each rooted at its own folder.
+        collect_roots = [
+            cmd[cmd.index("--root") + 1]
+            for cmd in gcovr_cmds if "--json" in cmd
+        ]
+        assert collect_roots == [str(cpp_build_folder), str(py_build_folder)], (
+            f"gcovr must read both build folders; collected roots were "
+            f"{collect_roots!r}"
+        )
+
+        # One merge run combining every tracefile the collection runs wrote.
+        merge_cmds = [cmd for cmd in gcovr_cmds if "--json-summary" in cmd]
+        assert len(merge_cmds) == 1, (
+            f"expected exactly one merge invocation; got {len(merge_cmds)}"
+        )
+        tracefiles = [
+            merge_cmds[0][i + 1]
+            for i, arg in enumerate(merge_cmds[0]) if arg == "--add-tracefile"
+        ]
+        assert len(tracefiles) == 2, (
+            f"the merge must combine one tracefile per build folder; got "
+            f"{tracefiles!r}"
         )
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
@@ -1195,8 +1232,14 @@ class TestRunCoverageThresholdGating:
         def fake_run(cmd, env=None, cwd=None, **kw):
             captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
             if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
-                idx = cmd.index("--json-summary")
-                Path(cmd[idx + 1]).write_text(json.dumps({"line_percent": 80.0}))
+                if "--json-summary" in cmd:
+                    idx = cmd.index("--json-summary")
+                    Path(cmd[idx + 1]).write_text(
+                        json.dumps({"line_percent": 80.0, "line_total": 100}),
+                    )
+                if "--json" in cmd:
+                    idx = cmd.index("--json")
+                    Path(cmd[idx + 1]).write_text(json.dumps({"files": []}))
             return MagicMock(returncode=0)
 
         mock_run.side_effect = fake_run
@@ -1310,8 +1353,14 @@ class TestRunCoverageThresholdGating:
 
         def fake_run(cmd, env=None, cwd=None, **_kw):
             if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
-                idx = cmd.index("--json-summary")
-                Path(cmd[idx + 1]).write_text(json.dumps({"line_percent": 99.0}))
+                if "--json-summary" in cmd:
+                    idx = cmd.index("--json-summary")
+                    Path(cmd[idx + 1]).write_text(
+                        json.dumps({"line_percent": 99.0, "line_total": 100}),
+                    )
+                if "--json" in cmd:
+                    idx = cmd.index("--json")
+                    Path(cmd[idx + 1]).write_text(json.dumps({"files": []}))
             return MagicMock(returncode=0)
 
         mock_run.side_effect = fake_run
