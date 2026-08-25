@@ -7,12 +7,19 @@ Runs two independent builds under XMS_COVERAGE=1:
     line coverage. Debug is required: gcov instruments an unoptimized build.
   * ``pybind=True, testing=False, Release`` (pinned ``python_version``) —
     drives ``pytest-cov`` against the wheel. The pytest-cov JSON/XML/HTML
-    artifacts are copied up out of this build folder for Python coverage.
-    Release because nothing here needs an instrumented module: pytest-cov
-    measures Python lines, and gcovr is pointed at the testing build only.
-    Asking for Debug cost every dependency a Debug+pybind binary -- the one
-    combination the xms libraries do not publish -- and on Windows would
-    demand a debug interpreter.
+    artifacts are copied up out of this build folder for Python coverage,
+    and it is instrumented too: the binding layer is C++ that only a Python
+    test can reach, so its .gcda is merged into the C++ report. Release
+    rather than Debug because the CMake block appends ``-O0 -g`` after
+    CMake's ``-O3`` -- the build is unoptimized either way -- while Debug
+    cost every dependency a Debug+pybind binary, the one combination the
+    xms libraries do not publish, and on Windows would demand a debug
+    interpreter.
+
+gcovr reads both build folders. They have different roots, so each is read
+separately into a JSON tracefile and the two are combined with
+``--add-tracefile``; hit counts sum per line, so a line the CxxTest runner
+never reaches counts as covered when a Python test reaches it.
 
 Combining the two flags in one Conan config was a fragile carve-out that
 existed nowhere else in the matrix; this split lets the coverage configs
@@ -384,9 +391,9 @@ def _assert_gcovr_collected_data(summary_path: Path, build_folder: Path,
     )
 
 
-def _run_gcovr(build_folder: Path, coverage_cfg: dict,
-               output_dir: Path) -> Path:
-    """Run gcovr against the build folder. Returns path to JSON summary.
+def _collect_gcovr_tracefile(build_folder: Path, coverage_cfg: dict,
+                             tracefile: Path) -> list:
+    """Read one build folder's .gcda into a gcovr JSON tracefile.
 
     ``--root`` is the build folder rather than the conan source folder
     because ``cmake_layout()`` copies sources into the build folder
@@ -394,33 +401,83 @@ def _run_gcovr(build_folder: Path, coverage_cfg: dict,
     ``build_folder``, and gcovr's default ``re.match``-style filter
     semantics need ``--root`` to align with those paths or every file
     is silently filtered out.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    html_index = output_dir / "coverage-html-cpp" / "index.html"
-    html_index.parent.mkdir(parents=True, exist_ok=True)
-    xml_path = output_dir / "cov-cpp.xml"
-    json_summary = output_dir / "cov-cpp-summary.json"
 
-    cmd = [
-        "gcovr",
-        "--root", str(build_folder),
-        "--txt",
-        "--html-details", str(html_index),
-        "--xml", str(xml_path),
-        "--json-summary", str(json_summary),
-        "--gcov-ignore-errors=no_working_dir_found",
-        "--gcov-ignore-errors=source_not_found",
-    ]
+    Filters are applied here rather than on the merge, because
+    :func:`_resolve_gcovr_filters` anchors them to this specific build
+    folder's absolute paths. The tracefile it writes stores paths
+    relative to ``--root``, which is what lets two folders' tracefiles
+    line up on the same source file when they are merged.
+
+    Returns the resolved filter list, for the caller's diagnostics.
+    """
     resolved_filters = _resolve_gcovr_filters(
         coverage_cfg.get("filters", []), build_folder,
     )
+    cmd = [
+        "gcovr",
+        "--root", str(build_folder),
+        "--json", str(tracefile),
+        "--gcov-ignore-errors=no_working_dir_found",
+        "--gcov-ignore-errors=source_not_found",
+    ]
     for f in resolved_filters:
         cmd.extend(["--filter", f])
     for e in coverage_cfg.get("excludes", []):
         cmd.extend(["--exclude", e])
     cmd.append(str(build_folder))
     _run(cmd)
-    _assert_gcovr_collected_data(json_summary, build_folder, resolved_filters)
+    return resolved_filters
+
+
+def _run_gcovr(build_folders, coverage_cfg: dict,
+               output_dir: Path) -> Path:
+    """Merge every build folder's C++ coverage into one report.
+
+    Each folder is read separately -- they have different roots, so one
+    gcovr invocation cannot span them -- and the resulting tracefiles are
+    combined with ``--add-tracefile``. Hit counts sum per line, so a line
+    the CxxTest runner never reaches still counts as covered when a Python
+    test reaches it through the bindings.
+
+    ``build_folders`` is ordered; the first is used as the merge ``--root``
+    so ``--html-details`` can find sources to render. Both folders hold a
+    copy of the same exported tree, so either serves.
+
+    Returns the path to the merged JSON summary.
+    """
+    build_folders = [Path(f) for f in build_folders]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    html_index = output_dir / "coverage-html-cpp" / "index.html"
+    html_index.parent.mkdir(parents=True, exist_ok=True)
+    xml_path = output_dir / "cov-cpp.xml"
+    json_summary = output_dir / "cov-cpp-summary.json"
+
+    tracefiles = []
+    resolved_filters = []
+    for i, build_folder in enumerate(build_folders):
+        tracefile = output_dir / f"cov-cpp-tracefile-{i}.json"
+        resolved_filters = _collect_gcovr_tracefile(
+            build_folder, coverage_cfg, tracefile,
+        )
+        tracefiles.append(tracefile)
+
+    cmd = [
+        "gcovr",
+        "--root", str(build_folders[0]),
+        "--txt",
+        "--html-details", str(html_index),
+        "--xml", str(xml_path),
+        "--json-summary", str(json_summary),
+    ]
+    for tracefile in tracefiles:
+        cmd.extend(["--add-tracefile", str(tracefile)])
+    _run(cmd)
+    # Checked on the merged summary: an empty *merged* report is the failure
+    # worth naming. A single folder legitimately contributing nothing is not
+    # -- a library whose bindings are a stub has little to instrument there.
+    _assert_gcovr_collected_data(
+        json_summary, build_folders[0], resolved_filters,
+    )
     return json_summary
 
 
@@ -566,8 +623,8 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             exc.returncode,
         )
 
-    # 4. Locate the two build folders. gcovr reads .gcda from the testing
-    #    folder; pytest-cov artifacts live under the pybind folder.
+    # 4. Locate the two build folders. gcovr reads .gcda from both; pytest-cov
+    #    artifacts live under the pybind folder.
     cpp_ref, cpp_pid = _find_coverage_package(library_name, kind="testing")
     cpp_build_folder = _conan_cache_path(f"{cpp_ref}:{cpp_pid}", "build")
     LOGGER.info("C++ coverage build folder:    %s", cpp_build_folder)
@@ -579,8 +636,12 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     py_build_folder = _conan_cache_path(f"{py_ref}:{py_pid}", "build")
     LOGGER.info("Python coverage build folder: %s", py_build_folder)
 
-    # 5. Generate C++ coverage report via gcovr against the testing build.
-    cpp_summary = _run_gcovr(cpp_build_folder, coverage_cfg, output_dir)
+    # 5. Generate the C++ coverage report from both instrumented builds. The
+    #    testing build covers what CxxTest reaches; the pybind build covers the
+    #    binding layer and anything only a Python test exercises.
+    cpp_summary = _run_gcovr(
+        [cpp_build_folder, py_build_folder], coverage_cfg, output_dir,
+    )
 
     # 6. Locate Python coverage artifacts produced inside the pybind build
     #    folder by run_python_tests, and copy them up to the workspace root.

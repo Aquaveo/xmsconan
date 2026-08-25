@@ -150,9 +150,13 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
 def _coverage_context(coverage_config: dict, library_name: str) -> dict:
     """Build the coverage template context, applying sensible defaults."""
     default_filters = [f"{library_name}/"]
+    # The binding directory is NOT excluded. It used to be, because only the
+    # testing build was read and that build does not compile the bindings --
+    # so the exclude removed nothing that existed. Now that the pybind build is
+    # instrumented and merged in, excluding it would collect the binding
+    # layer's coverage and then discard it.
     default_excludes = [
         r".*\.t\.h$",
-        f".*/{library_name}/python/.*",
         r".*/_package/tests/.*",
     ]
     return {
