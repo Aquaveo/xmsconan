@@ -2,11 +2,17 @@
 import os
 from pathlib import Path
 import subprocess
+import sysconfig
 from unittest.mock import patch
 
 import pytest
 
-from xmsconan.ci_tools.wheel_repair import _detect_platform, _pip_install_cmd, wheel_repair
+from xmsconan.ci_tools.wheel_repair import (
+    _detect_platform,
+    _pip_install_cmd,
+    _repair_env,
+    wheel_repair,
+)
 
 # --- _detect_platform ---
 
@@ -224,3 +230,64 @@ def test_repaired_wheels_replace_the_originals(tmp_path, trailing):
     assert [p.name for p in wheel_dir.glob("*.whl")] == ["foo-manylinux.whl"]
     assert not (tmp_path / "wheelhouse_repaired").exists()
     assert not (wheel_dir / "_repaired").exists()
+
+
+# --- _repair_env ---
+
+
+def test_repair_env_prepends_interpreter_script_dir():
+    """The running interpreter's script directory leads PATH."""
+    env = _repair_env()
+
+    assert env["PATH"].split(os.pathsep)[0] == sysconfig.get_path("scripts")
+
+
+def test_repair_env_preserves_inherited_path():
+    """The inherited PATH is kept, after the prepended script directory."""
+    with patch.dict(os.environ, {"PATH": "/inherited/bin"}):
+        env = _repair_env()
+
+    assert env["PATH"] == os.pathsep.join([sysconfig.get_path("scripts"), "/inherited/bin"])
+
+
+def test_repair_env_without_inherited_path_has_no_empty_entry():
+    """An absent PATH leaves no trailing empty entry, which would resolve to the cwd."""
+    with patch.dict(os.environ, {}, clear=True):
+        env = _repair_env()
+
+    assert env["PATH"] == sysconfig.get_path("scripts")
+
+
+def test_repair_env_applies_overrides():
+    """Keyword overrides land in the returned environment."""
+    env = _repair_env(DYLD_LIBRARY_PATH="/libs")
+
+    assert env["DYLD_LIBRARY_PATH"] == "/libs"
+
+
+# --- repair tool is reachable on PATH ---
+
+
+@pytest.mark.parametrize(
+    "platform,tool",
+    [("linux", "auditwheel"), ("macos", "delocate-wheel"), ("windows", "delvewheel")],
+)
+@patch("xmsconan.ci_tools.wheel_repair.shutil.move")
+@patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
+@patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
+@patch("xmsconan.ci_tools.wheel_repair.glob.glob", return_value=["/tmp/wh/foo.whl"])
+def test_repair_runs_tool_with_script_dir_on_path(
+    mock_glob, mock_run, mock_rmtree, mock_move, platform, tool
+):
+    """Every platform invokes its repair tool with the interpreter script dir on PATH.
+
+    Regression guard. The repair tool is installed into the interpreter running the
+    module, so a bare-name invocation only resolves when that interpreter's script
+    directory is on PATH. Under a ``uv tool`` install it is not, and the repair died
+    with FileNotFoundError despite the install having just succeeded.
+    """
+    wheel_repair(wheel_dir="/tmp/wh", platform=platform)
+
+    repair_call = mock_run.call_args_list[1]
+    assert repair_call[0][0][0] == tool
+    assert repair_call[1]["env"]["PATH"].split(os.pathsep)[0] == sysconfig.get_path("scripts")

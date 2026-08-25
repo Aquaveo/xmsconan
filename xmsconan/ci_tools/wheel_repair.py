@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 
 
 def _pip_install_cmd(*packages):
@@ -17,6 +18,31 @@ def _pip_install_cmd(*packages):
     if shutil.which("uv"):
         return ["uv", "pip", "install", "--python", sys.executable, *packages]
     return [sys.executable, "-m", "pip", "install", *packages]
+
+
+def _repair_env(**overrides):
+    """Return a subprocess environment that can find the just-installed repair tool.
+
+    ``_pip_install_cmd`` installs the repair tool into the interpreter running this
+    module, which places its console script in that interpreter's script directory.
+    That directory is not necessarily on ``PATH``. When xmsconan is installed as a
+    ``uv tool`` the launcher execs the tool venv's interpreter directly, so the
+    venv's ``bin`` never joins ``PATH`` and invoking the script by bare name fails
+    with ``FileNotFoundError`` even though the install just succeeded. Prepending
+    the script directory makes the invocation resolve to the same environment the
+    install targeted.
+
+    Args:
+        **overrides: Extra environment variables to set, such as the platform's
+            dynamic loader search path.
+
+    Returns:
+        dict: A copy of ``os.environ`` with ``PATH`` extended and *overrides* applied.
+    """
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join(filter(None, [sysconfig.get_path("scripts"), env.get("PATH", "")]))
+    env.update(overrides)
+    return env
 
 
 def _detect_platform():
@@ -56,8 +82,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
     if platform == "linux":
         subprocess.run(_pip_install_cmd("auditwheel", "patchelf"), check=True)
         libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
-        env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = libs_path
+        env = _repair_env(LD_LIBRARY_PATH=libs_path)
         for whl in wheels:
             subprocess.run(
                 ["auditwheel", "repair", whl, "-w", repaired_dir],
@@ -67,8 +92,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
     elif platform == "macos":
         subprocess.run(_pip_install_cmd("delocate"), check=True)
         libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
-        env = os.environ.copy()
-        env["DYLD_LIBRARY_PATH"] = libs_path
+        env = _repair_env(DYLD_LIBRARY_PATH=libs_path)
         for whl in wheels:
             subprocess.run(
                 ["delocate-wheel", "-w", repaired_dir, "-v", whl],
@@ -78,6 +102,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
     elif platform == "windows":
         subprocess.run(_pip_install_cmd("delvewheel"), check=True)
         libs_path = os.path.abspath(os.path.join(wheel_dir, "libs"))
+        env = _repair_env()
         for whl in wheels:
             subprocess.run(
                 [
@@ -87,6 +112,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
                     "-w", repaired_dir,
                 ],
                 check=True,
+                env=env,
             )
     else:
         raise ValueError(f"Unknown platform: {platform}")
