@@ -64,7 +64,9 @@ Conan Build:
 <% if ci_deploy %>
       - .export
 <% endif %>
+<% if ci_wheel_enabled %>
       - wheelhouse/
+<% endif %>
       - test_artifacts/
   script:
     - gcc --version
@@ -80,9 +82,9 @@ Conan Build:
 <% endif %>
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
 <% if ci_xvfb %>
-    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse --artifacts-dir test_artifacts
+    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} <% if ci_wheel_enabled %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
 <% else %>
-    - python build.py --version ${PACKAGE_VERSION} --wheel-dir wheelhouse --artifacts-dir test_artifacts
+    - python build.py --version ${PACKAGE_VERSION} <% if ci_wheel_enabled %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
 <% endif %>
 <% if ci_deploy %>
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-linux<< gitlab_linux_py_suffix >>-${PACKAGE_VERSION}.tar.gz
@@ -215,7 +217,7 @@ Lint:
     - xmsconan_gen --version 0.0.0 build.toml
     - flake8 _package
 
-<% if ci_linux %>
+<% if ci_linux and ci_wheel_enabled %>
 Repair Wheel:
   stage: Package
 <% if docker_image %>
@@ -234,10 +236,11 @@ Repair Wheel:
     expire_in: '1d'
     paths:
       - wheelhouse/
-
 <% endif %>
+
 <% if ci_deploy %>
 <% if ci_linux %>
+<% if ci_wheel_enabled %>
 "Wheel Deploy":
   stage: Deploy
   image: python:3.13
@@ -248,6 +251,7 @@ Repair Wheel:
     - xmsconan_wheel_deploy --wheel-dir wheelhouse
   only:
     - tags
+<% endif %>
 
 "Conan Deploy - Linux":
   stage: Deploy

@@ -65,19 +65,21 @@ if __name__ == "__main__":
         builder.filter_configurations(filter_options)
     if args.python_only:
         builder.filter_configurations({'options': {'pybind': True}})
-    if args.preview:
-        builder.print_configuration_table()
-        exit(0)
-        # Use config_dict as needed
     if not builder.configurations:
         # Filters that cancel each other out used to build nothing and exit 0,
-        # which reads as a passing build that produced no packages.
+        # which reads as a passing build that produced no packages. --preview
+        # still exits 0: it is the flag you reach for to diagnose this.
         print(
             "No configurations match the requested filters. Applied: "
             f"build.toml [filter]={BUILD_FILTER if not args.ignore_build_filter else None}, "
             f"--filter={args.filter}, --python-only={args.python_only}"
         )
-        exit(1)
+        if not args.preview:
+            exit(1)
+    if args.preview:
+        builder.print_configuration_table()
+        exit(0)
+        # Use config_dict as needed
     if not args.skip_build:
         err_count = builder.run()
         if err_count > 0:

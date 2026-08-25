@@ -374,28 +374,64 @@ def test_python_fanout_renders_valid_yaml(tmp_path, ci_type, ci_flags):
 # ---------------------------------------------------------------------------
 
 
-def test_github_ci_with_pinned_build_type_produces_valid_yaml(tmp_path):
-    """A [filter]-narrowed build_type matrix is still a valid YAML sequence."""
+_FILTER_TOMLS = {
+    "pinned-build-type": '[filter]\nbuild_type = "Release"\n',
+    "no-pybind": '[filter.options]\npybind = false\n',
+    "pinned-both": '[filter]\nbuild_type = "Release"\n\n[filter.options]\npybind = false\n',
+}
+
+
+def _write_filtered_toml(tmp_path, ci_type, filter_table):
+    """Write a build.toml with a [filter] table and both platform jobs on."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmscore"\n'
         'description = "Core library"\n'
-        'ci_type = "github"\n'
+        f'ci_type = "{ci_type}"\n'
         'python_namespaced_dir = "core"\n'
-        "\n[ci]\nlinux_arm = true\n"
-        "\n[filter]\nbuild_type = \"Release\"\n",
+        "\n[ci]\nlinux_arm = true\ndeploy = true\n\n" + filter_table,
         encoding="utf-8",
     )
+    return toml_file
+
+
+@pytest.mark.parametrize("ci_type", ["github", "gitlab"])
+@pytest.mark.parametrize("filter_table", _FILTER_TOMLS.values(), ids=_FILTER_TOMLS.keys())
+def test_filtered_ci_produces_valid_yaml(ci_type, filter_table, tmp_path):
+    """Every [filter] shape still renders a parseable pipeline.
+
+    The wheel steps come out as whole blocks when pybind is filtered off, which
+    is exactly the kind of edit that leaves dangling YAML behind.
+    """
+    toml_file = _write_filtered_toml(tmp_path, ci_type, filter_table)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
 
-    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    if ci_type == "github":
+        ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    else:
+        ci_file = output_dir / ".gitlab-ci.yml"
     parsed = yaml.safe_load(ci_file.read_text(encoding="utf-8"))
 
-    build_jobs = [
-        job for job in parsed["jobs"].values()
+    assert isinstance(parsed, dict)
+    jobs = parsed["jobs"] if ci_type == "github" else parsed
+    assert jobs, "the pipeline still has jobs"
+
+
+def test_pinned_build_type_reaches_every_github_matrix(tmp_path):
+    """Each job's matrix follows the filter — reported per job, not in aggregate."""
+    toml_file = _write_filtered_toml(tmp_path, "github", _FILTER_TOMLS["pinned-build-type"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    parsed = yaml.safe_load(
+        (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    )
+    build_types = {
+        name: job["strategy"]["matrix"]["build_type"]
+        for name, job in parsed["jobs"].items()
         if "build_type" in job.get("strategy", {}).get("matrix", {})
-    ]
-    assert build_jobs, "No job carries a build_type matrix"
-    for job in build_jobs:
-        assert job["strategy"]["matrix"]["build_type"] == ["Release"]
+    }
+
+    assert build_types == {name: ["Release"] for name in build_types}, build_types
+    assert len(build_types) == 4, build_types

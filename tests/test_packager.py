@@ -16,7 +16,14 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION,
     VS2019_REMOTE_NAME,
 )
-from xmsconan.package_tools.packager import get_current_arch, validate_filter_dict, XmsConanPackager
+from xmsconan.package_tools.packager import (
+    configurations,
+    emitted_buildenv_keys,
+    get_current_arch,
+    summarize_filter_matches,
+    validate_filter_dict,
+    XmsConanPackager,
+)
 from .utils import patch_env
 
 # --- get_current_arch ---
@@ -675,9 +682,121 @@ def test_validate_filter_dict_rejects_unknown_option():
         validate_filter_dict({"options": {"pybnid": True}})
 
 
-def test_validate_filter_dict_allows_arbitrary_buildenv_names():
-    """The buildenv keys are env var names, so they aren't checked against a list."""
-    validate_filter_dict({"buildenv": {"SOME_PROJECT_VAR": "1"}})
+def test_validate_filter_dict_accepts_emitted_buildenv_names():
+    """The buildenv names the profiles actually set are filterable."""
+    validate_filter_dict({"buildenv": {"XMS_COVERAGE": "1", "PYTHON_TARGET_VERSION": "3.13"}})
+
+
+def test_validate_filter_dict_rejects_unknown_buildenv_name():
+    """A buildenv name no profile sets would match everything, so it raises."""
+    with pytest.raises(ValueError, match="SOME_PROJECT_VAR"):
+        validate_filter_dict({"buildenv": {"SOME_PROJECT_VAR": "1"}})
+
+
+def test_emitted_buildenv_keys_covers_conditional_names():
+    """The derived set includes names only some configurations carry.
+
+    Derived from the matrix rather than hand-listed, so the macOS-only and
+    coverage-only names come along without a second edit.
+    """
+    keys = emitted_buildenv_keys()
+    assert {"XMS_VERSION", "PYTHON_TARGET_VERSION"} <= keys, "unconditional names"
+    assert {"XMS_COVERAGE", "MACOSX_DEPLOYMENT_TARGET", "_PYTHON_HOST_PLATFORM"} <= keys
+    assert "XMS_TEST_ARTIFACTS_LABEL" in keys, "added by run(), not generate_configurations"
+
+
+@pytest.mark.parametrize("filter_dict,expected_message", [
+    pytest.param({"build_type": "release"}, "must be one of", id="wrong-case-build-type"),
+    pytest.param({"build_type": "Relase"}, "must be one of", id="typo-build-type"),
+    pytest.param({"compiler.version": 194}, "must be one of", id="int-compiler-version"),
+    pytest.param({"os": "MacOS"}, "must be one of", id="wrong-case-os"),
+])
+def test_validate_filter_dict_rejects_unmatchable_setting_values(filter_dict, expected_message):
+    """A value no configuration carries fails at validation, not at build time.
+
+    Rejecting a list because "a collection can never match" while accepting a
+    scalar that likewise can never match was the inconsistency here.
+    """
+    with pytest.raises(ValueError, match=expected_message):
+        validate_filter_dict(filter_dict)
+
+
+@pytest.mark.parametrize("options,expected_message", [
+    pytest.param({"python_version": 3.13}, "float", id="unquoted-version-is-a-float"),
+    pytest.param({"python_version": "3"}, "X.Y", id="malformed-version"),
+    pytest.param({"pybind": "false"}, "true or false", id="quoted-bool"),
+    pytest.param({"testing": 1}, "true or false", id="int-bool"),
+    pytest.param({"wchar_t": "typdef"}, "must be one of", id="typo-wchar_t"),
+    pytest.param({"pybind": [True]}, "single value", id="collection-in-options"),
+])
+def test_validate_filter_dict_rejects_bad_option_values(options, expected_message):
+    """Option values are checked, not just option names.
+
+    ``python_version = 3.13`` is the sharp case: TOML reads it as a float, it
+    matches no configuration's string value, and because non-pybind
+    configurations don't carry the key at all the matrix stays non-empty — so
+    the build exits 0 having quietly produced no wheel.
+    """
+    with pytest.raises(ValueError, match=expected_message):
+        validate_filter_dict({"options": options})
+
+
+def test_validate_filter_dict_accepts_valid_option_values():
+    """The values the matrix does emit pass, including the enumerated ones."""
+    validate_filter_dict({"options": {
+        "wchar_t": "typedef", "pybind": True, "testing": False, "python_version": "3.13",
+    }})
+
+
+def test_validate_filter_dict_rejects_unrenderable_value():
+    """Values that can't be rendered into the generated build.py are refused.
+
+    ``build.py`` imports only argparse/json/os, so a TOML date baked in as
+    ``datetime.date(...)`` would raise NameError at import.
+    """
+    import datetime
+    with pytest.raises(ValueError, match="string, bool, or int"):
+        validate_filter_dict({"build_type": datetime.date(2026, 1, 1)})
+
+
+# --- summarize_filter_matches ---
+
+
+@patch_env(clear=True)
+def test_summarize_filter_matches_counts_survivors_per_platform():
+    """Reports what a filter keeps, so a generator can catch an empty matrix."""
+    summary = summarize_filter_matches({"build_type": "Release"})
+
+    # Derived from the packager's own platform table: a new platform (windows_vs2019
+    # was one) should widen this automatically rather than fail a hardcoded set.
+    assert set(summary) == set(configurations)
+    for platform_name, counts in summary.items():
+        assert counts["total"] > 0, platform_name
+        assert counts["pybind"] > 0, platform_name
+
+
+@patch_env(clear=True)
+def test_summarize_filter_matches_reports_zero_for_impossible_combination():
+    """The testing and pybind options are never both true in one configuration."""
+    summary = summarize_filter_matches({"options": {"testing": True, "pybind": True}})
+
+    assert all(counts["total"] == 0 for counts in summary.values())
+
+
+@patch_env(clear=True)
+def test_summarize_filter_matches_honors_python_versions():
+    """The pybind fan-out follows [ci].python_versions, not just the default.
+
+    Without this the check would reject a legitimate ``python_version = "3.10"``
+    pin in a repo whose CI builds 3.10.
+    """
+    default = summarize_filter_matches({"options": {"python_version": "3.10"}})
+    configured = summarize_filter_matches(
+        {"options": {"python_version": "3.10"}}, python_versions=["3.10", "3.13"],
+    )
+
+    assert all(counts["pybind"] == 0 for counts in default.values())
+    assert all(counts["pybind"] > 0 for counts in configured.values())
 
 
 def test_validate_filter_dict_rejects_collection_setting_value():

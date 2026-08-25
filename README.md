@@ -109,9 +109,17 @@ pybind = false           # this library ships no wheel
 
 Top-level keys are Conan settings (`build_type`, `arch`, `compiler`,
 `compiler.runtime`, …); `[filter.options]` accepts `wchar_t`, `pybind`, `testing`,
-and `python_version`; `[filter.buildenv]` accepts any env var the profiles set.
-Values are matched for equality, one per key. Pass `--ignore-build-filter` to
-`build.py` for a one-off build of an excluded configuration. See
+and `python_version`; `[filter.buildenv]` accepts the env var names the profiles
+set. Keys and values are matched for equality, one value per key, and both are
+validated when the files are generated — a value nothing builds (`"release"`, an
+unquoted `3.13`, `testing` and `pybind` both true) fails `xmsconan gen` rather
+than every later build.
+
+`options.pybind = false` also removes the wheel repair / upload steps from the
+generated CI, so a library that ships no wheel gets a pipeline that can pass. An
+`os` / `arch` / `compiler` pin is only warned about — those are separate CI job
+blocks, not a matrix axis. Pass `--ignore-build-filter` to `build.py` for a
+one-off build of an excluded configuration. See
 [docs/USAGE.md §5.8](docs/USAGE.md) for the full behavior.
 
 ### Advanced
