@@ -1,5 +1,6 @@
 """Tests for coverage_tools.coverage_generator."""
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -20,6 +21,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _reexec_under_xvfb,
     _resolve_coverage_python_version,
     _resolve_gcovr_filters,
+    _warn_if_tracefile_empty,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
@@ -707,12 +709,14 @@ class TestAssertGcovrCollectedData:
     """
 
     def test_raises_when_line_total_zero(self, tmp_path):
-        """Empty gcovr result → RuntimeError naming the build folder."""
+        """Empty merged result → RuntimeError naming every folder read."""
         summary = tmp_path / "cov-cpp-summary.json"
         summary.write_text(json.dumps({"line_percent": 0.0, "line_total": 0}))
         build_folder = tmp_path / "build"
         with pytest.raises(RuntimeError) as exc_info:
-            _assert_gcovr_collected_data(summary, build_folder, ["xmscore/"])
+            _assert_gcovr_collected_data(
+                summary, [(build_folder, ["xmscore/"])],
+            )
         msg = str(exc_info.value)
         assert str(build_folder) in msg
         # Diagnostic must name the most likely cause (XMS_COVERAGE / #69):
@@ -720,6 +724,32 @@ class TestAssertGcovrCollectedData:
         # And echo the filters we actually used, so the operator can
         # compare them against the real source paths:
         assert "xmscore/" in msg
+
+    def test_raises_pairs_each_folder_with_its_own_filters(self, tmp_path):
+        """Each folder appears with the filters resolved against THAT folder.
+
+        Filters are anchored to one folder's absolute paths, so a message that
+        pairs folder A with folder B's filters tells the reader to compare
+        patterns against a tree those patterns never described -- pointing at
+        the filter cause when the real one is usually missing instrumentation.
+        """
+        summary = tmp_path / "cov-cpp-summary.json"
+        summary.write_text(json.dumps({"line_percent": 0.0, "line_total": 0}))
+        cpp, py = tmp_path / "cpp-build", tmp_path / "py-build"
+        # Sentinel filter values rather than real anchored paths: the message
+        # renders folders with str() and filters with repr(), so a filter
+        # containing a Windows path would be backslash-escaped and never match
+        # a naive substring search. The ordering is what this test is about.
+        with pytest.raises(RuntimeError) as exc_info:
+            _assert_gcovr_collected_data(summary, [
+                (cpp, ["FILTER-FOR-CPP"]),
+                (py, ["FILTER-FOR-PY"]),
+            ])
+        msg = str(exc_info.value)
+        # Each folder is followed by its own filter, before the next folder.
+        cpp_at, py_at = msg.index(str(cpp)), msg.index(str(py))
+        assert cpp_at < msg.index("FILTER-FOR-CPP") < py_at
+        assert py_at < msg.index("FILTER-FOR-PY")
 
     def test_passes_when_line_total_positive(self, tmp_path):
         """A real measurement (any non-zero line_total) is not an error.
@@ -730,7 +760,7 @@ class TestAssertGcovrCollectedData:
         """
         summary = tmp_path / "cov-cpp-summary.json"
         summary.write_text(json.dumps({"line_percent": 0.0, "line_total": 1000}))
-        _assert_gcovr_collected_data(summary, tmp_path, ["xmscore/"])
+        _assert_gcovr_collected_data(summary, [(tmp_path, ["xmscore/"])])
 
     def test_passes_when_line_total_key_absent(self, tmp_path):
         """Schema drift (no ``line_total`` at all) is left to the percent extractor.
@@ -740,7 +770,56 @@ class TestAssertGcovrCollectedData:
         """
         summary = tmp_path / "cov-cpp-summary.json"
         summary.write_text(json.dumps({"line_percent": 50.0}))
-        _assert_gcovr_collected_data(summary, tmp_path, ["xmscore/"])
+        _assert_gcovr_collected_data(summary, [(tmp_path, ["xmscore/"])])
+
+
+class TestWarnIfTracefileEmpty:
+    """A build folder that contributes nothing must say so in the log.
+
+    The merged report is what fails the run, and it stays healthy on one
+    folder's data alone -- so a folder silently dropping out of the merge is
+    invisible in the number. The binding layer simply disappears from the
+    report with no other signal.
+    """
+
+    def test_warns_when_no_files(self, tmp_path, caplog):
+        """An empty file list warns, naming the folder and its own filters."""
+        tracefile = tmp_path / "trace.json"
+        tracefile.write_text(json.dumps({"files": []}))
+        folder = tmp_path / "py-build"
+        with caplog.at_level(logging.WARNING):
+            _warn_if_tracefile_empty(tracefile, folder, ["FILTER-SENTINEL"])
+        assert str(folder) in caplog.text
+        assert "FILTER-SENTINEL" in caplog.text
+        # Points at instrumentation, the actual cause, rather than at tests
+        # not covering the code -- a compiled file appears here regardless.
+        assert "XMS_COVERAGE" in caplog.text or "#69" in caplog.text
+
+    def test_silent_when_files_present(self, tmp_path, caplog):
+        """A folder that contributed files is not worth mentioning.
+
+        Zero *coverage* is not zero *files*: .gcno is written at compile time,
+        so a compiled-but-never-executed file still appears. Warning on that
+        would fire for every library whose bindings a test never exercises.
+        """
+        tracefile = tmp_path / "trace.json"
+        tracefile.write_text(json.dumps({
+            "files": [{"file": "xmscore/foo.cpp", "lines": []}],
+        }))
+        with caplog.at_level(logging.WARNING):
+            _warn_if_tracefile_empty(tracefile, tmp_path, ["x/"])
+        assert caplog.text == ""
+
+    def test_unreadable_tracefile_warns_without_raising(self, tmp_path, caplog):
+        """A missing or malformed tracefile must not take down the run.
+
+        This is a diagnostic; the merged summary is the thing that decides
+        pass or fail, so a problem reading one tracefile is worth reporting
+        and nothing more.
+        """
+        with caplog.at_level(logging.WARNING):
+            _warn_if_tracefile_empty(tmp_path / "absent.json", tmp_path, [])
+        assert "absent.json" in caplog.text
 
 
 class TestRunCoverageThresholdGating:
