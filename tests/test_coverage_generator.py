@@ -787,18 +787,29 @@ class TestWarnIfTracefileEmpty:
     report with no other signal.
     """
 
+    #: Scoping the capture to this module keeps an unrelated library's warning
+    #: from satisfying -- or falsifying -- these assertions. caplog collects
+    #: every record propagating to root for the whole test, not just the ones
+    #: emitted inside the with block.
+    LOGGER_NAME = "xmsconan.coverage_tools.coverage_generator"
+
+    def _messages(self, caplog):
+        """Return the messages this module logged, ignoring every other logger."""
+        return [r.message for r in caplog.records if r.name == self.LOGGER_NAME]
+
     def test_warns_when_no_files(self, tmp_path, caplog):
         """An empty file list warns, naming the folder and its own filters."""
         tracefile = tmp_path / "trace.json"
         tracefile.write_text(json.dumps({"files": []}))
         folder = tmp_path / "py-build"
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             _warn_if_tracefile_empty(tracefile, folder, ["FILTER-SENTINEL"])
-        assert str(folder) in caplog.text
-        assert "FILTER-SENTINEL" in caplog.text
+        text = " ".join(self._messages(caplog))
+        assert str(folder) in text
+        assert "FILTER-SENTINEL" in text
         # Points at instrumentation, the actual cause, rather than at tests
         # not covering the code -- a compiled file appears here regardless.
-        assert "XMS_COVERAGE" in caplog.text or "#69" in caplog.text
+        assert "XMS_COVERAGE" in text or "#69" in text
 
     def test_silent_when_files_present(self, tmp_path, caplog):
         """A folder that contributed files is not worth mentioning.
@@ -811,9 +822,9 @@ class TestWarnIfTracefileEmpty:
         tracefile.write_text(json.dumps({
             "files": [{"file": "xmscore/foo.cpp", "lines": []}],
         }))
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             _warn_if_tracefile_empty(tracefile, tmp_path, ["x/"])
-        assert caplog.text == ""
+        assert self._messages(caplog) == []
 
     def test_unreadable_tracefile_warns_without_raising(self, tmp_path, caplog):
         """A missing or malformed tracefile must not take down the run.
@@ -822,9 +833,9 @@ class TestWarnIfTracefileEmpty:
         pass or fail, so a problem reading one tracefile is worth reporting
         and nothing more.
         """
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             _warn_if_tracefile_empty(tmp_path / "absent.json", tmp_path, [])
-        assert "absent.json" in caplog.text
+        assert any("absent.json" in m for m in self._messages(caplog))
 
 
 class TestRunCoverageThresholdGating:
