@@ -416,8 +416,8 @@ if (IS_PYTHON_BUILD)
     #
     # Windows only: the import library, and so the whole
     # consumer-links-the-module story, exists only there. Off Windows the module
-    # must keep the name the shipped Python imports it by, because a Debug
-    # pybind build is what coverage instruments.
+    # must keep the name the shipped Python imports it by, or the wheel built
+    # from that tree installs a module `import` cannot find.
     #
     # Gated on pybind_advertises_module, exactly like package_info(): the opt-in
     # is what makes _<name>_d a name anything links. A library that has not

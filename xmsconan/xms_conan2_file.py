@@ -648,10 +648,11 @@ class XmsConan2File(ConanFile):
         building one only to discard it buys nothing.
 
         Off Windows the postfix is never re-asserted, so a Debug module keeps
-        its importable name -- and a Debug pybind build is exactly what
-        ``xmsconan coverage`` instruments for the Python half of its report.
-        Skipping the wheel there would report zero Python coverage with no
-        error, so it must build its wheel and run its tests.
+        the name the shipped Python imports it by and its wheel installs like
+        any other. A library only gets a Debug pybind configuration by naming
+        ``Debug`` in ``[matrix].pybind_build_types``, which it does because its
+        consumers link that module -- so the wheel is built and its Python
+        tests run.
 
         Returns:
             True when the wheel should be built and the Python tests run.

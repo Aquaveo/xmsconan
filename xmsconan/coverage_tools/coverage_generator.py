@@ -655,9 +655,11 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
 
     # 3. Python coverage build: pybind=True, testing=False, Release, pinned
     #    to one Python ABI. Drives pytest-cov against the wheel inside the
-    #    recipe's run_python_tests. Release rather than Debug: pytest-cov
-    #    reports Python lines, and step 5 points gcovr at the testing build
-    #    folder alone, so an instrumented module would buy nothing.
+    #    recipe's run_python_tests, and is instrumented so step 5 can merge its
+    #    .gcda for the binding layer. Release rather than Debug because
+    #    Debug+pybind is often not published for XMS libraries and may not exist,
+    #    and the XMS_COVERAGE CMake block appends -O0 -g after CMake's -O3, so
+    #    a Release build is unoptimized and loses nothing in line data.
     py_filter = json.dumps({
         "build_type": "Release",
         "options": {
