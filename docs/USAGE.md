@@ -629,6 +629,8 @@ What runs per platform:
 | macOS | `delocate-wheel` | `DYLD_LIBRARY_PATH={wheel_dir}/libs` |
 | Windows | `delvewheel repair --namespace-pkg xms` | `--add-path {wheel_dir}/libs` |
 
+Each tool is installed into the interpreter running `xmsconan_wheel_repair` and then invoked by the absolute path it was installed to, resolved against that interpreter's script directory. Installing xmsconan as a `uv tool` leaves that directory off `PATH`, so a bare-name invocation would fail with `FileNotFoundError` even though the install had just succeeded.
+
 `build.py` already populates `wheelhouse/libs/` for you when `--wheel-dir` is set — `collect_dependency_libs` copies **every** `.dll` / `.so` / `.dylib` anywhere in the Conan cache, which is routinely several hundred files. After repair, the original `wheelhouse/` is replaced with the repaired version (the `libs/` directory is removed).
 
 ### 12.1 Opting out on Windows (`[ci].windows_wheel_repair = false`)
