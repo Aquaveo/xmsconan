@@ -540,12 +540,13 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
     The packager emits a Debug+testing-only config and a Release+pybind-only
-    config independently; this function builds each in sequence, runs
-    gcovr against the testing build folder, and copies pytest-cov
-    artifacts out of the pybind build folder. The two builds never
-    share a binary shape, so changes to CxxTest linkage or pybind
-    options cannot break the other layer. Only the testing build is
-    instrumented -- it is the one gcovr reads.
+    config independently; this function builds each in sequence, runs gcovr
+    against both build folders and merges the result, and copies pytest-cov
+    artifacts out of the pybind build folder. The two builds never share a
+    binary shape, so changes to CxxTest linkage or pybind options cannot break
+    the other layer. Both are instrumented: the testing build supplies what
+    CxxTest reaches, the pybind build the binding layer and anything only a
+    Python test exercises.
 
     Returns the process exit code (0 = pass, non-zero = threshold failure
     or a build.py failure in either layer).
