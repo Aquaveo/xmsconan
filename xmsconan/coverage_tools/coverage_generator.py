@@ -343,12 +343,21 @@ def _resolve_gcovr_filters(filters, build_folder: Path):
     return result
 
 
-def _assert_gcovr_collected_data(summary_path: Path, build_folder: Path,
-                                 filter_args) -> None:
-    """Raise if gcovr's summary reports zero instrumented lines.
+def _assert_gcovr_collected_data(summary_path: Path, collections) -> None:
+    """Raise if gcovr's merged summary reports zero instrumented lines.
+
+    Args:
+        summary_path: The merged ``--json-summary`` gcovr wrote.
+        collections: ``(build_folder, resolved_filters)`` pairs, one per folder
+            read. Kept as pairs because a filter list is anchored to a single
+            folder's absolute paths, so the diagnostic can only be acted on if
+            each folder is shown with the filters used against it.
 
     ``line_total == 0`` means gcovr ran successfully but produced an
-    empty report. Three common causes, in descending likelihood:
+    empty report. Since the summary is merged, that means *no* folder
+    contributed -- a single folder dropping out is reported by
+    :func:`_warn_if_tracefile_empty` instead. Three common causes, in
+    descending likelihood:
 
       1. The binary was compiled without ``--coverage``. ``XMS_COVERAGE``
          needs to be propagated to CMake (see #69); if the recipe
@@ -374,19 +383,25 @@ def _assert_gcovr_collected_data(summary_path: Path, build_folder: Path,
     line_total = data.get("line_total")
     if line_total is None or line_total > 0:
         return
+    # Every folder is named, with the filters that were used against *it*:
+    # a merged total of zero means no folder contributed, and filters are
+    # anchored to one folder's absolute paths, so pairing them wrongly sends
+    # the reader to compare patterns against a tree they never described.
+    per_folder = "".join(
+        f"\n     - {folder}\n       filters: {filters!r}"
+        for folder, filters in collections
+    )
     raise RuntimeError(
-        "gcovr collected zero instrumented lines from "
-        f"{build_folder}. The C++ coverage report is empty. "
-        "Common causes:\n"
+        "gcovr collected zero instrumented lines from any build folder. "
+        "The C++ coverage report is empty. Common causes:\n"
         "  1. The binary was compiled without --coverage. Verify that "
         "XMS_COVERAGE=1 reached the CMake configure step (see #69 — "
         "this is the most common cause).\n"
-        "  2. The filter patterns excluded every source file. Filters "
-        f"passed to gcovr were: {filter_args!r}. Compare these against "
-        "the absolute source paths embedded in the .gcno files under "
-        f"{build_folder}.\n"
-        "  3. No .gcno files exist in the build folder at all (the "
-        "package may have been pulled from a binary cache rather than "
+        "  2. The filter patterns excluded every source file. Compare each "
+        "folder's filters against the absolute source paths embedded in the "
+        ".gcno files under that same folder:" + per_folder + "\n"
+        "  3. No .gcno files exist in the build folders at all (the "
+        "packages may have been pulled from a binary cache rather than "
         "rebuilt with instrumentation)."
     )
 
@@ -426,7 +441,46 @@ def _collect_gcovr_tracefile(build_folder: Path, coverage_cfg: dict,
         cmd.extend(["--exclude", e])
     cmd.append(str(build_folder))
     _run(cmd)
+    _warn_if_tracefile_empty(tracefile, build_folder, resolved_filters)
     return resolved_filters
+
+
+def _warn_if_tracefile_empty(tracefile: Path, build_folder: Path,
+                             resolved_filters) -> None:
+    """Warn when one build folder contributed no files to the merge.
+
+    Warns rather than raises: a folder legitimately contributing nothing is
+    possible, and the merged report is what the run is judged on --
+    :func:`_assert_gcovr_collected_data` still fails an empty *merged* result.
+    But a folder silently dropping out is invisible in the merged number, which
+    stays healthy on the other folder's data, so the signal has to exist
+    somewhere.
+
+    A compiled file appears here even when no test executed it -- .gcno is
+    written at compile time -- so an empty tracefile means compilation or
+    instrumentation did not happen, not that tests missed the code.
+
+    Reported here rather than after the loop so the folder and the filters
+    named in the message are the pair actually used together; the filters
+    :func:`_resolve_gcovr_filters` produces are anchored to one folder's
+    absolute paths and mean nothing against another's.
+    """
+    try:
+        data = json.loads(tracefile.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.warning("Could not read gcovr tracefile %s: %s", tracefile, exc)
+        return
+    if data.get("files"):
+        return
+    LOGGER.warning(
+        "gcovr collected no files from %s, so nothing from that build reaches "
+        "the merged C++ report. A file compiled there would appear even with "
+        "no test exercising it, so this points at compilation or "
+        "instrumentation rather than test coverage: check that XMS_COVERAGE=1 "
+        "reached the CMake configure step (#69). Filters used for this folder "
+        "were: %r",
+        build_folder, resolved_filters,
+    )
 
 
 def _run_gcovr(build_folders, coverage_cfg: dict,
@@ -453,13 +507,17 @@ def _run_gcovr(build_folders, coverage_cfg: dict,
     json_summary = output_dir / "cov-cpp-summary.json"
 
     tracefiles = []
-    resolved_filters = []
+    # Kept as pairs, not a flat list: filters are anchored to one folder's
+    # absolute paths, so the folder they were resolved against has to travel
+    # with them for any diagnostic built from them to be actionable.
+    collections = []
     for i, build_folder in enumerate(build_folders):
         tracefile = output_dir / f"cov-cpp-tracefile-{i}.json"
         resolved_filters = _collect_gcovr_tracefile(
             build_folder, coverage_cfg, tracefile,
         )
         tracefiles.append(tracefile)
+        collections.append((build_folder, resolved_filters))
 
     cmd = [
         "gcovr",
@@ -472,12 +530,10 @@ def _run_gcovr(build_folders, coverage_cfg: dict,
     for tracefile in tracefiles:
         cmd.extend(["--add-tracefile", str(tracefile)])
     _run(cmd)
-    # Checked on the merged summary: an empty *merged* report is the failure
-    # worth naming. A single folder legitimately contributing nothing is not
-    # -- a library whose bindings are a stub has little to instrument there.
-    _assert_gcovr_collected_data(
-        json_summary, build_folders[0], resolved_filters,
-    )
+    # Only an empty *merged* report fails the run. A single folder contributing
+    # nothing is legitimate -- a library whose bindings are a stub has little to
+    # instrument there -- and is reported as a warning by the collection step.
+    _assert_gcovr_collected_data(json_summary, collections)
     return json_summary
 
 
