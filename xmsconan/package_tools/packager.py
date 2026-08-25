@@ -211,9 +211,9 @@ class XmsConanPackager(object):
                 setting, since one ``build.toml`` serves every platform.
                 ``pybind_build_types`` names the build types that get a pybind
                 variant (a subset of ``["Release", "Debug"]``, default
-                ``["Release"]``); ``coverage`` adds ``Debug`` to whatever it
-                names, because the instrumented build is a separate concern from
-                which modules a library ships. None means the full historical
+                ``["Release"]``), and is the only thing that decides them --
+                ``coverage`` instruments the configurations this names rather
+                than adding one of its own. None means the full historical
                 fan-out.
             apply_boost_defaults: If True (the default), inject the boost
                 ``without_stacktrace`` / ``without_locale`` defaults described

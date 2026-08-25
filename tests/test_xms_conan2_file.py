@@ -913,14 +913,14 @@ class TestBuildsWheel:
 
     @pytest.mark.parametrize("os_name", ["Linux", "Macos"])
     def test_debug_builds_the_wheel_off_windows(self, os_name: str) -> None:
-        """The Debug pybind build off Windows is what coverage instruments.
+        """A Debug pybind build off Windows still builds its wheel and tests.
 
-        ``xmsconan coverage`` runs its Python half as
-        ``pybind=True, testing=False, Debug`` on Linux and reads pytest-cov
-        output from that build. The postfix is re-asserted on Windows only, so
-        the module keeps its importable name here -- skipping the wheel would
-        report zero Python coverage with no error, which is what a
-        ``build_type``-only skip did.
+        The postfix is re-asserted on Windows only, so off Windows the module
+        keeps the name the shipped Python imports it by and its wheel installs
+        like any other. A library only has a Debug pybind configuration because
+        it named ``Debug`` in ``[matrix].pybind_build_types``, so a
+        ``build_type``-only skip would silently drop the Python tests for the
+        very module its consumers link.
         """
         obj = self._make_obj("Debug", os_name)
         assert obj._builds_wheel() is True
