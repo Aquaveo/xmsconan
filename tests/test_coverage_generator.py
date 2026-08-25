@@ -1118,10 +1118,12 @@ class TestRunCoverageThresholdGating:
         assert filter_dicts[0]["options"]["pybind"] is False
         assert filter_dicts[0]["build_type"] == "Debug"
 
-        # Second build is the pybind-only one (Python coverage), pinned to
-        # one Python ABI, and Release: pytest-cov measures Python lines, and
-        # gcovr never reads this build folder, so instrumenting it would only
-        # cost every dependency a Debug+pybind binary.
+        # Second build is the pybind-only one (Python coverage), pinned to one
+        # Python ABI, and Release rather than Debug: Debug+pybind is the one
+        # combination the xms libraries do not publish, so requiring it left
+        # every dependency short a binary. Release costs nothing in line data
+        # because the XMS_COVERAGE CMake block appends -O0 -g after CMake's
+        # -O3. This folder IS read -- see the collection-roots assertion below.
         assert filter_dicts[1]["options"]["pybind"] is True
         assert filter_dicts[1]["options"]["testing"] is False
         assert filter_dicts[1]["build_type"] == "Release"
