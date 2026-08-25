@@ -1,9 +1,13 @@
 """Tests for generator_tools.build_file_generator."""
+import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 import pytest
 
+import xmsconan
 from xmsconan.generator_tools import build_file_generator as build_file_generator_module
 from xmsconan.generator_tools.build_file_generator import (
     _write_text_lf,
@@ -1240,6 +1244,96 @@ def test_generation_rejects_a_malformed_matrix_table(tmp_path):
         )
 
 
+# --- [filter] table -> build.py BUILD_FILTER ---
+
+
+_FILTER_TOML = """\
+library_name = "xmscore"
+description = "Core library"
+python_namespaced_dir = "core"
+
+[filter]
+build_type = "Release"
+
+[filter.options]
+pybind = false
+"""
+
+_STUB_CONANFILE = """\
+LIBRARY_NAME = "xmscore"
+CONAN_PROFILE_OPTIONS = {}
+CONAN_MATRIX = {}
+"""
+
+
+def _render_build_py(toml_text, tmp_path):
+    """Render build.py from the real template into an isolated dir, return the dir."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(toml_text, encoding="utf-8")
+
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+
+    output_dir = tmp_path / "output"
+    render_template_with_toml(
+        toml_file_path=str(toml_file),
+        version="1.0.0",
+        template_dir=str(tpl_dir),
+        output_dir=str(output_dir),
+    )
+    # build.py imports LIBRARY_NAME / CONAN_PROFILE_OPTIONS from its sibling
+    # conanfile; a stub keeps this test off the real recipe (and off conan).
+    (output_dir / "conanfile.py").write_text(_STUB_CONANFILE, encoding="utf-8")
+    return output_dir
+
+
+def _run_build_py(output_dir, *args):
+    """Run the generated build.py with xmsconan importable, return the CompletedProcess."""
+    env = os.environ.copy()
+    repo_root = Path(xmsconan.__file__).resolve().parent.parent
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
+    )
+    return subprocess.run(
+        [sys.executable, "build.py", *args],
+        cwd=str(output_dir), env=env, capture_output=True, text=True,
+    )
+
+
+def test_build_py_defaults_to_no_build_filter(build_toml, tmp_path):
+    """Without a [filter] table build.py carries an empty BUILD_FILTER."""
+    output_dir = _render_build_py(build_toml.read_text(encoding="utf-8"), tmp_path)
+    assert "BUILD_FILTER = {}" in (output_dir / "build.py").read_text(encoding="utf-8")
+
+
+def test_build_py_embeds_filter_table(tmp_path):
+    """The [filter] table is baked into build.py as a Python dict literal."""
+    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+    content = (output_dir / "build.py").read_text(encoding="utf-8")
+    assert "BUILD_FILTER = {'build_type': 'Release', 'options': {'pybind': False}}" in content
+    assert "--ignore-build-filter" in content
+
+
+def test_gen_rejects_invalid_filter_table(tmp_path):
+    """A filter key that could never match fails generation, not every later build."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        _FILTER_TOML.replace('build_type = "Release"', "pybind = true"), encoding="utf-8"
+    )
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("build.py.jinja", tpl_dir)
+
+    with pytest.raises(ValueError, match=r"Invalid \[filter\] table in build.toml"):
+        render_template_with_toml(
+            toml_file_path=str(toml_file),
+            version="1.0.0",
+            template_dir=str(tpl_dir),
+            output_dir=str(tmp_path / "output"),
+        )
+
+
 # --- build.toml validation: a typo has to be an error, not a silent default ---
 
 
@@ -1274,10 +1368,12 @@ def test_unknown_top_level_key_raises(body, offender, template_dir, tmp_path):
     assert "Accepted keys" in str(excinfo.value)
 
 
-#: Keys that are real but carry no row in the USAGE.md option table: the three
+#: Keys that are real but carry no row in the USAGE.md option table: the four
 #: sub-tables, which get their own sections and their own validators, and
 #: `version`, which only ever arrives from the generator's --version flag.
-_KEYS_WITHOUT_AN_OPTION_TABLE_ROW = frozenset({"ci", "coverage", "matrix", "version"})
+_KEYS_WITHOUT_AN_OPTION_TABLE_ROW = frozenset(
+    {"ci", "coverage", "filter", "matrix", "version"}
+)
 
 
 def _keys_documented_in_usage():
@@ -1338,7 +1434,8 @@ def test_every_documented_key_is_accepted(template_dir, tmp_path):
             lines.append(f"{key} = {{}}")
         else:
             lines.append(f"{key} = []")
-    lines += ["[ci]", "coverage = true", "[coverage]", "cpp_threshold = 0", "[matrix]"]
+    lines += ["[ci]", "coverage = true", "[coverage]", "cpp_threshold = 0", "[matrix]",
+              "[filter]"]
 
     toml_file = tmp_path / "build.toml"
     toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1453,3 +1550,41 @@ def test_generated_build_py_refuses_to_upload_without_a_version(xms_version, tmp
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "--upload needs a concrete version" in result.stdout
+
+
+def test_generated_build_py_applies_filter_table(tmp_path):
+    """The embedded filter narrows the matrix build.py would actually build."""
+    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+    result = _run_build_py(output_dir, "--preview")
+
+    assert result.returncode == 0, result.stderr
+    assert "Applying build.toml [filter]" in result.stdout
+    assert "Debug" not in result.stdout
+
+
+def test_generated_build_py_ignore_flag_restores_full_matrix(tmp_path):
+    """--ignore-build-filter builds what build.toml filtered away."""
+    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+    filtered = _run_build_py(output_dir, "--preview")
+    unfiltered = _run_build_py(output_dir, "--preview", "--ignore-build-filter")
+
+    assert unfiltered.returncode == 0, unfiltered.stderr
+    assert "Applying build.toml [filter]" not in unfiltered.stdout
+    assert "Debug" in unfiltered.stdout
+    assert len(unfiltered.stdout) > len(filtered.stdout)
+
+
+def test_generated_build_py_fails_when_filters_cancel_out(tmp_path):
+    """A --filter the build.toml filter excludes fails loudly instead of no-opping.
+
+    Nothing survives the filters, so the guard fires before any conan call.
+    """
+    output_dir = _render_build_py(_FILTER_TOML, tmp_path)
+
+    result = _run_build_py(output_dir, "--filter", '{"build_type": "Debug"}')
+
+    assert result.returncode == 1
+    assert "No configurations match the requested filters" in result.stdout
+    assert '--filter={"build_type": "Debug"}' in result.stdout

@@ -92,6 +92,28 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 | `[matrix].compiler_runtime` | array[string] | `["dynamic", "static"]` | Which MSVC runtimes the fan-out builds. `["dynamic"]` drops the static-CRT configurations (and their `wchar_t` / `testing` copies) for a library nothing consumes a `/MT` build of. Inert on Linux and macOS. See `docs/USAGE.md` §5.4.1. |
 | `[matrix].pybind_build_types` | array[string] | `["Release"]` | Which build types get a pybind configuration. Add `"Debug"` when consumers link a Debug module; `XMS_COVERAGE=1` no longer adds `Debug` on top, because coverage takes its Python half from the Release pybind build. On Windows the Debug leg publishes no wheel and runs no Python tests. See `docs/USAGE.md` §5.4.1 and §7.5. |
 
+### Build Matrix Filter (`[filter]`)
+
+Optional baseline restriction on the configuration matrix, in the same shape as
+`build.py --filter`. `xmsconan gen` bakes it into the generated `build.py` (which
+applies it before any `--filter` given on the command line), and `xmsconan ci`
+narrows the generated `build_type` matrix to match.
+
+```toml
+[filter]
+build_type = "Release"   # never build Debug packages
+
+[filter.options]
+pybind = false           # this library ships no wheel
+```
+
+Top-level keys are Conan settings (`build_type`, `arch`, `compiler`,
+`compiler.runtime`, …); `[filter.options]` accepts `wchar_t`, `pybind`, `testing`,
+and `python_version`; `[filter.buildenv]` accepts any env var the profiles set.
+Values are matched for equality, one per key. Pass `--ignore-build-filter` to
+`build.py` for a one-off build of an excluded configuration. See
+[docs/USAGE.md §5.8](docs/USAGE.md) for the full behavior.
+
 ### Advanced
 
 | Field | Type | Default | Description |

@@ -9,6 +9,11 @@ from xmsconan.package_tools import packager
 
 import conanfile
 
+# Baseline matrix restriction from the [filter] table in build.toml. It is
+# applied before --filter, so the two narrow the matrix together; pass
+# --ignore-build-filter to build a configuration it excludes.
+BUILD_FILTER = {{ build_filter }}
+
 # arg parse for skip build and skip upload
 parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
@@ -23,6 +28,8 @@ parser.add_argument("--version", help="Version to upload (default: $XMS_VERSION)
                     default=os.environ.get("XMS_VERSION", "*"))
 parser.add_argument("--preview", help="Preview the configurations that will be build", action="store_true")
 parser.add_argument("--filter", help="Filter dictionary in JSON format")
+parser.add_argument("--ignore-build-filter", action="store_true",
+                    help="Ignore the [filter] table from build.toml")
 parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
 parser.add_argument("--python-only", help="Only build the Python (pybind) configuration", action="store_true")
 parser.add_argument("--wheel-dir", help="Extract pre-built wheel from pybind package to this directory")
@@ -50,6 +57,9 @@ if __name__ == "__main__":
         matrix=conanfile.CONAN_MATRIX,
     )
     builder.generate_configurations()
+    if BUILD_FILTER and not args.ignore_build_filter:
+        print(f"Applying build.toml [filter]: {BUILD_FILTER}")
+        builder.filter_configurations(BUILD_FILTER)
     if args.filter:
         filter_options = json.loads(args.filter)
         builder.filter_configurations(filter_options)
@@ -59,6 +69,15 @@ if __name__ == "__main__":
         builder.print_configuration_table()
         exit(0)
         # Use config_dict as needed
+    if not builder.configurations:
+        # Filters that cancel each other out used to build nothing and exit 0,
+        # which reads as a passing build that produced no packages.
+        print(
+            "No configurations match the requested filters. Applied: "
+            f"build.toml [filter]={BUILD_FILTER if not args.ignore_build_filter else None}, "
+            f"--filter={args.filter}, --python-only={args.python_only}"
+        )
+        exit(1)
     if not args.skip_build:
         err_count = builder.run()
         if err_count > 0:

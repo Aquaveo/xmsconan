@@ -105,6 +105,12 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
         # profile for the configuration it just asked for.
         matrix=data.get("matrix"),
     )
+    # The [filter] table is deliberately *not* applied here, though it also
+    # narrows what build.py builds. `build.py --ignore-build-filter` exists so a
+    # developer can build a filtered-out configuration on demand, and that needs
+    # a profile to build it with -- and `_remove_stale_profiles` above would
+    # delete exactly the profile that flag is for. [matrix] has no such escape
+    # hatch, which is why it narrows profiles and [filter] does not.
 
     if dry_run:
         # Reuse the same plan write_profiles executes, so a dry run cannot

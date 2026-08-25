@@ -16,7 +16,7 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION,
     VS2019_REMOTE_NAME,
 )
-from xmsconan.package_tools.packager import get_current_arch, XmsConanPackager
+from xmsconan.package_tools.packager import get_current_arch, validate_filter_dict, XmsConanPackager
 from .utils import patch_env
 
 # --- get_current_arch ---
@@ -606,6 +606,84 @@ def test_filter_configurations_drops_configs_lacking_the_option():
 
     assert p.configurations
     assert all(c["options"].get("python_version") == "3.13" for c in p.configurations)
+
+
+def test_filter_configurations_ignores_setting_absent_from_platform():
+    """A Windows-only setting doesn't wipe out the Linux matrix.
+
+    ``compiler.runtime`` exists only in the Windows configuration block. A
+    build.toml ``[filter]`` that pins it has to stay usable on Linux and macOS,
+    where no configuration carries the key at all.
+    """
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+    total = len(p.configurations)
+
+    p.filter_configurations({"compiler.runtime": "dynamic"})
+    assert len(p.configurations) == total
+
+
+@patch_env(clear=True)
+def test_filter_configurations_applies_platform_setting_where_present():
+    """The same platform-specific key still filters on the platform that has it."""
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="windows")
+    total = len(p.configurations)
+
+    p.filter_configurations({"compiler.runtime": "dynamic"})
+    assert p.configurations
+    assert len(p.configurations) < total
+    assert all(c["compiler.runtime"] == "dynamic" for c in p.configurations)
+
+
+def test_filter_configurations_validates_before_generate():
+    """A bad filter raises even when configurations haven't been generated yet."""
+    p = XmsConanPackager("xmscore")
+    with pytest.raises(ValueError, match="pybind"):
+        p.filter_configurations({"pybind": True})
+
+
+# --- validate_filter_dict ---
+
+
+def test_validate_filter_dict_accepts_settings_and_nested_tables():
+    """The documented filter shape validates clean."""
+    validate_filter_dict({
+        "build_type": "Debug",
+        "compiler.runtime": "static",
+        "options": {"pybind": True, "python_version": "3.13"},
+        "buildenv": {"XMS_COVERAGE": "1"},
+    })
+
+
+def test_validate_filter_dict_rejects_non_dict():
+    """A scalar where a table belongs is reported, not indexed into."""
+    with pytest.raises(ValueError, match="must be a table/dict"):
+        validate_filter_dict("build_type=Release")
+
+
+@pytest.mark.parametrize("nested_key", ["options", "buildenv"])
+def test_validate_filter_dict_rejects_scalar_nested_table(nested_key):
+    """``options``/``buildenv`` must be tables of names to values."""
+    with pytest.raises(ValueError, match=nested_key):
+        validate_filter_dict({nested_key: True})
+
+
+def test_validate_filter_dict_rejects_unknown_option():
+    """A misspelled option would silently match everything, so it raises."""
+    with pytest.raises(ValueError, match="pybnid"):
+        validate_filter_dict({"options": {"pybnid": True}})
+
+
+def test_validate_filter_dict_allows_arbitrary_buildenv_names():
+    """The buildenv keys are env var names, so they aren't checked against a list."""
+    validate_filter_dict({"buildenv": {"SOME_PROJECT_VAR": "1"}})
+
+
+def test_validate_filter_dict_rejects_collection_setting_value():
+    """Filters compare by equality, so a list of build types can never match."""
+    with pytest.raises(ValueError, match="single value"):
+        validate_filter_dict({"build_type": ["Release", "Debug"]})
 
 
 # --- create_build_profile ---

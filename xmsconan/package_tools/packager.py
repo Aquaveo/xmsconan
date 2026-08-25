@@ -139,6 +139,69 @@ configurations = {
 }
 
 
+# Every settings key that appears in any platform's block above. Filters are
+# validated against the union rather than the running platform's keys so a
+# ``build.toml`` ``[filter]`` can pin a Windows-only setting (e.g.
+# ``compiler.runtime``) without breaking the Linux and macOS builds that never
+# see that key.
+FILTER_SETTING_KEYS = frozenset(
+    key for platform_config in configurations.values() for key in platform_config
+)
+
+# Option keys ``generate_configurations`` actually emits. Filtering on anything
+# else is a silent no-op, so it is rejected instead.
+FILTER_OPTION_KEYS = frozenset({'wchar_t', 'pybind', 'testing', 'python_version'})
+
+# Nested tables in a filter dict; their values are compared per-key.
+FILTER_NESTED_KEYS = ('options', 'buildenv')
+
+
+def validate_filter_dict(filter_dict):
+    """
+    Validate the shape of a configuration filter dict.
+
+    Accepts the same shape as ``build.py --filter`` and the ``[filter]`` table
+    in ``build.toml``: top-level Conan settings plus the nested ``options`` and
+    ``buildenv`` tables.
+
+    Args:
+        filter_dict: The filter to validate.
+
+    Raises:
+        ValueError: When a key would never match a generated configuration, or
+            when a value has a shape the equality comparison cannot use.
+    """
+    if not isinstance(filter_dict, dict):
+        raise ValueError(f"Filter must be a table/dict, got {type(filter_dict).__name__}.")
+    for key, value in filter_dict.items():
+        if key in FILTER_NESTED_KEYS:
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"Filter key {key!r} must be a table/dict of "
+                    f"{key} names to values, got {type(value).__name__}."
+                )
+            if key == 'options':
+                for option_key in value:
+                    if option_key not in FILTER_OPTION_KEYS:
+                        raise ValueError(
+                            f"Unknown filter option {option_key!r}: must be one of "
+                            f"{sorted(FILTER_OPTION_KEYS)}."
+                        )
+            continue
+        if key not in FILTER_SETTING_KEYS:
+            raise ValueError(
+                f"Unknown filter key {key!r}: must be a top-level configuration "
+                f"setting {sorted(FILTER_SETTING_KEYS)} or 'options'/'buildenv'. "
+                f"Did you mean {{'options': {{'{key}': ...}}}}?"
+            )
+        if isinstance(value, (list, tuple, dict, set)):
+            raise ValueError(
+                f"Filter value for {key!r} must be a single value, not "
+                f"{type(value).__name__} — filters match by equality, so a "
+                f"collection can never match a configuration."
+            )
+
+
 class XmsConanPackager(object):
     """The packager class."""
 
@@ -723,29 +786,26 @@ class XmsConanPackager(object):
           'build_type': 'Debug'  # ... that are built in debug mode
         }
 
-        Raises ``ValueError`` when a top-level key is neither a known
-        configuration setting nor one of ``options``/``buildenv`` — the prior
-        behavior silently dropped such keys, which is how flat ``pybind``/
-        ``testing`` filters slipped past unnoticed (see issue #62).
+        Raises ``ValueError`` (via ``validate_filter_dict``) when a top-level key
+        is neither a known configuration setting nor one of
+        ``options``/``buildenv`` — the prior behavior silently dropped such keys,
+        which is how flat ``pybind``/``testing`` filters slipped past unnoticed
+        (see issue #62).
+
+        Settings that this platform's configurations don't carry (e.g.
+        ``compiler.runtime``, which only Windows emits) are skipped rather than
+        excluding everything, matching how ``options``/``buildenv`` keys already
+        behave. That keeps a platform-specific ``[filter]`` in ``build.toml``
+        usable on every platform.
         """
+        validate_filter_dict(filter_dict)
         if self.configurations is None:
             return
-        if self.configurations:
-            sample_keys = set(self.configurations[0].keys())
-            for key in filter_dict.keys():
-                if key in ('options', 'buildenv'):
-                    continue
-                if key not in sample_keys:
-                    raise ValueError(
-                        f"Unknown filter key {key!r}: must be a top-level configuration "
-                        f"setting or 'options'/'buildenv'. Did you mean "
-                        f"{{'options': {{'{key}': ...}}}}?"
-                    )
         filtered_configurations = []
         for configuration in self.configurations:
             include_configuration = True
             for key, value in filter_dict.items():
-                if key in ['options', 'buildenv']:
+                if key in FILTER_NESTED_KEYS:
                     # A configuration that lacks the filtered key does not
                     # match it. The `option_key in ...` guard used to make an
                     # absent key match *anything*, so filtering on
@@ -758,7 +818,7 @@ class XmsConanPackager(object):
                     for option_key, option_value in value.items():
                         if section.get(option_key) != option_value:
                             include_configuration = False
-                elif configuration.get(key) != value:
+                elif key in configuration and configuration.get(key) != value:
                     include_configuration = False
             if include_configuration:
                 filtered_configurations.append(configuration)

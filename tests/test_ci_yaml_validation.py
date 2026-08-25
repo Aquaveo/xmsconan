@@ -367,3 +367,35 @@ def test_python_fanout_renders_valid_yaml(tmp_path, ci_type, ci_flags):
     for path in rendered:
         parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert isinstance(parsed, dict) and parsed
+
+
+# ---------------------------------------------------------------------------
+# [filter] table
+# ---------------------------------------------------------------------------
+
+
+def test_github_ci_with_pinned_build_type_produces_valid_yaml(tmp_path):
+    """A [filter]-narrowed build_type matrix is still a valid YAML sequence."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'ci_type = "github"\n'
+        'python_namespaced_dir = "core"\n'
+        "\n[ci]\nlinux_arm = true\n"
+        "\n[filter]\nbuild_type = \"Release\"\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    parsed = yaml.safe_load(ci_file.read_text(encoding="utf-8"))
+
+    build_jobs = [
+        job for job in parsed["jobs"].values()
+        if "build_type" in job.get("strategy", {}).get("matrix", {})
+    ]
+    assert build_jobs, "No job carries a build_type matrix"
+    for job in build_jobs:
+        assert job["strategy"]["matrix"]["build_type"] == ["Release"]

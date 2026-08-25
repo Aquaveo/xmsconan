@@ -76,7 +76,7 @@ jobs:
       matrix:
         platform: [macos-15]
         python-version: << ci_mac_python_versions | tojson >>
-        build_type: [Release, Debug]
+        build_type: << ci_build_types | tojson >>
 
     env:
       MATRIX_NAME: ${{ matrix.platform }}-Clang${{ matrix.compiler-version }}-${{ matrix.build_type }}<< ci_mac_py_suffix >>
@@ -231,7 +231,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [Release, Debug]
+        build_type: << ci_build_types | tojson >>
         python-version: << ci_linux_python_versions | tojson >>
 
     env:
@@ -375,7 +375,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: [Release, Debug]
+        build_type: << ci_build_types | tojson >>
         python-version: << ci_linux_python_versions | tojson >>
 
     env:
@@ -514,7 +514,7 @@ jobs:
         platform: [windows-2022]
         python-version: << ci_python_versions | tojson >>
         compiler-version: [17]
-        build_type: [Release, Debug]
+        build_type: << ci_build_types | tojson >>
 
     env:
       MATRIX_NAME: ${{ matrix.platform }}-VS${{ matrix.compiler-version }}-${{ matrix.build_type }}-py${{ matrix.python-version }}
