@@ -87,8 +87,12 @@ def test_linux_repair(mock_glob, mock_run, mock_rmtree, mock_move, mock_resolve)
     assert repair_call[0][0][0] == "auditwheel"
     assert Path(repair_call[1]["env"]["LD_LIBRARY_PATH"]) == Path(os.path.abspath("/tmp/wh/libs"))
 
-    mock_rmtree.assert_called_once_with("/tmp/wh")
-    mock_move.assert_called_once_with("/tmp/wh_repaired", "/tmp/wh")
+    mock_rmtree.assert_called_once()
+    assert Path(mock_rmtree.call_args[0][0]) == Path("/tmp/wh")
+    mock_move.assert_called_once()
+    moved_from, moved_to = mock_move.call_args[0]
+    assert Path(moved_from) == Path("/tmp/wh_repaired")
+    assert Path(moved_to) == Path("/tmp/wh")
 
 
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
