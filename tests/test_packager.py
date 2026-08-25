@@ -381,7 +381,7 @@ def test_explicit_coverage_false_overrides_env():
 
 @patch_env(clear=True)
 def test_coverage_true_propagates_xms_coverage_into_buildenv():
-    """coverage=True must export XMS_COVERAGE into every non-pybind [buildenv].
+    """coverage=True must export XMS_COVERAGE into every [buildenv].
 
     Without it the activation script never sets ``XMS_COVERAGE`` for the
     CMake child process, so ``CMakeLists.txt.jinja``'s
@@ -392,26 +392,23 @@ def test_coverage_true_propagates_xms_coverage_into_buildenv():
     pipeline to a green run, but the C++ report was empty for exactly
     this reason).
 
-    Pybind configurations are excluded on purpose: gcovr reads the testing
-    build folder only, so instrumenting a pybind module produces .gcda nobody
-    opens. The recipe still collects pytest-cov output there, keyed off the
-    inherited process environment rather than this buildenv.
+    Pybind configurations included: the binding layer is C++ that only a
+    Python test can reach, so it needs its own .gcda to be counted at all.
+    A pybind configuration is Release, but the CMake block appends ``-O0``
+    after CMake's ``-O3``, so the instrumented build is unoptimized either
+    way and the line data is as usable as a Debug build's.
     """
     p = XmsConanPackager("xmscore", coverage=True)
     p.generate_configurations(system_platform="linux")
 
+    assert any(c["options"].get("pybind") for c in p.configurations), (
+        "this test is vacuous without at least one pybind configuration"
+    )
     for cfg in p.configurations:
-        if cfg["options"].get("pybind"):
-            assert "XMS_COVERAGE" not in cfg["buildenv"], (
-                f"pybind configurations must not be instrumented; found "
-                f"XMS_COVERAGE on {cfg.get('build_type')!r} / "
-                f"options={cfg.get('options')}"
-            )
-            continue
         assert cfg["buildenv"].get("XMS_COVERAGE") == "1", (
-            f"every non-pybind configuration must export XMS_COVERAGE=1 in "
-            f"buildenv when coverage=True; missing on "
-            f"{cfg.get('build_type')!r} / options={cfg.get('options')}"
+            f"every configuration must export XMS_COVERAGE=1 in buildenv "
+            f"when coverage=True; missing on {cfg.get('build_type')!r} / "
+            f"options={cfg.get('options')}"
         )
 
 
