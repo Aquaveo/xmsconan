@@ -746,6 +746,11 @@ class TestAssertGcovrCollectedData:
                 (py, ["FILTER-FOR-PY"]),
             ])
         msg = str(exc_info.value)
+        # Membership first: str.index raises a bare ValueError naming neither
+        # the missing substring nor the message, and a reworded error is the
+        # likelier failure here than a wrong order.
+        for needle in (str(cpp), str(py), "FILTER-FOR-CPP", "FILTER-FOR-PY"):
+            assert needle in msg, f"{needle!r} missing from message:\n{msg}"
         # Each folder is followed by its own filter, before the next folder.
         cpp_at, py_at = msg.index(str(cpp)), msg.index(str(py))
         assert cpp_at < msg.index("FILTER-FOR-CPP") < py_at
