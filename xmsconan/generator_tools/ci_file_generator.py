@@ -11,6 +11,7 @@ from jinja2 import Environment, StrictUndefined
 # 3. Aquaveo modules
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
+from xmsconan.generator_tools.build_filter import ci_build_types, coverage_conflicts, load_build_filter
 from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
@@ -328,6 +329,7 @@ def generate_ci(
         )
 
     coverage_config = toml_data.get("coverage", {})
+    build_filter = load_build_filter(toml_data)
 
     from xmsconan import __version__ as xmsconan_version
 
@@ -369,7 +371,15 @@ def generate_ci(
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
         "coverage": _coverage_context(coverage_config, library_name),
         "coverage_python_version": _resolve_coverage_python_version(toml_data),
+        "ci_build_types": ci_build_types(build_filter),
     }
+
+    if context["ci_coverage"]:
+        for conflict in coverage_conflicts(build_filter):
+            LOGGER.warning(
+                "[ci].coverage is enabled but the [filter] table %s — "
+                "`xmsconan coverage` will find no configurations to build.", conflict,
+            )
 
     # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"

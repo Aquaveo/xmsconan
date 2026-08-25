@@ -1764,3 +1764,85 @@ def test_gitlab_windows_cache_snapshot_reports_an_empty_copy(tmp_path):
 
     assert "conan_packages/ || true" not in content
     assert "conan_packages/ || echo" in content
+
+
+# --- [filter] table -> CI matrix ---
+
+
+_FILTERED_TOML = """\
+library_name = "xmscore"
+description = "Core library"
+python_namespaced_dir = "core"
+ci_type = "{ci_type}"
+{ci_table}
+[filter]
+build_type = "Release"
+"""
+
+
+_LINUX_ARM_CI_TABLE = """
+[ci]
+linux_arm = true
+"""
+
+
+def _write_filtered_toml(tmp_path, ci_type="github", ci_table=""):
+    """Write a build.toml whose [filter] pins build_type to Release."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        _FILTERED_TOML.format(ci_type=ci_type, ci_table=ci_table), encoding="utf-8"
+    )
+    return toml_file
+
+
+def test_github_matrix_fans_out_over_both_build_types_by_default(ci_toml, tmp_path):
+    """With no [filter] table every job keeps the Release + Debug matrix."""
+    generate_ci(str(ci_toml), "1.0.0", str(tmp_path))
+
+    content = (tmp_path / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    # mac + linux + windows; the linux-ARM job is opt-in and not emitted here.
+    assert content.count('build_type: ["Release", "Debug"]') == 3
+
+
+def test_github_matrix_narrows_to_pinned_build_type(tmp_path):
+    """A pinned build_type drops the CI legs that could only build nothing."""
+    toml_file = _write_filtered_toml(tmp_path, ci_table=_LINUX_ARM_CI_TABLE)
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    content = (tmp_path / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+    # Every job block — mac, linux, linux-ARM, windows — follows the filter.
+    assert content.count('build_type: ["Release"]') == 4
+    assert "Debug" not in content
+
+
+def test_invalid_filter_table_fails_ci_generation(tmp_path):
+    """`xmsconan ci` rejects the same bad filters as `xmsconan gen`."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "d"\nci_type = "github"\n'
+        '\n[filter]\npybind = true\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"Invalid \[filter\] table in build.toml"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+
+def test_coverage_job_warns_about_conflicting_filter(tmp_path, caplog):
+    """A Release-only filter can't satisfy the coverage job, so generation warns."""
+    toml_file = _write_filtered_toml(tmp_path, ci_table="\n[ci]\ncoverage = true\n")
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    assert "coverage" in caplog.text
+    assert "Debug" in caplog.text
+
+
+def test_no_coverage_warning_without_coverage_job(tmp_path, caplog):
+    """The same filter is silent when no coverage job is generated."""
+    toml_file = _write_filtered_toml(tmp_path)
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    assert "coverage" not in caplog.text

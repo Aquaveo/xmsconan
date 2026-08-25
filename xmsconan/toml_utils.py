@@ -39,8 +39,8 @@ def load_toml(toml_path):
 # not what was asked for, and the mistake surfaces (if ever) as a missing source
 # file or an option that "didn't take". This mirrors what [ci]
 # (ci_options.validate_ci_table), [matrix] (XmsConanPackager.resolve_matrix),
-# conan_profile_variants and vs2019_dependency_overrides already enforce for
-# their own sub-tables.
+# [filter] (build_filter.load_build_filter), conan_profile_variants and
+# vs2019_dependency_overrides already enforce for their own sub-tables.
 KNOWN_KEYS = frozenset({
     # identity
     "library_name",
@@ -79,6 +79,7 @@ KNOWN_KEYS = frozenset({
     # sub-tables, each with its own validator
     "ci",
     "coverage",
+    "filter",
     "matrix",
 })
 

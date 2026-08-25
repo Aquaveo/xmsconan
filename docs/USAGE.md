@@ -220,7 +220,33 @@ Consumed by `xmsconan coverage`; only relevant when `[ci].coverage = true` (or w
 
 Both thresholds default to `0`, which means "report only, don't gate." Set them to real values once a baseline has been established.
 
-### 5.8 Example
+### 5.8 Build matrix filter (`[filter]` table)
+
+A baseline restriction on the configuration matrix, for libraries that should never build part of it (no Debug packages, no Python bindings, dynamic runtime only). The table uses exactly the shape `build.py --filter` takes as JSON: top-level Conan settings plus the nested `options` and `buildenv` tables.
+
+```toml
+[filter]
+build_type = "Release"       # a top-level Conan setting
+"compiler.runtime" = "dynamic"
+
+[filter.options]
+pybind = false               # this library ships no wheel
+```
+
+| Key | Accepted keys | Notes |
+|---|---|---|
+| top level | `os`, `arch`, `build_type`, `compiler`, `compiler.version`, `compiler.cppstd`, `compiler.runtime`, `compiler.libcxx` | Values are compared for equality, so each key takes a **single** value — a list is rejected at generation time. Settings that a platform doesn't emit (`compiler.runtime` off Windows) are ignored there instead of matching nothing. |
+| `[filter.options]` | `wchar_t`, `pybind`, `testing`, `python_version` | Only the options the matrix actually fans out over. A misspelled option is rejected rather than silently matching everything. |
+| `[filter.buildenv]` | any env var name | Compared against the profile `[buildenv]` values the matrix sets (`XMS_VERSION`, `PYTHON_TARGET_VERSION`, …). |
+
+How it flows through the generated files:
+
+- **`xmsconan gen`** validates the table and bakes it into `build.py` as `BUILD_FILTER`. Every `python build.py` invocation applies it first, prints `Applying build.toml [filter]: …`, then applies any `--filter` on top — the two **AND** together. `--ignore-build-filter` skips it for a one-off build of an excluded configuration.
+- **Filters that cancel out now fail.** When nothing survives, `build.py` prints which filters it applied and exits `1` instead of "succeeding" with zero packages built.
+- **`xmsconan ci`** reads the same table. A pinned `build_type` narrows the `build_type` matrix in every generated GitHub job, so no CI leg is left with an empty matrix. GitLab jobs run the whole matrix through `build.py`, so they honor the filter without a template change.
+- **`xmsconan coverage`** builds Debug + `testing=True` and Debug + `pybind=True`. A filter that excludes any of those makes the coverage job unbuildable; `xmsconan ci` logs a warning at generation time when `[ci].coverage = true` and the filter conflicts.
+
+### 5.9 Example
 
 ```toml
 library_name = "xmscore"
@@ -464,7 +490,8 @@ python build.py   --version 0.0.0 --wheel-dir wheelhouse --artifacts-dir test_ar
 
 | Flag | Effect |
 |---|---|
-| `--filter '{"build_type": "Release"}'` | Restrict to a subset of the matrix. Keys match the configuration dict (`build_type`, `arch`, `compiler`, `options.pybind`, `options.python_version`, …). A configuration that does not carry the filtered key does **not** match it — `'{"options": {"python_version": "3.13"}}'` selects only pybind configurations, since `python_version` is set on those alone. The same rule applies to `buildenv`, which is filtered identically. |
+| `--filter '{"build_type": "Release"}'` | Restrict to a subset of the matrix. Keys match the configuration dict (`build_type`, `arch`, `compiler`, `options.pybind`, `options.python_version`, …). A configuration that does not carry the filtered key does **not** match it — `'{"options": {"python_version": "3.13"}}'` selects only pybind configurations, since `python_version` is set on those alone. The same rule applies to `buildenv`, which is filtered identically. Applied on top of the `[filter]` table from `build.toml` (§5.8), not instead of it. |
+| `--ignore-build-filter` | Drop the `[filter]` table baked in from `build.toml`, for a one-off build of a configuration it excludes. |
 | `--python-only` | Equivalent to `--filter '{"options": {"pybind": true}}'`. |
 | `--preview` | Print the configuration table and exit. Nothing is built. |
 | `--build-missing` | Pass `--build=missing` to `conan create`. |
@@ -529,6 +556,7 @@ The generated jobs follow the pattern:
 - Linux / Linux-ARM matrices: `build_type × python-version=ci_linux_python_versions`.
 - Job `name:` carries the version on any platform that fans out (`GCC-13 (Release, 3.14, Linux)`). GitHub uses an explicit `name:` verbatim and only auto-appends matrix values when none is given, so without this two legs would share one status-check name — ambiguous in the checks list and in branch-protection matching. A single-version platform keeps its original name, so existing required checks keep matching.
 - **Windows** matrix: `build_type × compiler-version × python-version=ci_python_versions`.
+- The `build_type` axis defaults to `[Release, Debug]` and shrinks to whatever `[filter].build_type` pins (§5.8), so a Release-only library gets no Debug legs at all.
 - Wheel artifacts carry `-py${{ matrix.python-version }}` on any platform that fans out; a single-version platform keeps its bare `wheel-${{ runner.os }}` name.
 - Linux containers resolve to `conan-gcc13-py${{ matrix.python-version }}:latest`.
 - **`--wheel-dir` is passed on the Release leg only.** Every step that consumes the wheel — repair, artifact upload, devpi deploy — is gated on `matrix.build_type == 'Release'`, and `[matrix].pybind_build_types` defaults to Release only (§5.4.1), so a Debug leg has no pybind configuration to extract a wheel from. `build.py` exits 1 when `--wheel-dir` yields no complete set of wheels (§9.1), which is the right answer on a Release leg and wrong on a Debug one: on Windows a Debug pybind configuration produces no wheel by design (§7.5), and on Linux and macOS a Debug wheel would only be built and discarded. GitLab is unaffected — its build step runs the whole matrix in one invocation, so the Release pybind configuration is always in scope.
@@ -538,6 +566,7 @@ The generated jobs follow the pattern:
 
 ### 10.2 GitLab specifics
 
+- Jobs invoke `build.py` without a `--filter`, so a `[filter]` table in `build.toml` (§5.8) applies with no template change — GitLab has no `build_type` matrix axis to narrow.
 - `Conan Build` and `Conan Deploy - Linux`: `parallel:matrix` over `PYTHON_TARGET_VERSION` from `linux_python_versions`, each leg saving/restoring its own `-py<version>` export tarball. With a single version they stay plain jobs with no `parallel:matrix`, exactly as before.
 - `Repair Wheel` and `Wheel Deploy` stay single jobs: they collect every leg's wheels and act on all of them at once.
 - `Coverage` pins both its container image and `PYTHON_TARGET_VERSION` from the resolved coverage ABI (`[coverage].python_version`, §5.7), so the interpreter inside the image and the ABI the pybind build targets are the same value. Under an explicit `[ci].docker_image` only the pin is resolved — the image is whatever the repo named, so keeping that image's interpreter in step is the repo's job. `xmsconan_coverage` exports the variable itself, so the job is correct without it; it is declared here as well so the pairing is visible in one place, and so a regression in the tool cannot pass unnoticed on GitLab specifically. Unlike `Conan Build`, `Coverage` never fans out — coverage commits to a single ABI by design.
@@ -582,6 +611,8 @@ What it does:
 2. Sets `XMS_COVERAGE=1` and invokes `build.py` twice in sequence:
    - First: `--filter '{"build_type":"Debug","options":{"testing":true,"pybind":false}}'` — Conan create that builds the library + CxxTest runner under `--coverage`, then runs the runner. Produces the `.gcda` set gcovr reads.
    - Second: `--filter '{"build_type":"Release","options":{"pybind":true,"testing":false,"python_version":"3.13"}}'` — Conan create that builds the library + pybind wheel, then runs `pytest-cov` against the wheel. Instrumented like the first, so the binding layer -- C++ that only a Python test can reach -- produces its own `.gcda`. Release is not a problem for line data: the `XMS_COVERAGE` block appends `-O0 -g` after CMake's `-O3`, so the build is unoptimized either way, while still resolving against Release dependencies. Produces `cov-py.xml`, `cov-py-summary.json`, and `coverage-html-py/` inside the build folder.
+
+   The two coverage builds pin *different* build types — Debug for the CxxTest half, Release for the pybind half — so a `[filter]` table (§5.8) that pins `build_type` at all leaves one of them with no configurations, as does one that excludes `testing` or `pybind`. `build.py` then exits non-zero. `xmsconan ci` warns about those combinations at generation time.
 
    `XMS_COVERAGE=1` rides into the `[buildenv]` of every profile so CMake adds `--coverage` there. It no longer changes which configurations exist: the testing-only Debug variant is part of the standard packager fan-out either way, and the Python half reuses whatever pybind configuration `[matrix].pybind_build_types` already names. Pybind profiles are injected too: the binding layer is C++ that only a Python test can reach, and gcovr merges that build's `.gcda` into the C++ report. The recipe separately keys `pytest-cov` off `XMS_COVERAGE` in the inherited process environment, which is why Python coverage is collected from the same build. Requiring a Debug pybind build used to cost every dependency a `Debug`+`pybind` binary — the one combination the xms libraries do not publish — and would need a debug interpreter on Windows. `python_version` on the pybind build is pinned to one ABI (highest of `[ci].linux_python_versions` by default, or `[coverage].python_version` when set) so multi-version fan-outs cannot non-deterministically pick whichever pybind config finished last.
 3. Locates the two build folders in the local Conan cache and runs gcovr against **both**. Each folder is read separately with its own `--root` -- one invocation cannot span two roots, and `--root` has to match the absolute paths embedded in that folder's `.gcno` files -- writing a JSON tracefile each. A final gcovr run combines them with `--add-tracefile` into `cov-cpp.xml`, `cov-cpp-summary.json`, and `coverage-html-cpp/`. Tracefile paths are relative to `--root`, so the two folders' copies of the same source line up and hit counts sum: a line the CxxTest runner never reaches still counts as covered when a Python test reaches it through the bindings. The pytest-cov artifacts are copied out of the pybind build folder as before.
@@ -1030,7 +1061,8 @@ Wheels are tagged `cp310-cp310-...` or `cp313-cp313-...`; pip picks the right on
 
 - **`auditwheel`/`delocate`/`delvewheel` missing libraries.** Run `build.py --wheel-dir wheelhouse` before repair — that step populates `wheelhouse/libs/`. Repairing without it produces a wheel that loads fine on the build host and crashes everywhere else.
 - **`PYTHON_TARGET_VERSION` mismatch in CMake.** The recipe sets it from the `python_version` Conan option. If you're poking CMake directly, pass `-DPYTHON_TARGET_VERSION=3.13`.
-- **`No pybind package found to extract`.** Means `build.py` ran but no pybind config was built. Check `build.py --preview` to see the matrix; common causes are `--filter` excluding the pybind variant, or every pybind variant having failed.
+- **`No pybind package found to extract`.** Means `build.py` ran but no pybind config was built. Check `build.py --preview` to see the matrix; common causes are `--filter` or the `[filter]` table in `build.toml` (§5.8) excluding the pybind variant, or every pybind variant having failed.
+- **`No configurations match the requested filters`.** The `[filter]` table and the `--filter` on the command line narrow the matrix together, and nothing survived both. The message lists what was applied; drop the conflicting `--filter`, loosen `[filter]` in `build.toml`, or pass `--ignore-build-filter` for a one-off build.
 - **Dual wheel uploads colliding on devpi.** With `python_versions=["3.10","3.13"]`, wheels carry distinct `cp3XY` tags, so devpi treats them as separate uploads of the same release. No special config required.
 - **Generated CI references a runner or image that doesn't exist.** A Windows opt-in needs the matching `GLR-pyXYZ` GitLab runner tag; a Linux opt-in needs the matching `conan-gcc13-py<version>` container. If one isn't available, drop that version from the relevant list until it is — the platforms are independent, so Windows can carry a version Linux cannot.
 - **Linux job fails pulling its container.** The generated `container:` block pulls without credentials, which only works for a public image. On GHCR `conan-gcc13-py3.13` is public but `conan-gcc13-py3.14` is not, so a 3.14 Linux leg fails at pull until the package visibility is changed or a `credentials:` stanza is added.
