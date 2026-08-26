@@ -483,7 +483,7 @@ def _warn_if_tracefile_empty(tracefile: Path, build_folder: Path,
     )
 
 
-def _run_gcovr(build_folders, coverage_cfg: dict,
+def _run_gcovr(build_folders: list[Path], coverage_cfg: dict,
                output_dir: Path) -> Path:
     """Merge every build folder's C++ coverage into one report.
 
