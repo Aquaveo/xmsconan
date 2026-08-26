@@ -59,7 +59,7 @@ CI_JOB_SETTINGS = {
 #: filled in from ``[coverage].python_version`` at check time.
 COVERAGE_BUILD_FILTERS = {
     "C++": {"build_type": "Debug", "options": {"testing": True, "pybind": False}},
-    "Python": {"build_type": "Debug", "options": {"testing": False, "pybind": True}},
+    "Python": {"build_type": "Release", "options": {"testing": False, "pybind": True}},
 }
 
 
@@ -251,12 +251,13 @@ def empty_ci_jobs(build_filter: dict, ci_type: str, emitted_jobs) -> list[str]:
 def coverage_conflicts(build_filter: dict, coverage_python_version: str = None) -> list:
     """Describe filter entries that make ``xmsconan coverage`` unable to build.
 
-    ``xmsconan coverage`` runs two Debug builds whose options are the inverse of
-    each other — ``testing=True, pybind=False`` for the C++ report and
-    ``testing=False, pybind=True`` for the Python one — and ``BUILD_FILTER`` ANDs
-    with each. So a filter conflicts by *requiring* an option as much as by
-    excluding it: ``pybind = true`` cancels the C++ build just as
-    ``pybind = false`` cancels the Python one.
+    ``xmsconan coverage`` runs two builds whose options are the inverse of each
+    other — ``testing=True, pybind=False`` at Debug for the C++ report and
+    ``testing=False, pybind=True`` at Release for the Python one — and
+    ``BUILD_FILTER`` ANDs with each. So a filter conflicts by *requiring* an
+    option as much as by excluding it: ``pybind = true`` cancels the C++ build
+    just as ``pybind = false`` cancels the Python one. The two pin *different*
+    build types, so any ``build_type`` pin cancels exactly one of them.
 
     Args:
         build_filter: The validated ``[filter]`` table.
@@ -271,13 +272,14 @@ def coverage_conflicts(build_filter: dict, coverage_python_version: str = None) 
     conflicts = []
     filter_options = build_filter.get("options", {})
     pinned_build_type = build_filter.get("build_type")
-    # Both coverage builds are Debug, so a pinned build_type conflicts once.
-    if pinned_build_type is not None and pinned_build_type != "Debug":
-        conflicts.append(
-            f"build_type = \"{pinned_build_type}\" excludes the Debug builds "
-            "both coverage reports come from"
-        )
     for report, coverage_filter in COVERAGE_BUILD_FILTERS.items():
+        # The two builds pin different build types, so a pin cancels one of them.
+        required_build_type = coverage_filter["build_type"]
+        if pinned_build_type is not None and pinned_build_type != required_build_type:
+            conflicts.append(
+                f"build_type = \"{pinned_build_type}\" excludes the {report} coverage "
+                f"build, which pins {required_build_type}"
+            )
         for option, required in coverage_filter["options"].items():
             if option in filter_options and filter_options[option] != required:
                 conflicts.append(

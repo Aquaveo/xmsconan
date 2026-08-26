@@ -282,20 +282,30 @@ def test_empty_ci_jobs_handles_gitlab_job_names():
 
 
 def test_coverage_conflicts_empty_for_compatible_filter():
-    """A filter that leaves the Debug builds alone reports nothing."""
+    """A filter that leaves both coverage builds alone reports nothing."""
     assert coverage_conflicts({"compiler.runtime": "dynamic"}, "3.13") == []
 
 
-def test_coverage_conflicts_allows_debug_pin():
-    """Pinning Debug is exactly what coverage builds, so it isn't a conflict."""
-    assert coverage_conflicts({"build_type": "Debug"}, "3.13") == []
+def test_coverage_conflicts_empty_when_build_type_unpinned():
+    """Leaving build_type open is the only way both coverage builds survive."""
+    assert coverage_conflicts({}, "3.13") == []
 
 
-def test_coverage_conflicts_flags_non_debug_build_type_once():
-    """Release-only libraries can't run the coverage job — reported once, not per report."""
-    conflicts = coverage_conflicts({"build_type": "Release"}, "3.13")
+@pytest.mark.parametrize("pinned,cancelled,survives", [
+    pytest.param("Debug", "Python", "Release", id="debug-pin-cancels-python"),
+    pytest.param("Release", "C++", "Debug", id="release-pin-cancels-cpp"),
+])
+def test_coverage_conflicts_flags_any_build_type_pin(pinned, cancelled, survives):
+    """The two coverage builds pin different types, so any pin cancels exactly one.
+
+    The C++ report comes from a Debug build and the Python report from a Release
+    one, so there is no build_type a filter can pin that leaves both alive.
+    """
+    conflicts = coverage_conflicts({"build_type": pinned}, "3.13")
     assert len(conflicts) == 1
-    assert "Debug" in conflicts[0]
+    assert f'build_type = "{pinned}"' in conflicts[0]
+    assert f"{cancelled} coverage build" in conflicts[0]
+    assert f"pins {survives}" in conflicts[0]
 
 
 @pytest.mark.parametrize("option,value,report", [
