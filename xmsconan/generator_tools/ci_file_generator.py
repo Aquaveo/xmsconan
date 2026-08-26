@@ -117,6 +117,19 @@ def _py_suffix(platform_python_versions: list) -> str:
     return ""
 
 
+def _unsupported_python_versions(versions) -> list:
+    """Return the entries of ``versions`` the conanfile's python_version option rejects.
+
+    Both callers stringify before comparing, because a TOML list may hold
+    floats -- an unquoted ``3.14`` parses as one -- and the supported set is
+    written as strings. They keep their own error messages: the two failures
+    surface at different times and want different explanations. What is shared
+    is only the membership test, which is the part that would silently drift
+    if one caller were updated and the other were not.
+    """
+    return [str(v) for v in versions if str(v) not in SUPPORTED_PYTHON_VERSIONS]
+
+
 _DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
 
 
@@ -134,17 +147,37 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
     version also selects the container image. Taking the highest Windows entry
     would pick a version with no published ``conan-gcc13-py<version>`` image --
     3.10 through 3.12 have none -- and the job would die pulling its container.
+
+    Raises:
+        ValueError: ``[coverage].python_version`` names a version outside
+            :data:`SUPPORTED_PYTHON_VERSIONS`. The ``[ci]`` lists get the same
+            check in :func:`generate_ci`, but coverage reads this key directly
+            and so never reaches it.
     """
     coverage_cfg = toml_data.get("coverage", {})
     explicit = coverage_cfg.get("python_version")
     if explicit:
-        return str(explicit)
+        resolved = str(explicit)
+        if _unsupported_python_versions([resolved]):
+            raise ValueError(
+                f"build.toml [coverage].python_version names Python {resolved}, "
+                f"which the conanfile's python_version option does not allow "
+                f"(supported: {', '.join(SUPPORTED_PYTHON_VERSIONS)}). The [ci] "
+                "version lists are checked for this, but the coverage run reads "
+                "this key directly, so an unsupported value here would surface "
+                "much later as a conan configure error inside the build."
+            )
+        return resolved
     ci_config = toml_data.get("ci", {})
     linux_versions = _platform_python_versions(
         ci_config, "linux",
         list(ci_config.get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
     )
-    return max(linux_versions, key=version_sort_key)
+    # str() because the fallback returns an element of the TOML list verbatim,
+    # and an unquoted `linux_python_versions = [3.14]` puts a float there.
+    # version_sort_key stringifies only for comparison, so the float would
+    # survive into subprocess's env, which rejects non-str values outright.
+    return str(max(linux_versions, key=version_sort_key))
 
 
 def _coverage_context(coverage_config: dict, library_name: str) -> dict:
@@ -272,7 +305,7 @@ def generate_ci(
     for key, versions in (("python_versions", ci_python_versions),
                           ("mac_python_versions", ci_mac_python_versions),
                           ("linux_python_versions", ci_linux_python_versions)):
-        unsupported = [str(v) for v in versions if str(v) not in SUPPORTED_PYTHON_VERSIONS]
+        unsupported = _unsupported_python_versions(versions)
         if unsupported:
             raise ValueError(
                 f"build.toml [ci].{key} names Python {', '.join(unsupported)}, which "

@@ -632,6 +632,23 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
 
     env = os.environ.copy()
     env["XMS_COVERAGE"] = "1"
+    # Tell build.py's matrix generator which ABI to *produce*. The --filter
+    # below only narrows the matrix it already built, so without this the
+    # packager falls back to DEFAULT_PYTHON_VERSIONS and a coverage ABI of
+    # anything else matches zero configurations. Set deliberately after the
+    # os.environ copy: build.toml outranks an ambient PYTHON_TARGET_VERSION,
+    # because the same resolved value also drives the --filter and the
+    # _find_coverage_package lookup, and the three must not disagree.
+    ambient_python_version = env.get("PYTHON_TARGET_VERSION")
+    if ambient_python_version and ambient_python_version != coverage_python_version:
+        LOGGER.warning(
+            "Ignoring PYTHON_TARGET_VERSION=%s from the environment; build.toml "
+            "resolves the coverage ABI to %s, and the --filter and package "
+            "lookup are already pinned to it. Set [coverage].python_version = "
+            '"%s" in build.toml to cover that ABI instead.',
+            ambient_python_version, coverage_python_version, ambient_python_version,
+        )
+    env["PYTHON_TARGET_VERSION"] = coverage_python_version
     tests_failed = False
 
     # 2. C++ coverage build: testing=True, pybind=False, Debug. Drives

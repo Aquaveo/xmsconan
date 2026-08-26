@@ -356,6 +356,15 @@ Coverage:
 <% else %>
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py<< coverage_python_version >>
 <% endif %>
+  # The resolved coverage ABI, which also names the conan-gcc13 image above --
+  # so on those two branches the container interpreter and the ABI the build
+  # targets cannot drift apart. Under an explicit [ci].docker_image the image
+  # is whatever the repo named and only this pin is resolved, so keeping that
+  # image's interpreter in step is the repo's job. xmsconan_coverage exports
+  # the same value itself; declaring it here keeps the job readable without
+  # tracing into the packager.
+  variables:
+    PYTHON_TARGET_VERSION: '<< coverage_python_version >>'
   script:
     - pip install "conan~=2.31.0" "gcovr>=7,<9"
     - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
