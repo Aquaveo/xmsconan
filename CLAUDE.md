@@ -45,3 +45,9 @@ Before declaring a feature or fix done:
 
 If a change genuinely has no doc impact, say so explicitly in the PR body —
 silence reads as "forgot to check."
+
+## Testing policy
+
+Tests need to work on both Linux and Windows. The CI runs them on both. This
+mainly affects paths, which differ by platform. Use `pathlib.Path` to compare
+tests in a platform agnostic manner.
