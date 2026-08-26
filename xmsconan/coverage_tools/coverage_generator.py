@@ -407,7 +407,7 @@ def _assert_gcovr_collected_data(summary_path: Path, collections) -> None:
 
 
 def _collect_gcovr_tracefile(build_folder: Path, coverage_cfg: dict,
-                             tracefile: Path) -> list:
+                             tracefile: Path) -> list[str]:
     """Read one build folder's .gcda into a gcovr JSON tracefile.
 
     ``--root`` is the build folder rather than the conan source folder
