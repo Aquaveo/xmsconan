@@ -885,8 +885,15 @@ class TestRunCoverageThresholdGating:
                         }),
                     )
                 if "--json" in cmd:
+                    # Non-empty: a real gcovr run reports every file it found
+                    # .gcno for, whether or not a test executed any of it. An
+                    # empty list here would trip _warn_if_tracefile_empty in
+                    # every end-to-end test, and a warning that always fires
+                    # is one nobody reads when it means something.
                     idx = cmd.index("--json")
-                    Path(cmd[idx + 1]).write_text(json.dumps({"files": []}))
+                    Path(cmd[idx + 1]).write_text(json.dumps({
+                        "files": [{"file": "xmscore/foo.cpp", "lines": []}],
+                    }))
             return MagicMock(returncode=0)
 
         return toml_file, cpp_build_folder, py_build_folder, fake_run
@@ -1148,7 +1155,7 @@ class TestRunCoverageThresholdGating:
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
-    def test_gcovr_runs_against_testing_build_folder_not_pybind(
+    def test_gcovr_merges_both_build_folders(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """Run gcovr against BOTH build folders, then merge the tracefiles.
@@ -1335,8 +1342,15 @@ class TestRunCoverageThresholdGating:
                         json.dumps({"line_percent": 80.0, "line_total": 100}),
                     )
                 if "--json" in cmd:
+                    # Non-empty: a real gcovr run reports every file it found
+                    # .gcno for, whether or not a test executed any of it. An
+                    # empty list here would trip _warn_if_tracefile_empty in
+                    # every end-to-end test, and a warning that always fires
+                    # is one nobody reads when it means something.
                     idx = cmd.index("--json")
-                    Path(cmd[idx + 1]).write_text(json.dumps({"files": []}))
+                    Path(cmd[idx + 1]).write_text(json.dumps({
+                        "files": [{"file": "xmscore/foo.cpp", "lines": []}],
+                    }))
             return MagicMock(returncode=0)
 
         mock_run.side_effect = fake_run
@@ -1456,8 +1470,15 @@ class TestRunCoverageThresholdGating:
                         json.dumps({"line_percent": 99.0, "line_total": 100}),
                     )
                 if "--json" in cmd:
+                    # Non-empty: a real gcovr run reports every file it found
+                    # .gcno for, whether or not a test executed any of it. An
+                    # empty list here would trip _warn_if_tracefile_empty in
+                    # every end-to-end test, and a warning that always fires
+                    # is one nobody reads when it means something.
                     idx = cmd.index("--json")
-                    Path(cmd[idx + 1]).write_text(json.dumps({"files": []}))
+                    Path(cmd[idx + 1]).write_text(json.dumps({
+                        "files": [{"file": "xmscore/foo.cpp", "lines": []}],
+                    }))
             return MagicMock(returncode=0)
 
         mock_run.side_effect = fake_run
