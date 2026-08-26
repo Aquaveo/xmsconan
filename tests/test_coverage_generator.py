@@ -827,11 +827,11 @@ class TestWarnIfTracefileEmpty:
         assert self._messages(caplog) == []
 
     def test_unreadable_tracefile_warns_without_raising(self, tmp_path, caplog):
-        """A missing or malformed tracefile must not take down the run.
+        """A tracefile that cannot be read warns instead of raising.
 
-        This is a diagnostic; the merged summary is the thing that decides
-        pass or fail, so a problem reading one tracefile is worth reporting
-        and nothing more.
+        Covers the missing case only. gcovr writes this file and ``_run``
+        raises on a non-zero exit, so the other unreadable cases need gcovr
+        to both succeed and write something unusable.
         """
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             _warn_if_tracefile_empty(tmp_path / "absent.json", tmp_path, [])
