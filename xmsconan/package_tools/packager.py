@@ -302,19 +302,26 @@ def _configuration_matches(configuration, filter_dict):
     return True
 
 
-def _reference_matrix(platform_name, python_versions=None, coverage=False):
+def _reference_matrix(platform_name, python_versions=None, coverage=False, matrix=None):
     """Generate one platform's configurations for validating a filter against.
 
     Coverage defaults to off so the matrix a filter is checked against does not
     depend on whether ``XMS_COVERAGE`` happens to be set in the environment
     doing the generating; ``emitted_buildenv_keys`` turns it on because that
     mode contributes a ``[buildenv]`` name of its own.
+
+    ``matrix`` is the ``[matrix]`` table, and it has to be honored here: it is
+    what decides which configurations exist at all, so validating a filter
+    against the unnarrowed fan-out accepts filters that select nothing once
+    ``[matrix]`` has been applied -- which is the "fails every later build
+    instead of failing generation" case this validation exists to prevent.
     """
     packager = XmsConanPackager(
         '_filter_validation',
         python_versions=list(python_versions) if python_versions else None,
         coverage=coverage,
         artifacts_dir='artifacts',
+        matrix=matrix,
     )
     try:
         return packager.generate_configurations(system_platform=platform_name)
@@ -339,7 +346,7 @@ def emitted_buildenv_keys():
     return frozenset(keys)
 
 
-def summarize_filter_matches(filter_dict, python_versions=None):
+def summarize_filter_matches(filter_dict, python_versions=None, matrix=None):
     """Report what a filter would keep on each platform.
 
     Lets a generator answer "does this filter select anything at all?" without
@@ -350,6 +357,9 @@ def summarize_filter_matches(filter_dict, python_versions=None):
         python_versions: Python versions the pybind fan-out should assume,
             e.g. ``[ci].python_versions`` from ``build.toml``. Defaults to the
             packager's own resolution.
+        matrix: The ``[matrix]`` table, so the filter is checked against the
+            configurations this library actually produces rather than the
+            unnarrowed fan-out.
 
     Returns:
         ``{platform: {'total': int, 'pybind': int}}`` — the number of surviving
@@ -359,7 +369,7 @@ def summarize_filter_matches(filter_dict, python_versions=None):
     for platform_name in configurations:
         kept = [
             configuration
-            for configuration in _reference_matrix(platform_name, python_versions)
+            for configuration in _reference_matrix(platform_name, python_versions, matrix=matrix)
             if _configuration_matches(configuration, filter_dict)
         ]
         summary[platform_name] = {
@@ -961,9 +971,12 @@ class XmsConanPackager(object):
 
         Settings that this platform's configurations don't carry (e.g.
         ``compiler.runtime``, which only Windows emits) are skipped rather than
-        excluding everything, matching how ``options``/``buildenv`` keys already
-        behave. That keeps a platform-specific ``[filter]`` in ``build.toml``
-        usable on every platform.
+        excluding everything. That keeps a platform-specific ``[filter]`` in
+        ``build.toml`` usable on every platform. ``options``/``buildenv`` keys
+        are the opposite -- an absent one does not match, see
+        ``_configuration_matches`` -- because ``python_version`` is set only on
+        the pybind variants, so treating it as absent-matches-anything made a
+        one-ABI filter select the whole matrix.
         """
         validate_filter_dict(filter_dict)
         if self.configurations is None:

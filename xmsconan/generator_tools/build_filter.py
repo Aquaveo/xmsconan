@@ -16,7 +16,11 @@ does not emit steps the filter has made unbuildable.
 """
 # 3. Aquaveo modules
 from xmsconan.constants import version_sort_key
-from xmsconan.package_tools.packager import summarize_filter_matches, validate_filter_dict
+from xmsconan.package_tools.packager import (
+    summarize_filter_matches,
+    validate_filter_dict,
+    XmsConanPackager,
+)
 
 #: Build types the generated CI matrix covers when ``[filter]`` doesn't pin one.
 DEFAULT_CI_BUILD_TYPES = ("Release", "Debug")
@@ -24,18 +28,29 @@ DEFAULT_CI_BUILD_TYPES = ("Release", "Debug")
 #: The fixed settings each generated CI job block builds under. Only the keys a
 #: filter can pin are listed; ``build_type`` is a matrix axis and is handled by
 #: ``ci_build_types`` instead.
+_GCC_JOB = {
+    "os": "Linux", "compiler": "gcc", "compiler.version": "13",
+    "compiler.cppstd": "gnu17", "compiler.libcxx": "libstdc++11",
+}
+_MSVC_JOB = {
+    "os": "Windows", "arch": "x86_64", "compiler": "msvc", "compiler.version": "194",
+    "compiler.cppstd": "17",
+}
+
 CI_JOB_SETTINGS = {
     "github": {
-        "mac": {"os": "Macos", "arch": "armv8", "compiler": "apple-clang", "compiler.version": "17"},
-        "linux": {"os": "Linux", "arch": "x86_64", "compiler": "gcc", "compiler.version": "13"},
-        "linux-arm": {"os": "Linux", "arch": "armv8", "compiler": "gcc", "compiler.version": "13"},
-        "windows": {"os": "Windows", "arch": "x86_64", "compiler": "msvc", "compiler.version": "194"},
+        "mac": {
+            "os": "Macos", "arch": "armv8", "compiler": "apple-clang",
+            "compiler.version": "17", "compiler.cppstd": "gnu17",
+            "compiler.libcxx": "libc++",
+        },
+        "linux": {**_GCC_JOB, "arch": "x86_64"},
+        "linux-arm": {**_GCC_JOB, "arch": "armv8"},
+        "windows": _MSVC_JOB,
     },
     "gitlab": {
-        "Conan Build": {"os": "Linux", "arch": "x86_64", "compiler": "gcc", "compiler.version": "13"},
-        "Conan Build - Windows": {
-            "os": "Windows", "arch": "x86_64", "compiler": "msvc", "compiler.version": "194",
-        },
+        "Conan Build": {**_GCC_JOB, "arch": "x86_64"},
+        "Conan Build - Windows": _MSVC_JOB,
     },
 }
 
@@ -68,7 +83,9 @@ def load_build_filter(toml_data: dict) -> dict:
     except ValueError as e:
         raise ValueError(f"Invalid [filter] table in build.toml: {e}") from e
     if build_filter:
-        _reject_unbuildable_filter(build_filter, ci_python_versions(toml_data))
+        _reject_matrix_conflict(build_filter, toml_data.get("matrix"))
+        _reject_unbuildable_filter(
+            build_filter, ci_python_versions(toml_data), toml_data.get("matrix"))
     return build_filter
 
 
@@ -91,7 +108,38 @@ def ci_python_versions(toml_data: dict) -> list:
     return sorted(versions, key=version_sort_key) or None
 
 
-def _reject_unbuildable_filter(build_filter: dict, python_versions) -> None:
+def _reject_matrix_conflict(build_filter: dict, matrix) -> None:
+    """Raise when ``[filter]`` pins a runtime ``[matrix]`` has already excluded.
+
+    The emptiness check below cannot see this one. ``compiler.runtime`` is
+    Windows-only, and a filter naming a setting a platform does not emit is a
+    no-op there, so Linux and macOS stay non-empty however wrong the Windows
+    pin is -- and the check only fires when *every* platform is empty (an
+    ``os``/``arch`` pin has to stay legal, since those are warned about per job
+    rather than rejected). ``[matrix] compiler_runtime = ["dynamic"]`` with
+    ``[filter] "compiler.runtime" = "static"`` is individually valid on both
+    sides and builds nothing on the one platform it applies to.
+
+    Args:
+        build_filter: The validated ``[filter]`` table.
+        matrix: The ``[matrix]`` table, or None.
+
+    Raises:
+        ValueError: When the two tables cannot both hold.
+    """
+    resolved = XmsConanPackager.resolve_matrix(matrix)
+    runtimes = resolved.get("compiler_runtime")
+    pinned = build_filter.get("compiler.runtime")
+    if runtimes and pinned is not None and pinned not in runtimes:
+        raise ValueError(
+            f'The [filter] table pins compiler.runtime = "{pinned}", but [matrix] '
+            f'compiler_runtime builds only {list(runtimes)}, so no Windows '
+            "configuration can match. Add it to [matrix].compiler_runtime, or drop "
+            "the [filter] pin."
+        )
+
+
+def _reject_unbuildable_filter(build_filter: dict, python_versions, matrix=None) -> None:
     """Raise when a filter selects no configurations at all.
 
     Individually valid keys and values still compose into filters nothing can
@@ -99,8 +147,24 @@ def _reject_unbuildable_filter(build_filter: dict, python_versions) -> None:
     configuration, and a ``python_version`` outside ``[ci].python_versions``
     matches no pybind build. Catching that here means `xmsconan gen` fails
     rather than every later build on every platform.
+
+    ``[matrix]`` is part of that composition: it decides which configurations
+    exist, so a filter is only unbuildable relative to the narrowed fan-out.
+    ``[matrix] compiler_runtime = ["dynamic"]`` with ``[filter]
+    "compiler.runtime" = "static"`` is the case -- every key and value is
+    individually legal, and together they build nothing.
     """
-    summary = summarize_filter_matches(build_filter, python_versions)
+    # [buildenv] is left out of this check: those values come from the
+    # environment doing the generating (XMS_VERSION, CI_COMMIT_TAG, AQUAPI_* are
+    # all os.getenv in generate_configurations, and XMS_TEST_ARTIFACTS_LABEL is
+    # added per configuration by run()), so at generation time they are None or
+    # absent and *any* pin would look unbuildable. Names and value shapes are
+    # still validated by validate_filter_dict; whether a pin matches is only
+    # knowable in the build environment.
+    settings_only = {key: value for key, value in build_filter.items() if key != "buildenv"}
+    if not settings_only:
+        return
+    summary = summarize_filter_matches(settings_only, python_versions, matrix)
     # The python_version check comes first because it is the more actionable
     # message and it subsumes the general one for this cause: a pinned
     # python_version that no pybind configuration carries excludes every

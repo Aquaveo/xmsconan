@@ -1416,6 +1416,9 @@ class TestBuildFilterTable:
         assert _table_build_types(result.stdout) == []
 
 
+# --- build.toml validation: a typo has to be an error, not a silent default ---
+
+
 def _render(toml_file, template_dir, tmp_path):
     """Run the generator against *toml_file*."""
     render_template_with_toml(

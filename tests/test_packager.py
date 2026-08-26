@@ -615,6 +615,7 @@ def test_filter_configurations_drops_configs_lacking_the_option():
     assert all(c["options"].get("python_version") == "3.13" for c in p.configurations)
 
 
+@patch_env(clear=True)
 def test_filter_configurations_ignores_setting_absent_from_platform():
     """A Windows-only setting doesn't wipe out the Linux matrix.
 

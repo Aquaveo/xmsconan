@@ -19,6 +19,37 @@ def _write_build_toml(tmp_path, **keys):
 
 
 @patch_env(clear=True)
+def test_filter_table_does_not_narrow_profiles(tmp_path):
+    """[filter] is deliberately ignored here, while [matrix] is honored.
+
+    The two tables say different things: [matrix] declares which configurations
+    the library has, [filter] restricts what CI builds by default and carries a
+    per-invocation escape hatch (`build.py --ignore-build-filter`). These
+    profiles and CMakePresets.json are what an IDE configures from, which is
+    exactly when that hatch gets used, so a filtered-out configuration keeps its
+    profile. The [matrix] leg is the positive control: it proves this test can
+    tell a narrowed run from an unnarrowed one.
+    """
+    def profiles_for(name, table=""):
+        directory = tmp_path / name
+        directory.mkdir()
+        toml_file = directory / "build.toml"
+        toml_file.write_text(
+            'library_name = "xmscore"\ndescription = "Core"\n' + table,
+            encoding="utf-8")
+        written = generate_profiles(toml_file_path=str(toml_file), system_platform="linux")
+        return sorted(os.path.basename(path) for path in written)
+
+    baseline = profiles_for("baseline")
+    filtered = profiles_for("filtered", '[filter]\nbuild_type = "Release"\n')
+    matrixed = profiles_for("matrixed",
+                            '[matrix]\npybind_build_types = ["Release", "Debug"]\n')
+
+    assert filtered == baseline, "[filter] must not remove a profile"
+    assert matrixed != baseline, "[matrix] must reach profile generation"
+
+
+@patch_env(clear=True)
 def test_dry_run_reports_exactly_what_a_real_run_writes(tmp_path):
     """The preview and the real run agree, file for file.
 
