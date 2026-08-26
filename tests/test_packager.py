@@ -179,12 +179,11 @@ def test_pybind_build_types_defaults_to_release_only():
 
 @patch_env(clear=True)
 def test_coverage_obeys_an_explicit_release_only_pybind_list():
-    """Coverage obeys [matrix].pybind_build_types rather than unioning Debug in.
+    """Coverage does not add Debug to [matrix].pybind_build_types.
 
-    It used to add Debug, for a build whose instrumentation nothing read --
-    gcovr runs against the testing build folder only -- while making every
-    dependency need a Debug+pybind binary. Python coverage runs against the
-    Release pybind configuration the matrix already names.
+    The matrix alone decides which pybind configurations exist. Adding a Debug
+    one would leave every dependency needing a Debug+pybind binary, which the
+    xms libraries do not publish.
     """
     p = XmsConanPackager("xmscore", python_versions=["3.13"], coverage=True,
                          matrix={"pybind_build_types": ["Release"]})
