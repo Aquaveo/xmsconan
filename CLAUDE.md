@@ -48,6 +48,8 @@ silence reads as "forgot to check."
 
 ## Testing policy
 
-Tests need to work on both Linux and Windows. The CI runs them on both. This
-mainly affects paths, which differ by platform. Use `pathlib.Path` to compare
-tests in a platform agnostic manner.
+The CI runs tests on both Linux and Windows to catch platform-specific
+paths and reject them. Tests should compare paths in a platform-agnostic manner
+or they'll fail on the CI. Tests can use `pathlib.Path` or `os.path.*` methods
+to produce paths that can be compared safely. Prefer matching local style when
+there is one, or `pathlib.Path` when there isn't one.
