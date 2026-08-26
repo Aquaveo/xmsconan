@@ -106,11 +106,15 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
         matrix=data.get("matrix"),
     )
     # The [filter] table is deliberately *not* applied here, though it also
-    # narrows what build.py builds. `build.py --ignore-build-filter` exists so a
-    # developer can build a filtered-out configuration on demand, and that needs
-    # a profile to build it with -- and `_remove_stale_profiles` above would
-    # delete exactly the profile that flag is for. [matrix] has no such escape
-    # hatch, which is why it narrows profiles and [filter] does not.
+    # narrows what build.py builds. The two tables say different things: [matrix]
+    # declares which configurations this library *has*, while [filter] is a
+    # baseline restriction on what CI builds by default, with a documented
+    # per-invocation escape hatch (`build.py --ignore-build-filter`). These
+    # profiles and CMakePresets.json are what an IDE and a hand-run cmake
+    # configure from, which is exactly when a developer reaches for that hatch --
+    # so a filtered-out configuration still gets a profile to configure with.
+    # (build.py itself never reads them; XmsConanPackager.run writes a throwaway
+    # profile per configuration via create_build_profile.)
 
     if dry_run:
         # Reuse the same plan write_profiles executes, so a dry run cannot

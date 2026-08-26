@@ -1816,6 +1816,52 @@ def test_gitlab_drops_wheel_jobs_when_pybind_filtered_off(tmp_path):
     assert "Conan Build" in parsed, "the rest of the pipeline survives"
 
 
+def test_gitlab_drops_windows_wheel_work_when_pybind_filtered_off(tmp_path):
+    """The Windows leg's wheel work goes too, and the Conan deploys stay.
+
+    Windows repairs its wheel in place inside the build job rather than in a
+    separate Package job, so its --wheel-dir, its repair step, and the
+    "Wheel Deploy - Windows" job each need the same gate the Linux jobs get.
+    build.py exits 1 when --wheel-dir extracts no complete set of wheels, so an
+    un-gated --wheel-dir here is a red pipeline on every branch. The two
+    "Conan Deploy" jobs publish packages rather than wheels and must survive.
+    """
+    toml_file = _write_filtered_toml(
+        tmp_path, ci_type="gitlab",
+        ci_table="\n[ci]\ndeploy = true\nwindows_wheel_repair = true\n",
+        filter_table=_NO_PYBIND_FILTER,
+    )
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    content = (tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+
+    assert "--wheel-dir" not in content, "build.py exits 1 when no wheel is extracted"
+    assert "xmsconan_wheel_repair" not in content
+    assert "xmsconan_wheel_deploy" not in content
+    assert "Wheel Deploy - Windows" not in parsed
+    assert "Conan Build - Windows" in parsed, "the Windows build itself survives"
+    assert "Conan Deploy - Windows" in parsed, "package deploy is not wheel work"
+    assert "Conan Deploy - Linux" in parsed, "package deploy is not wheel work"
+
+
+def test_gitlab_keeps_windows_wheel_work_by_default(tmp_path):
+    """Unfiltered, the Windows wheel chain is intact -- the gate is opt-in only."""
+    toml_file = _write_filtered_toml(
+        tmp_path, ci_type="gitlab",
+        ci_table="\n[ci]\ndeploy = true\nwindows_wheel_repair = true\n",
+        filter_table="",
+    )
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    content = (tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+
+    assert "--wheel-dir wheelhouse" in content
+    assert "--platform windows" in content, "the in-place repair step is still emitted"
+    assert "Wheel Deploy - Windows" in parsed
+
+
 def test_gitlab_keeps_wheel_jobs_by_default(tmp_path):
     """The unfiltered GitLab pipeline still carries both wheel jobs."""
     toml_file = _write_filtered_toml(tmp_path, ci_type="gitlab", filter_table="")
@@ -1928,19 +1974,34 @@ def test_no_coverage_warning_without_coverage_job(tmp_path, caplog):
     assert [r.getMessage() for r in caplog.records if "xmsconan coverage" in r.getMessage()] == []
 
 
-def test_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):
-    """A job [ci].windows switched off isn't reported as emptied by the filter."""
+#: A [ci] table switching Windows off, and a filter only the Linux job matches.
+CI_WINDOWS_FALSE = "\n[ci]\nwindows = false\n"
+FILTER_COMPILER_GCC = '\n[filter]\ncompiler = "gcc"\n'
+
+
+def test_github_still_warns_about_windows_when_ci_windows_is_false(tmp_path, caplog):
+    """[ci].windows is GitLab-only, so it must not silence the GitHub warning.
+
+    The GitHub template has no job gate for [ci].windows -- generate_ci warns
+    that the key is ignored -- so the windows job is emitted whatever it says.
+    Treating it as a toggle here dropped the job from the accounting and left a
+    filter that empties it unreported.
+    """
     toml_file = _write_filtered_toml(
-        tmp_path, ci_table="\n[ci]\nwindows = false\n",
-        filter_table='\n[filter]\ncompiler = "gcc"\n',
+        tmp_path, ci_table=CI_WINDOWS_FALSE,
+        filter_table=FILTER_COMPILER_GCC,
     )
 
     with caplog.at_level(logging.WARNING):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
+    workflow, _ = _github_workflow(tmp_path)
+    assert "windows" in workflow["jobs"], "the GitHub template ignores [ci].windows"
+
     warned = [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
-    assert len(warned) == 1, warned  # mac only — windows isn't generated
-    assert "'mac'" in warned[0]
+    assert len(warned) == 2, warned  # mac (apple-clang) and windows (msvc)
+    assert any("'mac'" in message for message in warned), warned
+    assert any("'windows'" in message for message in warned), warned
 
 
 def test_gitlab_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):

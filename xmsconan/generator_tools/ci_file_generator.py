@@ -177,11 +177,14 @@ def _coverage_context(coverage_config: dict, library_name: str) -> dict:
 def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
     """Names of the job blocks this generation writes, for the filter warnings."""
     if ci_type == "github":
-        jobs = ["mac", "linux"]
+        # [ci].windows and [ci].linux are GitLab-only -- the GitHub template has
+        # no job gate for either, and generate_ci warns when a GitHub
+        # build.toml sets them. Honoring them here would drop a job from this
+        # list that the workflow really does emit, and a filter that empties it
+        # would go unwarned. linux-arm is the one genuinely opt-in job block.
+        jobs = ["mac", "linux", "windows"]
         if context["ci_linux_arm"]:
-            jobs.append("linux-arm")
-        if context["ci_windows"]:
-            jobs.append("windows")
+            jobs.insert(2, "linux-arm")
         return jobs
     # [ci].linux is GitLab-only -- the GitHub linux job above is not gated on it
     # -- and it takes "Conan Build" out with it, so a filter cannot empty a job

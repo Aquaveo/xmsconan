@@ -3,6 +3,7 @@ import pytest
 
 from xmsconan.generator_tools.build_filter import (
     ci_build_types,
+    CI_JOB_SETTINGS,
     ci_python_versions,
     ci_wheel_enabled,
     coverage_conflicts,
@@ -10,6 +11,7 @@ from xmsconan.generator_tools.build_filter import (
     empty_ci_jobs,
     load_build_filter,
 )
+from xmsconan.package_tools.packager import configurations
 
 
 # --- load_build_filter ---
@@ -60,6 +62,118 @@ def test_load_build_filter_accepts_python_version_from_ci_config():
         "filter": {"options": {"python_version": "3.10"}},
     }
     assert load_build_filter(toml_data) == {"options": {"python_version": "3.10"}}
+
+
+@pytest.mark.parametrize("build_filter,expected", [
+    pytest.param({"compiler.cppstd": "17"}, ["mac", "linux"], id="cppstd-msvc-only"),
+    pytest.param({"compiler.libcxx": "libc++"}, ["linux"], id="libcxx-apple-only"),
+])
+def test_empty_ci_jobs_covers_the_cppstd_and_libcxx_pins(build_filter, expected):
+    """Cppstd and libcxx are documented filter keys, so they must be accounted for.
+
+    They differ per platform (gnu17 vs 17, libstdc++11 vs libc++) and Windows
+    declares no libcxx at all, so pinning one empties some job blocks and is a
+    no-op for others. Leaving them out of CI_JOB_SETTINGS made those jobs go
+    unwarned -- the matrix stays non-empty on the platform that matches, so
+    load_build_filter does not reject them either.
+    """
+    emitted = ["mac", "linux", "windows"]
+
+    assert empty_ci_jobs(build_filter, "github", emitted) == expected
+
+
+def test_ci_job_settings_match_the_platform_matrix():
+    """Every fixed job setting is a value that platform's configurations emit.
+
+    Hand-listed job settings drift from the matrix silently: a wrong value makes
+    empty_ci_jobs warn about a healthy job or stay quiet about a dead one, and
+    nothing else would notice.
+    """
+    platform_of = {
+        "mac": "darwin", "linux": "linux", "linux-arm": "linux", "windows": "windows",
+        "Conan Build": "linux", "Conan Build - Windows": "windows",
+    }
+
+    for ci_type, jobs in CI_JOB_SETTINGS.items():
+        for job_name, settings in jobs.items():
+            emitted = configurations[platform_of[job_name]]
+            for key, value in settings.items():
+                # linux-arm runs the Linux configuration block on an ARM runner,
+                # so its arch is the one setting that is not the block's own.
+                if key == "arch" and job_name == "linux-arm":
+                    continue
+                assert key in emitted, f"{ci_type}/{job_name}: {key} is not a setting"
+                assert value in emitted[key], (
+                    f"{ci_type}/{job_name}: {key}={value!r} not in {emitted[key]}"
+                )
+
+
+def test_load_build_filter_accepts_a_buildenv_pin():
+    """A [filter.buildenv] pin is not judged unbuildable at generation time.
+
+    Those values come from the environment doing the generating -- XMS_VERSION
+    and the AQUAPI_* names are os.getenv in generate_configurations, and
+    XMS_TEST_ARTIFACTS_LABEL is added per configuration by run() -- so at
+    generation time they are None or absent. Checking them for emptiness
+    rejected every buildenv pin, making a documented feature unusable.
+    """
+    for name in ("XMS_VERSION", "XMS_COVERAGE", "XMS_TEST_ARTIFACTS_LABEL"):
+        toml_data = {"filter": {"buildenv": {name: "1"}}}
+
+        assert load_build_filter(toml_data) == {"buildenv": {name: "1"}}
+
+
+def test_load_build_filter_still_rejects_settings_beside_a_buildenv_pin():
+    """Skipping buildenv must not smuggle an impossible options table past the check."""
+    toml_data = {"filter": {
+        "buildenv": {"XMS_VERSION": "1"},
+        "options": {"testing": True, "pybind": True},
+    }}
+
+    with pytest.raises(ValueError, match="matches no configuration"):
+        load_build_filter(toml_data)
+
+
+def test_load_build_filter_rejects_a_runtime_matrix_excludes():
+    """[matrix] and [filter] can each be valid and together build nothing.
+
+    compiler.runtime is Windows-only, so the all-platforms emptiness check can't
+    see this: the pin is a no-op on Linux and macOS, which stay non-empty.
+    """
+    toml_data = {
+        "matrix": {"compiler_runtime": ["dynamic"]},
+        "filter": {"compiler.runtime": "static"},
+    }
+
+    with pytest.raises(ValueError, match="builds only"):
+        load_build_filter(toml_data)
+
+
+def test_load_build_filter_accepts_a_runtime_the_matrix_keeps():
+    """The same pin is fine when [matrix] still builds it."""
+    toml_data = {
+        "matrix": {"compiler_runtime": ["dynamic", "static"]},
+        "filter": {"compiler.runtime": "static"},
+    }
+
+    assert load_build_filter(toml_data) == {"compiler.runtime": "static"}
+
+
+def test_load_build_filter_checks_the_filter_against_the_narrowed_matrix():
+    """A pybind build_type [matrix] adds is buildable, and one it omits is not.
+
+    Validating against the unnarrowed fan-out gets this wrong in both
+    directions: it accepts a filter that builds nothing, and rejects one that
+    builds fine.
+    """
+    debug_pybind = {"build_type": "Debug", "options": {"pybind": True}}
+
+    with pytest.raises(ValueError, match="matches no configuration"):
+        load_build_filter({"filter": debug_pybind})
+
+    widened = {"matrix": {"pybind_build_types": ["Release", "Debug"]},
+               "filter": debug_pybind}
+    assert load_build_filter(widened) == debug_pybind
 
 
 def test_ci_python_versions_defaults_to_none():
