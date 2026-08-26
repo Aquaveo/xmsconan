@@ -907,6 +907,81 @@ def test_gitlab_coverage_version_is_parameterized(tmp_path):
     assert "xmsconan_coverage --version 0.0.0" not in content
 
 
+def test_gitlab_coverage_job_declares_python_target_version(tmp_path):
+    """The Coverage job's ABI target and its container image come from one value.
+
+    The job has always selected its image from the resolved coverage ABI but
+    declared no ``PYTHON_TARGET_VERSION``, so the packager generated a matrix
+    for the silent 3.13 default inside a 3.14 container and the tool's
+    ``--filter`` then matched nothing. Asserting the image and the variable
+    *agree* is the point: a test on either one alone would still have passed
+    while the two disagreed.
+    """
+    toml_file = write_gitlab_toml(
+        tmp_path, coverage=True, linux_python_versions=["3.14"],
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    job = parsed["Coverage"]
+    pinned = job["variables"]["PYTHON_TARGET_VERSION"]
+    assert pinned == "3.14"
+    assert job["image"].endswith(f"-py{pinned}"), (
+        f"Coverage image {job['image']!r} must match its pinned ABI {pinned!r}; "
+        "a mismatch fails find_package(Python3 ... EXACT REQUIRED) at configure."
+    )
+
+
+def test_gitlab_coverage_pins_python_target_version_under_an_explicit_image(tmp_path):
+    """An explicit [ci].docker_image replaces the image but not the ABI pin.
+
+    The other two image branches derive the image from the same resolved ABI,
+    so image and pin cannot disagree there. This branch takes whatever image
+    the repo named, which is exactly why the pin has to keep coming from the
+    resolver: dropping it here would put the packager back on its silent 3.13
+    default inside somebody else's container.
+    """
+    toml_file = write_gitlab_toml(
+        tmp_path, coverage=True, linux_python_versions=["3.14"],
+        docker_image="registry.example.com/custom:latest",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    job = parsed["Coverage"]
+    assert job["image"] == "registry.example.com/custom:latest"
+    assert job["variables"]["PYTHON_TARGET_VERSION"] == "3.14"
+
+
+def test_gitlab_coverage_pins_python_target_version_under_xvfb(tmp_path):
+    """The xvfb image branch derives its image from the ABI too, and still pins it.
+
+    This is the second of the two derived-image branches the sibling tests
+    claim cannot drift; the x11 image name is built from the same resolved
+    value, so asserting the pair here is what makes that claim true for both
+    rather than for whichever branch happened to get a test.
+    """
+    toml_file = write_gitlab_toml(
+        tmp_path, coverage=True, xvfb=True, linux_python_versions=["3.14"],
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    job = parsed["Coverage"]
+    pinned = job["variables"]["PYTHON_TARGET_VERSION"]
+    assert pinned == "3.14"
+    assert "x11" in job["image"], (
+        f"Coverage image {job['image']!r} must be the xvfb variant under xvfb = true"
+    )
+    assert job["image"].endswith(f"-py{pinned}"), (
+        f"Coverage image {job['image']!r} must match its pinned ABI {pinned!r}; "
+        "a mismatch fails find_package(Python3 ... EXACT REQUIRED) at configure."
+    )
+
+
 def test_gitlab_pages_landing_links_both_coverage_reports(tmp_path):
     """The pages stage emits a landing page with links to both cpp/ and python/."""
     toml_file = tmp_path / "build.toml"

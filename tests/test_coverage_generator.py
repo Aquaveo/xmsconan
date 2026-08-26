@@ -27,6 +27,18 @@ from xmsconan.coverage_tools.coverage_generator import (
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
 
 
+#: Scoping a caplog capture to this logger keeps an unrelated library's warning
+#: from satisfying -- or falsifying -- an assertion. caplog collects every
+#: record propagating to root for the whole test, not just the ones emitted
+#: inside a with block, so every log assertion here filters on this name.
+LOGGER_NAME = "xmsconan.coverage_tools.coverage_generator"
+
+
+def logged_messages(caplog):
+    """Return the messages this module logged, ignoring every other logger."""
+    return [r.message for r in caplog.records if r.name == LOGGER_NAME]
+
+
 class TestCoverageContextDefaults:
     """Defaults baked into _coverage_context match the issue spec."""
 
@@ -381,6 +393,31 @@ class TestResolveCoveragePythonVersion:
         """An empty list in [ci] is treated like the key was missing."""
         toml_data = {"ci": {"python_versions": []}}
         assert _resolve_coverage_python_version(toml_data) == "3.13"
+
+    def test_rejects_a_coverage_python_version_the_recipe_does_not_allow(self):
+        """[coverage].python_version is checked against the supported set.
+
+        generate_ci validates the three [ci] lists, but run_coverage calls this
+        resolver directly, so an unsupported value here reached the container
+        image name and PYTHON_TARGET_VERSION unchecked and only failed at conan
+        configure time, inside the build, attributed to the wrong thing.
+        """
+        toml_data = {"coverage": {"python_version": "3.11"}}
+        with pytest.raises(ValueError, match="python_version option does not allow"):
+            _resolve_coverage_python_version(toml_data)
+
+    def test_coerces_a_non_string_version_entry(self):
+        """An unquoted TOML version parses as a float and must not stay one.
+
+        ``linux_python_versions = [3.14]`` yields ``[3.14]``, and the fallback
+        returns an element of that list verbatim. version_sort_key stringifies
+        only for comparison, so without a coercion here the float reaches
+        subprocess's env, which rejects non-str values with a bare TypeError.
+        """
+        toml_data = {"ci": {"linux_python_versions": [3.14]}}
+        resolved = _resolve_coverage_python_version(toml_data)
+        assert resolved == "3.14"
+        assert isinstance(resolved, str), f"resolver returned {type(resolved).__name__}"
 
 
 class TestConanCachePath:
@@ -787,22 +824,14 @@ class TestWarnIfTracefileEmpty:
     report with no other signal.
     """
 
-    #: Scoping the capture to this module keeps an unrelated library's warning
-    #: from satisfying -- or falsifying -- these assertions. caplog collects
-    #: every record propagating to root for the whole test, not just the ones
-    #: emitted inside the with block.
-    LOGGER_NAME = "xmsconan.coverage_tools.coverage_generator"
-
-    def _messages(self, caplog):
-        """Return the messages this module logged, ignoring every other logger."""
-        return [r.message for r in caplog.records if r.name == self.LOGGER_NAME]
+    _messages = staticmethod(logged_messages)
 
     def test_warns_when_no_files(self, tmp_path, caplog):
         """An empty file list warns, naming the folder and its own filters."""
         tracefile = tmp_path / "trace.json"
         tracefile.write_text(json.dumps({"files": []}))
         folder = tmp_path / "py-build"
-        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _warn_if_tracefile_empty(tracefile, folder, ["FILTER-SENTINEL"])
         text = " ".join(self._messages(caplog))
         assert str(folder) in text
@@ -822,7 +851,7 @@ class TestWarnIfTracefileEmpty:
         tracefile.write_text(json.dumps({
             "files": [{"file": "xmscore/foo.cpp", "lines": []}],
         }))
-        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _warn_if_tracefile_empty(tracefile, tmp_path, ["x/"])
         assert self._messages(caplog) == []
 
@@ -833,15 +862,24 @@ class TestWarnIfTracefileEmpty:
         raises on a non-zero exit, so the other unreadable cases need gcovr
         to both succeed and write something unusable.
         """
-        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             _warn_if_tracefile_empty(tmp_path / "absent.json", tmp_path, [])
         assert any("absent.json" in m for m in self._messages(caplog))
 
 
-class TestRunCoverageThresholdGating:
-    """End-to-end gating logic with all subprocess calls mocked."""
+class TestRunCoverageEndToEnd:
+    """End-to-end ``run_coverage`` behavior with all subprocess calls mocked.
 
-    def _setup_workspace(self, tmp_path, *, cpp_percent, py_percent):
+    Threshold gating is only four of these; the rest cover the build.py
+    invocations (filter shape, ABI plumbing), gcovr anchoring, artifact
+    discovery and build-failure resilience. They share ``_setup_workspace``
+    because they all need the same faked two-build workspace, which is what
+    holds them in one class rather than the gating subject.
+    """
+
+    def _setup_workspace(self, tmp_path, *, cpp_percent, py_percent,
+                         python_versions=None, linux_python_versions=None,
+                         coverage_python_version=None):
         """Create a workspace with build.toml and fake coverage outputs.
 
         Two build folders are created — one mirrors the C++ coverage
@@ -849,16 +887,36 @@ class TestRunCoverageThresholdGating:
         coverage build (pybind=True, testing=False). pytest-cov
         artifacts are staged inside the pybind folder because that's
         where ``run_python_tests`` writes them under the two-build flow.
+
+        ``python_versions``, ``linux_python_versions`` and
+        ``coverage_python_version`` feed the three inputs
+        ``_resolve_coverage_python_version`` reads, lowest precedence first.
+        All default to omitting their key entirely, so a caller that passes
+        none gets the same build.toml this helper has always written.
         """
         toml_file = tmp_path / "build.toml"
+        ci_entries = []
+        if python_versions is not None:
+            entries = ", ".join(f'"{v}"' for v in python_versions)
+            ci_entries.append(f"python_versions = [{entries}]")
+        if linux_python_versions is not None:
+            entries = ", ".join(f'"{v}"' for v in linux_python_versions)
+            ci_entries.append(f"linux_python_versions = [{entries}]")
+        ci_body = "\n".join(ci_entries)
+        ci_section = f"\n[ci]\n{ci_body}\n" if ci_entries else ""
+        coverage_pin = ""
+        if coverage_python_version is not None:
+            coverage_pin = f'python_version = "{coverage_python_version}"\n'
         toml_file.write_text(
             'library_name = "xmscore"\n'
             'description = "desc"\n'
             'python_namespaced_dir = "core"\n'
+            f'{ci_section}'
             '\n'
             '[coverage]\n'
             'cpp_threshold = 70\n'
-            'python_threshold = 70\n',
+            'python_threshold = 70\n'
+            f'{coverage_pin}',
             encoding="utf-8",
         )
         cpp_build_folder = tmp_path / "fake-cpp-build"
@@ -897,6 +955,80 @@ class TestRunCoverageThresholdGating:
             return MagicMock(returncode=0)
 
         return toml_file, cpp_build_folder, py_build_folder, fake_run
+
+    def _capture_build_envs(self, tmp_path, mock_run, mock_path, mock_find,
+                            **toml_kwargs):
+        """Run coverage and return the ``(cmd, env)`` pair per build.py call.
+
+        The threshold tests only ever needed the command; the ABI plumbing is
+        carried in the environment, so these capture both.
+        """
+        toml_file, cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=80.0, py_percent=80.0, **toml_kwargs,
+            )
+        )
+        captured = []
+
+        def capture(cmd, env=None, cwd=None, **kw):
+            # Snapshot the env, don't store the reference: run_coverage builds
+            # one dict and hands the same object to both build.py calls, so
+            # keeping the reference would make every per-build assertion read
+            # the same post-run state -- and a change that set the ABI for only
+            # one of the two invocations would still pass.
+            captured.append((
+                list(cmd) if isinstance(cmd, list) else cmd,
+                dict(env) if env is not None else None,
+            ))
+            return fake_run(cmd, env=env, cwd=cwd, **kw)
+
+        mock_run.side_effect = capture
+        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
+            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+        )
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
+        )
+
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        return [
+            (cmd, env) for cmd, env in captured
+            if isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "build.py"
+        ]
+
+    @staticmethod
+    def _pybind_filter(builds):
+        """Return the ``--filter`` dict of the build.py call that builds the wheel.
+
+        Selected by the filter's own ``pybind`` option rather than by position.
+        ``run_coverage``'s call order is an implementation detail, and indexing
+        would silently retarget these assertions at the C++ build the moment
+        the two invocations were reordered.
+        """
+        for cmd, _env in builds:
+            build_filter = json.loads(cmd[cmd.index("--filter") + 1])
+            if build_filter.get("options", {}).get("pybind"):
+                return build_filter
+        raise AssertionError(f"no pybind build.py invocation among {builds!r}")
+
+    @staticmethod
+    def _assert_every_build_pins(builds, version):
+        """Assert both build.py calls carry ``PYTHON_TARGET_VERSION=version``.
+
+        Asserting per build rather than once on the shared env is the point:
+        ``run_coverage`` hands the same dict to both invocations today, and a
+        change that pinned only one of them has to fail here, naming the leg.
+        """
+        assert len(builds) == 2, "run_coverage must invoke build.py twice"
+        for cmd, env in builds:
+            assert env is not None, f"build.py invocation {cmd!r} got no explicit env"
+            assert env.get("PYTHON_TARGET_VERSION") == version, (
+                f"build.py invocation {cmd!r} carried "
+                f"PYTHON_TARGET_VERSION={env.get('PYTHON_TARGET_VERSION')!r}, "
+                f"expected {version!r}; the matrix it generates cannot satisfy "
+                "the --filter without it."
+            )
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1309,69 +1441,13 @@ class TestRunCoverageThresholdGating:
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
         """The pybind --filter pins a python_version from [ci].python_versions (issue #65)."""
-        toml_file = tmp_path / "build.toml"
-        toml_file.write_text(
-            'library_name = "xmscore"\n'
-            'description = "desc"\n'
-            'python_namespaced_dir = "core"\n'
-            '\n'
-            '[ci]\n'
-            'python_versions = ["3.10", "3.13"]\n'
-            '\n'
-            '[coverage]\n'
-            'cpp_threshold = 70\n'
-            'python_threshold = 70\n',
-            encoding="utf-8",
+        builds = self._capture_build_envs(
+            tmp_path, mock_run, mock_path, mock_find,
+            python_versions=["3.10", "3.13"],
         )
-        cpp_build_folder = tmp_path / "fake-cpp-build"
-        py_build_folder = tmp_path / "fake-py-build"
-        cpp_build_folder.mkdir()
-        py_build_folder.mkdir()
-        (py_build_folder / "cov-py-summary.json").write_text(
-            json.dumps({"totals": {"percent_covered": 80.0}})
-        )
-
-        captured_cmds = []
-
-        def fake_run(cmd, env=None, cwd=None, **kw):
-            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
-            if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
-                if "--json-summary" in cmd:
-                    idx = cmd.index("--json-summary")
-                    Path(cmd[idx + 1]).write_text(
-                        json.dumps({"line_percent": 80.0, "line_total": 100}),
-                    )
-                if "--json" in cmd:
-                    # Non-empty: a real gcovr run reports every file it found
-                    # .gcno for, whether or not a test executed any of it. An
-                    # empty list here would trip _warn_if_tracefile_empty in
-                    # every end-to-end test, and a warning that always fires
-                    # is one nobody reads when it means something.
-                    idx = cmd.index("--json")
-                    Path(cmd[idx + 1]).write_text(json.dumps({
-                        "files": [{"file": "xmscore/foo.cpp", "lines": []}],
-                    }))
-            return MagicMock(returncode=0)
-
-        mock_run.side_effect = fake_run
-        mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
-            ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
-        )
-        mock_path.side_effect = lambda ref_with_pid, folder: (
-            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
-        )
-
-        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-
-        build_cmds = [
-            c for c in captured_cmds
-            if isinstance(c, list) and len(c) >= 2 and c[1] == "build.py"
-        ]
-        # The second build is the pybind-only one; it carries python_version.
-        assert len(build_cmds) == 2
-        py_filter = json.loads(build_cmds[1][build_cmds[1].index("--filter") + 1])
+        assert len(builds) == 2, "run_coverage must invoke build.py twice"
         # Highest of ["3.10", "3.13"] is 3.13.
-        assert py_filter["options"]["python_version"] == "3.13"
+        assert self._pybind_filter(builds)["options"]["python_version"] == "3.13"
         # _find_coverage_package must be told to pin to the same ABI for the
         # pybind kind so the lookup matches what the build produced.
         pybind_calls = [
@@ -1380,6 +1456,89 @@ class TestRunCoverageThresholdGating:
         ]
         assert pybind_calls, "_find_coverage_package must be called with kind='pybind'"
         assert pybind_calls[0].kwargs.get("python_version") == "3.13"
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_env_pins_python_target_version(
+        self, mock_run, mock_path, mock_find, tmp_path, monkeypatch,
+    ):
+        """Both coverage builds are told which ABI to *produce*, not just which to keep.
+
+        ``--filter`` narrows the matrix build.py generates; it cannot introduce
+        an option value the matrix lacks. With no ``PYTHON_TARGET_VERSION`` in
+        the child env the packager falls back to ``DEFAULT_PYTHON_VERSIONS``
+        (``["3.13"]``), so a coverage ABI of 3.14 filtered a 3.13-only matrix
+        down to zero configurations and the pybind package lookup then raised.
+
+        The delenv is what makes this a regression detector rather than a
+        coincidence: ``run_coverage`` seeds the child env from ``os.environ``,
+        and USAGE.md tells operators to export this very variable, so on a
+        developer machine already exporting 3.14 the assertion below would
+        hold with the export removed from the tool entirely.
+        """
+        monkeypatch.delenv("PYTHON_TARGET_VERSION", raising=False)
+        builds = self._capture_build_envs(
+            tmp_path, mock_run, mock_path, mock_find,
+            linux_python_versions=["3.14"],
+        )
+        self._assert_every_build_pins(builds, "3.14")
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_env_python_target_version_follows_explicit_coverage_override(
+        self, mock_run, mock_path, mock_find, tmp_path, monkeypatch,
+    ):
+        """The exported ABI tracks ``[coverage].python_version``, same as the --filter.
+
+        Pinning both to the single resolver is the point of the assertion: an
+        env var that disagreed with the filter would build the matrix for one
+        ABI and then search it for another. Cleared from the environment for
+        the same reason as the sibling test above.
+        """
+        monkeypatch.delenv("PYTHON_TARGET_VERSION", raising=False)
+        builds = self._capture_build_envs(
+            tmp_path, mock_run, mock_path, mock_find,
+            linux_python_versions=["3.14"], coverage_python_version="3.13",
+        )
+        self._assert_every_build_pins(builds, "3.13")
+
+        py_filter = self._pybind_filter(builds)
+        assert py_filter["options"]["python_version"] == "3.13", (
+            "the pybind --filter and PYTHON_TARGET_VERSION must come from the "
+            "same resolver or they can drift apart again."
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_build_env_overrides_ambient_python_target_version(
+        self, mock_run, mock_path, mock_find, tmp_path, monkeypatch, caplog,
+    ):
+        """build.toml wins over an operator's exported PYTHON_TARGET_VERSION, audibly.
+
+        ``run_coverage`` seeds the child env from ``os.environ``, so an ambient
+        value would otherwise survive into build.py and select an ABI the
+        --filter goes on to reject. Overriding it silently is its own failure:
+        the operator asked for one ABI and got another with no signal, so the
+        warning is part of the behavior, not decoration.
+        """
+        monkeypatch.setenv("PYTHON_TARGET_VERSION", "3.10")
+        caplog.set_level(logging.WARNING, logger=LOGGER_NAME)
+        builds = self._capture_build_envs(
+            tmp_path, mock_run, mock_path, mock_find,
+            linux_python_versions=["3.14"],
+        )
+        # Filtered to this module's logger: caplog collects everything that
+        # propagates to root, so matching on caplog.text would let an unrelated
+        # library emitting the same substring satisfy the assertion.
+        warnings = logged_messages(caplog)
+        assert any("Ignoring PYTHON_TARGET_VERSION=3.10" in m for m in warnings), (
+            "an overridden ambient ABI must be reported, not discarded silently; "
+            f"captured warnings were {warnings!r}"
+        )
+        self._assert_every_build_pins(builds, "3.14")
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
