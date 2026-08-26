@@ -2,10 +2,9 @@
 import pytest
 
 from xmsconan.generator_tools.build_filter import (
-    ci_build_types,
+    ci_filter_effects,
     CI_JOB_SETTINGS,
     ci_python_versions,
-    ci_wheel_enabled,
     coverage_conflicts,
     DEFAULT_CI_BUILD_TYPES,
     empty_ci_jobs,
@@ -211,38 +210,88 @@ def test_load_build_filter_accepts_python_version_from_a_platform_key():
     assert load_build_filter(toml_data) == {"options": {"python_version": "3.14"}}
 
 
-# --- ci_build_types ---
+# --- ci_filter_effects ---
+
+
+def _effects(build_filter, matrix=None, ci=None):
+    """Measure a filter the way generate_ci does, through load_build_filter."""
+    toml_data = {"filter": build_filter}
+    if matrix:
+        toml_data["matrix"] = matrix
+    if ci:
+        toml_data["ci"] = ci
+    return ci_filter_effects(load_build_filter(toml_data), toml_data)
 
 
 @pytest.mark.parametrize("build_filter,expected", [
     pytest.param({}, ["Release", "Debug"], id="no-filter"),
     pytest.param({"build_type": "Release"}, ["Release"], id="pinned-release"),
     pytest.param({"build_type": "Debug"}, ["Debug"], id="pinned-debug"),
-    pytest.param({"options": {"testing": True}}, ["Release", "Debug"], id="unrelated-key"),
+    # A pybind-only filter pins no build_type, but the default
+    # [matrix].pybind_build_types is Release-only, so the Debug leg would select
+    # zero configurations and build.py would exit 1 on a required check.
+    pytest.param({"options": {"pybind": True}}, ["Release"], id="pybind-required"),
+    pytest.param({"options": {"python_version": "3.13"}}, ["Release"], id="python-version-pin"),
+    # testing variants exist for both build types, so neither leg is empty.
+    pytest.param({"options": {"testing": True}}, ["Release", "Debug"], id="testing-required"),
 ])
-def test_ci_build_types(build_filter, expected):
-    """The CI matrix follows a pinned build_type and ignores everything else."""
-    assert ci_build_types(build_filter) == expected
+def test_ci_build_types_follow_what_survives(build_filter, expected):
+    """The CI matrix keeps a build type only when configurations survive on it.
+
+    Keying on whether `build_type` was pinned left a leg that builds nothing
+    whenever some *other* key excluded a whole build type's configurations.
+    """
+    assert _effects(build_filter)["build_types"] == expected
+
+
+def test_ci_build_types_widen_with_the_matrix_table():
+    """A Debug pybind leg is legitimate once [matrix] asks for Debug modules."""
+    effects = _effects({"options": {"pybind": True}},
+                       matrix={"pybind_build_types": ["Release", "Debug"]})
+
+    assert effects["build_types"] == ["Release", "Debug"]
 
 
 def test_ci_build_types_returns_a_fresh_list():
     """Callers get a list of their own, not the module default."""
-    assert ci_build_types({}) is not DEFAULT_CI_BUILD_TYPES
+    assert _effects({})["build_types"] is not DEFAULT_CI_BUILD_TYPES
     assert isinstance(DEFAULT_CI_BUILD_TYPES, tuple), "the default must not be mutable"
 
 
-# --- ci_wheel_enabled ---
-
-
 @pytest.mark.parametrize("build_filter,expected", [
-    pytest.param({}, True, id="no-filter"),
-    pytest.param({"options": {"pybind": True}}, True, id="pybind-required"),
-    pytest.param({"options": {"testing": True}}, True, id="unrelated-option"),
-    pytest.param({"options": {"pybind": False}}, False, id="pybind-excluded"),
+    pytest.param({}, {"mac": True, "linux": True, "windows": True}, id="no-filter"),
+    pytest.param({"options": {"pybind": True}},
+                 {"mac": True, "linux": True, "windows": True}, id="pybind-required"),
+    pytest.param({"options": {"pybind": False}},
+                 {"mac": False, "linux": False, "windows": False}, id="pybind-excluded"),
+    # Each of these empties the pybind subset without naming pybind at all.
+    pytest.param({"build_type": "Debug"},
+                 {"mac": False, "linux": False, "windows": False}, id="debug-has-no-pybind"),
+    pytest.param({"options": {"testing": True}},
+                 {"mac": False, "linux": False, "windows": False},
+                 id="testing-is-disjoint-from-pybind"),
+    # Windows-only: msvc pybind variants are produced for the dynamic runtime
+    # only, while Linux and macOS declare no compiler.runtime to match against.
+    pytest.param({"compiler.runtime": "static"},
+                 {"mac": True, "linux": True, "windows": False}, id="static-runtime-windows-only"),
 ])
-def test_ci_wheel_enabled(build_filter, expected):
-    """Wheel steps come out only when the filter excludes the pybind builds."""
-    assert ci_wheel_enabled(build_filter) is expected
+def test_wheel_steps_follow_the_surviving_pybind_count(build_filter, expected):
+    """Wheel steps come out per platform, on survivors rather than on the pin.
+
+    Asking only whether `pybind` was pinned False kept the wheel steps for
+    filters that build no wheel: on GitLab `build.py` exits 1 when --wheel-dir
+    extracts nothing, and on GitHub the Release-gated steps publish a release
+    with no wheel in it and stay green.
+    """
+    assert _effects(build_filter)["wheel_enabled"] == expected
+
+
+def test_wheel_steps_survive_where_the_matrix_restores_pybind():
+    """A Debug pin is fine when [matrix] builds Debug modules."""
+    effects = _effects({"build_type": "Debug"},
+                       matrix={"pybind_build_types": ["Release", "Debug"]})
+
+    assert effects["wheel_enabled"] == {"mac": True, "linux": True, "windows": True}
 
 
 # --- empty_ci_jobs ---

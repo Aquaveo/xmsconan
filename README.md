@@ -115,10 +115,13 @@ validated when the files are generated — a value nothing builds (`"release"`, 
 unquoted `3.13`, `testing` and `pybind` both true) fails `xmsconan gen` rather
 than every later build.
 
-`options.pybind = false` also removes the wheel repair / upload steps from the
-generated CI, so a library that ships no wheel gets a pipeline that can pass. An
-`os` / `arch` / `compiler` pin is only warned about — those are separate CI job
-blocks, not a matrix axis. Pass `--ignore-build-filter` to `build.py` for a
+The generated CI follows what the filter leaves buildable, not which keys it
+pins: the wheel repair / upload steps come out per platform when that platform
+builds no wheel, and a build type with no configurations left is dropped from
+the matrix. So `options.pybind = false` gets a pipeline that can pass, and so
+does `"compiler.runtime" = "static"` — which keeps the macOS and Linux wheels
+and drops only the Windows ones. An `os` / `arch` / `compiler` pin is only
+warned about — those are separate CI job blocks, not a matrix axis. Pass `--ignore-build-filter` to `build.py` for a
 one-off build of an excluded configuration. See
 [docs/USAGE.md §5.8](docs/USAGE.md) for the full behavior.
 

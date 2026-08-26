@@ -310,6 +310,14 @@ def _reference_matrix(platform_name, python_versions=None, coverage=False, matri
     doing the generating; ``emitted_buildenv_keys`` turns it on because that
     mode contributes a ``[buildenv]`` name of its own.
 
+    ``python_versions`` gets the same env-independence, and for the same reason:
+    passing None reaches ``_resolve_python_versions``, which falls back to
+    ``PYTHON_TARGET_VERSION`` from the environment -- so an
+    ``options.python_version`` pin would be accepted or rejected according to
+    what the shell running ``xmsconan gen`` happens to export, while every
+    generated CI leg exports the default. A generator must not read a build.toml
+    two ways on two machines.
+
     ``matrix`` is the ``[matrix]`` table, and it has to be honored here: it is
     what decides which configurations exist at all, so validating a filter
     against the unnarrowed fan-out accepts filters that select nothing once
@@ -318,7 +326,8 @@ def _reference_matrix(platform_name, python_versions=None, coverage=False, matri
     """
     packager = XmsConanPackager(
         '_filter_validation',
-        python_versions=list(python_versions) if python_versions else None,
+        python_versions=(list(python_versions) if python_versions
+                         else list(XmsConanPackager.DEFAULT_PYTHON_VERSIONS)),
         coverage=coverage,
         artifacts_dir='artifacts',
         matrix=matrix,

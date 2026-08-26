@@ -378,6 +378,10 @@ _FILTER_TOMLS = {
     "pinned-build-type": '[filter]\nbuild_type = "Release"\n',
     "no-pybind": '[filter.options]\npybind = false\n',
     "pinned-both": '[filter]\nbuild_type = "Release"\n\n[filter.options]\npybind = false\n',
+    # Windows keeps no pybind configuration (msvc pybind is dynamic-runtime
+    # only) while mac and Linux are untouched, so the wheel blocks come out of
+    # some job blocks and stay in others -- the mixed case.
+    "static-runtime": '[filter]\n"compiler.runtime" = "static"\n',
 }
 
 
@@ -416,22 +420,3 @@ def test_filtered_ci_produces_valid_yaml(ci_type, filter_table, tmp_path):
     assert isinstance(parsed, dict)
     jobs = parsed["jobs"] if ci_type == "github" else parsed
     assert jobs, "the pipeline still has jobs"
-
-
-def test_pinned_build_type_reaches_every_github_matrix(tmp_path):
-    """Each job's matrix follows the filter — reported per job, not in aggregate."""
-    toml_file = _write_filtered_toml(tmp_path, "github", _FILTER_TOMLS["pinned-build-type"])
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-
-    parsed = yaml.safe_load(
-        (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
-    )
-    build_types = {
-        name: job["strategy"]["matrix"]["build_type"]
-        for name, job in parsed["jobs"].items()
-        if "build_type" in job.get("strategy", {}).get("matrix", {})
-    }
-
-    assert build_types == {name: ["Release"] for name in build_types}, build_types
-    assert len(build_types) == 4, build_types

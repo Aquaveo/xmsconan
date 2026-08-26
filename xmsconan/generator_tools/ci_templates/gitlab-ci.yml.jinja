@@ -64,7 +64,7 @@ Conan Build:
 <% if ci_deploy %>
       - .export
 <% endif %>
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_linux %>
       - wheelhouse/
 <% endif %>
       - test_artifacts/
@@ -82,9 +82,9 @@ Conan Build:
 <% endif %>
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
 <% if ci_xvfb %>
-    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} <% if ci_wheel_enabled %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
+    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} <% if ci_wheel_enabled_linux %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
 <% else %>
-    - python build.py --version ${PACKAGE_VERSION} <% if ci_wheel_enabled %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
+    - python build.py --version ${PACKAGE_VERSION} <% if ci_wheel_enabled_linux %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
 <% endif %>
 <% if ci_deploy %>
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-linux<< gitlab_linux_py_suffix >>-${PACKAGE_VERSION}.tar.gz
@@ -175,7 +175,7 @@ Conan Build:
 <# The wheels only, not the whole directory: with `when: always`, a failed
    repair would otherwise upload the several hundred DLLs collect_dependency_libs
    stages in wheelhouse/libs. Wheel Deploy - Windows only needs the .whl files. #>
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_windows %>
       - wheelhouse/*.whl
 <% endif %>
   script:
@@ -187,8 +187,8 @@ Conan Build:
     - python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
-    - python build.py --version ${PACKAGE_VERSION}<% if ci_wheel_enabled %> --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts
-<% if ci_windows_wheel_repair and ci_wheel_enabled %>
+    - python build.py --version ${PACKAGE_VERSION}<% if ci_wheel_enabled_windows %> --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts
+<% if ci_windows_wheel_repair and ci_wheel_enabled_windows %>
 <# Windows repairs in place rather than in a separate Package-stage job the way
    Linux does: delvewheel resolves the DLL imports of a win_amd64 .pyd and can
    only run on a Windows host, so a manylinux container cannot stand in. Keeping
@@ -219,7 +219,7 @@ Lint:
     - xmsconan_gen --version 0.0.0 build.toml
     - flake8 _package
 
-<% if ci_linux and ci_wheel_enabled %>
+<% if ci_linux and ci_wheel_enabled_linux %>
 Repair Wheel:
   stage: Package
 <% if docker_image %>
@@ -242,7 +242,7 @@ Repair Wheel:
 
 <% if ci_deploy %>
 <% if ci_linux %>
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_linux %>
 "Wheel Deploy":
   stage: Deploy
   image: python:3.13
@@ -282,7 +282,7 @@ Repair Wheel:
 
 <% endif %>
 <% if ci_windows %>
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_windows %>
 "Wheel Deploy - Windows":
   stage: Deploy
 <# Runs on a plain Linux image, not a WinVM: xmsconan_wheel_deploy is a devpi

@@ -159,7 +159,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled %><< ci_wheel_dir_flag >><% endif %> --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled_mac %><< ci_wheel_dir_flag >><% endif %> --artifacts-dir test_artifacts"
         shell: bash
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -168,7 +168,7 @@ jobs:
           path: test_artifacts/
           if-no-files-found: ignore
         if: always()
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_mac %>
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform macos
@@ -304,7 +304,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled %><< ci_wheel_dir_flag >><% endif %> --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled_linux %><< ci_wheel_dir_flag >><% endif %> --artifacts-dir test_artifacts"
         shell: bash
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -313,7 +313,7 @@ jobs:
           path: test_artifacts/
           if-no-files-found: ignore
         if: always()
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_linux %>
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform linux
@@ -450,7 +450,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled %><< ci_wheel_dir_flag >><% endif %> --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled_linux %><< ci_wheel_dir_flag >><% endif %> --artifacts-dir test_artifacts"
         shell: bash
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -459,7 +459,7 @@ jobs:
           path: test_artifacts/
           if-no-files-found: ignore
         if: always()
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_linux %>
       # Repair wheel (Release only)
       - name: Repair wheel
         run: xmsconan_wheel_repair --wheel-dir wheelhouse --platform linux
@@ -604,7 +604,7 @@ jobs:
         run: xmsconan_gen --version ${{ env.XMS_VERSION }} build.toml
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled %><< ci_wheel_dir_flag >><% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts"
+        run: "python build.py --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\"<% if ci_wheel_enabled_windows %><< ci_wheel_dir_flag >><% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts"
         shell: cmd
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
@@ -613,7 +613,7 @@ jobs:
           path: test_artifacts/
           if-no-files-found: ignore
         if: always()
-<% if ci_wheel_enabled %>
+<% if ci_wheel_enabled_windows %>
 <% if ci_windows_wheel_repair %>
       <#- [ci].windows_wheel_repair = false removes this step and the
           dependency-libs staging that feeds it: delvewheel's ignore list

@@ -694,6 +694,7 @@ def test_validate_filter_dict_rejects_unknown_buildenv_name():
         validate_filter_dict({"buildenv": {"SOME_PROJECT_VAR": "1"}})
 
 
+@patch_env(clear=True)
 def test_emitted_buildenv_keys_covers_conditional_names():
     """The derived set includes names only some configurations carry.
 
@@ -761,6 +762,20 @@ def test_validate_filter_dict_rejects_unrenderable_value():
 
 
 # --- summarize_filter_matches ---
+
+
+@patch_env({"PYTHON_TARGET_VERSION": "3.10"}, clear=True)
+def test_summarize_filter_matches_ignores_the_ambient_python_version():
+    """The reference matrix must not read PYTHON_TARGET_VERSION from the shell.
+
+    _resolve_python_versions falls back to that variable, so passing None
+    through made `xmsconan gen` accept or reject an options.python_version pin
+    according to what the developer's shell exported, while every generated CI
+    leg exports the default. Same build.toml, two answers, two machines.
+    """
+    summary = summarize_filter_matches({"options": {"python_version": "3.10"}})
+
+    assert all(counts["pybind"] == 0 for counts in summary.values()), summary
 
 
 @patch_env(clear=True)

@@ -12,8 +12,7 @@ from jinja2 import Environment, StrictUndefined
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
-    ci_build_types,
-    ci_wheel_enabled,
+    ci_filter_effects,
     coverage_conflicts,
     empty_ci_jobs,
     load_build_filter,
@@ -383,6 +382,9 @@ def generate_ci(
 
     coverage_config = toml_data.get("coverage", {})
     build_filter = load_build_filter(toml_data)
+    # One measurement of the filter against the real matrix, feeding both the
+    # build_type axis and the wheel-step gate below.
+    filter_effects = ci_filter_effects(build_filter, toml_data)
 
     from xmsconan import __version__ as xmsconan_version
 
@@ -424,8 +426,12 @@ def generate_ci(
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
         "coverage": _coverage_context(coverage_config, library_name),
         "coverage_python_version": _resolve_coverage_python_version(toml_data),
-        "ci_build_types": ci_build_types(build_filter),
-        "ci_wheel_enabled": ci_wheel_enabled(build_filter),
+        "ci_build_types": filter_effects["build_types"],
+        # Per platform: a filter can leave one platform building wheels and
+        # another not (see ci_filter_effects). linux-arm reads the Linux flag.
+        "ci_wheel_enabled_mac": filter_effects["wheel_enabled"]["mac"],
+        "ci_wheel_enabled_linux": filter_effects["wheel_enabled"]["linux"],
+        "ci_wheel_enabled_windows": filter_effects["wheel_enabled"]["windows"],
     }
 
     if build_filter:

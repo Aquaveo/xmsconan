@@ -54,6 +54,12 @@ CI_JOB_SETTINGS = {
     },
 }
 
+#: CI platform name -> the key it has in the packager's platform matrix. The
+#: GitHub ``linux-arm`` job block shares Linux's entry: it differs by arch, and
+#: pybind variants are produced for every arch, so wheel survival is the same
+#: answer. ``windows_vs2019`` is absent because no generated pipeline builds it.
+CI_WHEEL_PLATFORMS = {"mac": "darwin", "linux": "linux", "windows": "windows"}
+
 #: What the two ``xmsconan coverage`` builds pin, keyed by the report each
 #: produces. Mirrors ``coverage_generator.run_coverage``; ``python_version`` is
 #: filled in from ``[coverage].python_version`` at check time.
@@ -189,39 +195,71 @@ def _reject_unbuildable_filter(build_filter: dict, python_versions, matrix=None)
         )
 
 
-def ci_build_types(build_filter: dict) -> list[str]:
-    """Return the build types a generated CI matrix should fan out over.
+def ci_filter_effects(build_filter: dict, toml_data: dict) -> dict:
+    """What a ``[filter]`` table does to the generated CI.
 
-    A ``build.toml`` filter that pins ``build_type`` would otherwise leave the
-    non-matching CI legs with an empty matrix, so the generated pipeline drops
-    them instead of running jobs that can only build nothing.
+    Both answers have to come from the configurations that actually survive, not
+    from which keys the filter happens to pin -- the two are different, in both
+    directions, and reading the pins got both wrong:
+
+    * A filter empties the pybind subset without ever naming ``pybind``:
+      ``build_type = "Debug"`` against the default ``[matrix].pybind_build_types``
+      of ``("Release",)``, ``options.testing = true`` (the testing and pybind
+      variants are disjoint copies of the base combinations), and
+      ``"compiler.runtime" = "static"`` (msvc pybind variants require dynamic).
+      Keeping the wheel steps for those reddens GitLab on every branch, because
+      ``build.py`` exits 1 when ``--wheel-dir`` extracts no wheel -- and on
+      GitHub, where every wheel step is Release-gated, it instead publishes a
+      release with no wheel in it and stays green.
+    * Symmetrically, ``options.pybind = true`` or an ``options.python_version``
+      pin selects pybind-only configurations and so leaves the Debug leg with
+      nothing to build, though it pins no ``build_type`` at all. That leg exits
+      1 -- a red required check on a filter ``load_build_filter`` accepts.
 
     Args:
         build_filter: The validated ``[filter]`` table.
+        toml_data: The parsed ``build.toml``, for ``[ci]`` python versions and
+            the ``[matrix]`` table -- the filter has to be measured against the
+            configurations this library really produces.
 
     Returns:
-        A list of Conan build types for the CI matrix.
+        ``{'build_types': [...], 'wheel_enabled': {ci_platform: bool}}``, keyed
+        by the CI platform names in :data:`CI_WHEEL_PLATFORMS`. ``build_types``
+        is never empty for a filter that reached here: ``load_build_filter`` has
+        already rejected one that matches nothing on every platform, so at least
+        one candidate build type keeps a configuration.
+
+        The wheel answer is per platform because a filter can leave one
+        platform with wheels and another without. ``"compiler.runtime" =
+        "static"`` is the case: msvc pybind variants are only produced for the
+        dynamic runtime, so Windows keeps no wheel, while Linux and macOS
+        declare no ``compiler.runtime`` at all and are untouched. One global
+        flag has to be wrong for one of them -- dropping the mac and Linux
+        wheels that do build, or keeping Windows steps that exit 1.
     """
     pinned = build_filter.get("build_type")
-    if pinned is None:
-        return list(DEFAULT_CI_BUILD_TYPES)
-    return [pinned]
+    candidates = [pinned] if pinned is not None else list(DEFAULT_CI_BUILD_TYPES)
+    python_versions = ci_python_versions(toml_data)
+    matrix = toml_data.get("matrix")
 
+    build_types = []
+    pybind = {name: 0 for name in CI_WHEEL_PLATFORMS}
+    for build_type in candidates:
+        # Probing one build type at a time is what makes these answers per-leg
+        # rather than global: the GitHub matrix drops a leg that keeps nothing,
+        # and each platform's wheel steps come out when that platform builds no
+        # wheel on any leg.
+        probe = dict(build_filter, build_type=build_type)
+        summary = summarize_filter_matches(probe, python_versions, matrix)
+        if any(counts["total"] for counts in summary.values()):
+            build_types.append(build_type)
+        for name, matrix_platform in CI_WHEEL_PLATFORMS.items():
+            pybind[name] += summary[matrix_platform]["pybind"]
 
-def ci_wheel_enabled(build_filter: dict) -> bool:
-    """Whether the generated CI should keep its wheel repair / upload steps.
-
-    ``xmsconan_wheel_repair`` raises when ``wheelhouse/`` is empty, so a filter
-    that builds no pybind configuration would redden every pipeline unless the
-    wheel steps come out with it.
-
-    Args:
-        build_filter: The validated ``[filter]`` table.
-
-    Returns:
-        False only when the filter explicitly excludes the pybind builds.
-    """
-    return build_filter.get("options", {}).get("pybind") is not False
+    return {
+        "build_types": build_types,
+        "wheel_enabled": {name: count > 0 for name, count in pybind.items()},
+    }
 
 
 def empty_ci_jobs(build_filter: dict, ci_type: str, emitted_jobs) -> list[str]:
