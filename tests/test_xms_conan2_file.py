@@ -15,6 +15,7 @@ for mod_name in [
     "conan.errors",
     "conan.tools",
     "conan.tools.cmake",
+    "conan.tools.env",
     "conan.tools.files",
 ]:
     stub = MagicMock()
@@ -627,6 +628,70 @@ class TestCoverageWiring:
 
         assert not [c for c in obj.run.call_args_list if "_package" in str(c)]
         assert any("xmscore" in str(c) for c in obj.output.info.call_args_list)
+
+    def test_run_python_tests_applies_conanrun_environment(self, tmp_path):
+        """Run pytest under conanrun so dependency shared libraries resolve.
+
+        The installed module keeps only $ORIGIN as its RPATH, so without the
+        run environment the loader cannot find a dependency built shared.
+        """
+        obj = self._python_test_recipe(tmp_path)
+
+        obj.run_python_tests()
+
+        pytest_calls = [c for c in obj.run.call_args_list if "pytest" in str(c)]
+        assert pytest_calls, "expected a pytest invocation"
+        assert pytest_calls[-1].kwargs["env"] == "conanrun"
+
+    def test_dependency_runtime_dirs_keeps_existing_dirs_only(self, tmp_path):
+        """Directories that do not exist are dropped, and none repeats."""
+        obj = self._python_test_recipe(tmp_path)
+        shared_dir = tmp_path / "laslib" / "bin"
+        shared_dir.mkdir(parents=True)
+        dependency = MagicMock()
+        dependency.cpp_info.bindirs = [str(shared_dir), str(tmp_path / "gone")]
+        dependency.cpp_info.libdirs = [str(shared_dir)]
+        obj.dependencies.host = {"laslib": dependency}
+
+        assert obj._dependency_runtime_dirs() == [str(shared_dir)]
+
+    def test_windows_dll_hook_registers_dependency_dirs(self, tmp_path):
+        """The hook registers each dependency directory with the DLL loader."""
+        obj = self._python_test_recipe(tmp_path)
+        venv_dir = tmp_path / "venv"
+        (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+        shared_dir = tmp_path / "laslib" / "bin"
+        shared_dir.mkdir(parents=True)
+        dependency = MagicMock()
+        dependency.cpp_info.bindirs = [str(shared_dir)]
+        dependency.cpp_info.libdirs = []
+        obj.dependencies.host = {"laslib": dependency}
+
+        obj._write_windows_dll_hook(str(venv_dir))
+
+        hook = (venv_dir / "Lib" / "site-packages" / "sitecustomize.py").read_text()
+        compile(hook, "sitecustomize.py", "exec")
+        assert "os.add_dll_directory" in hook
+        assert repr(str(shared_dir)) in hook
+
+    def test_windows_dll_hook_is_valid_python_without_dependencies(self, tmp_path):
+        """A package with no shared dependencies still gets a usable hook."""
+        obj = self._python_test_recipe(tmp_path)
+        venv_dir = tmp_path / "venv"
+        (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+
+        obj._write_windows_dll_hook(str(venv_dir))
+
+        hook = (venv_dir / "Lib" / "site-packages" / "sitecustomize.py").read_text()
+        compile(hook, "sitecustomize.py", "exec")
+
+    def test_windows_dll_hook_warns_when_site_packages_missing(self, tmp_path):
+        """A venv without site-packages warns rather than failing the build."""
+        obj = self._python_test_recipe(tmp_path)
+
+        obj._write_windows_dll_hook(str(tmp_path / "missing-venv"))
+
+        assert obj.output.warning.called
 
     def test_run_python_tests_does_not_add_cov_when_env_unset(self, tmp_path):
         """Without XMS_COVERAGE, no --cov flags are added."""
