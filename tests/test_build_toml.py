@@ -3,7 +3,9 @@ from dataclasses import fields, FrozenInstanceError
 
 import pytest
 
-from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, KNOWN_KEYS, load_toml, XmsDependency
+from xmsconan.build_toml import (
+    BuildToml, CiTable, CoverageTable, KNOWN_KEYS, load_toml, toml_to_dataclass, XmsDependency
+)
 
 
 def test_load_toml_returns_the_parsed_table(tmp_path):
@@ -80,3 +82,65 @@ def test_coverage_table_defaults():
 def test_xms_dependency_defaults_no_python_off():
     """no_python defaults to False, as the normalizer in gen set it."""
     assert XmsDependency(name="xmscore", version="7.0.0").no_python is False
+
+
+def test_toml_to_dataclass_requires_library_name():
+    """Every reader needs the name; the error names the file."""
+    with pytest.raises(ValueError, match="build.toml does not define library_name"):
+        toml_to_dataclass({"description": "d"}, "build.toml")
+
+
+def test_toml_to_dataclass_converts_sub_tables():
+    """[ci], [coverage] and xms_dependencies come back typed."""
+    config = toml_to_dataclass({
+        "library_name": "xmscore",
+        "ci": {"xvfb": True, "python_versions": ["3.10", "3.13"]},
+        "coverage": {"cpp_threshold": 80, "python_version": 3.13},
+        "xms_dependencies": [{"name": "xmsgrid", "version": "7.0.0", "no_python": True}],
+    }, "build.toml")
+    assert config.ci == CiTable(xvfb=True, python_versions=["3.10", "3.13"])
+    assert config.coverage.cpp_threshold == 80.0
+    assert isinstance(config.coverage.cpp_threshold, float)
+    assert config.coverage.python_version == "3.13"
+    assert config.xms_dependencies == [XmsDependency("xmsgrid", "7.0.0", no_python=True)]
+
+
+def test_toml_to_dataclass_leaves_matrix_and_filter_as_dicts():
+    """The packager owns those vocabularies and the templates write them verbatim."""
+    config = toml_to_dataclass({
+        "library_name": "xmscore",
+        "matrix": {"compiler_runtime": ["dynamic"]},
+        "filter": {"build_type": "Release"},
+    }, "build.toml")
+    assert config.matrix == {"compiler_runtime": ["dynamic"]}
+    assert config.filter == {"build_type": "Release"}
+
+
+def test_toml_to_dataclass_rejects_a_bad_ci_key():
+    """The [ci] allowlist is applied during conversion, so no reader can skip it."""
+    with pytest.raises(ValueError, match="windows_repair_wheel"):
+        toml_to_dataclass({"library_name": "x", "ci": {"windows_repair_wheel": True}}, "build.toml")
+
+
+def test_toml_to_dataclass_rejects_an_unknown_coverage_key():
+    """[coverage] gets the same unknown-key rule [ci] already has."""
+    with pytest.raises(ValueError, match=r"\[coverage\] has unknown key\(s\) cpp_treshold"):
+        toml_to_dataclass({"library_name": "x", "coverage": {"cpp_treshold": 80}}, "build.toml")
+
+
+def test_toml_to_dataclass_rejects_a_non_table_coverage():
+    """A scalar where a table belongs is named, not passed through."""
+    with pytest.raises(ValueError, match=r"\[coverage\] must be a table"):
+        toml_to_dataclass({"library_name": "x", "coverage": 80}, "build.toml")
+
+
+@pytest.mark.parametrize("entry,expected", [
+    pytest.param("xmscore/7.0.0", "must be a table", id="string-entry"),
+    pytest.param({"name": "xmscore"}, "requires name and version", id="missing-version"),
+    pytest.param({"name": "xmscore", "version": "7", "python": False}, r"unknown key\(s\) python",
+                 id="unknown-key"),
+])
+def test_toml_to_dataclass_rejects_malformed_xms_dependencies(entry, expected):
+    """An entry the conanfile template could not render fails at conversion instead."""
+    with pytest.raises(ValueError, match=expected):
+        toml_to_dataclass({"library_name": "x", "xms_dependencies": [entry]}, "build.toml")

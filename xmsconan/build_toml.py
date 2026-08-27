@@ -15,6 +15,9 @@ try:
 except ModuleNotFoundError:  # Python < 3.11
     from toml import loads as parse_toml_text
 
+# 3. Aquaveo modules
+from xmsconan.ci_options import validate_ci_table
+
 
 def load_toml(toml_path):
     """Parse a TOML file.
@@ -184,3 +187,72 @@ def validate_top_level_keys(toml_data, toml_path):
             f'{toml_path} has unknown top-level key(s) {", ".join(unknown)}. '
             f'Accepted keys: {", ".join(sorted(KNOWN_KEYS))}.'
         )
+
+
+_COVERAGE_KEYS = frozenset(f.name for f in fields(CoverageTable))
+_XMS_DEPENDENCY_KEYS = frozenset(f.name for f in fields(XmsDependency))
+
+
+def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
+    unknown = sorted(set(table) - accepted)
+    if unknown:
+        raise ValueError(
+            f'{where} has unknown key(s) {", ".join(unknown)}. '
+            f'Accepted keys: {", ".join(sorted(accepted))}.'
+        )
+
+
+def _ci_table(raw) -> CiTable:
+    validate_ci_table(raw)
+    return CiTable(**raw)
+
+
+def _coverage_table(raw, toml_path) -> CoverageTable:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{toml_path}: [coverage] must be a table, got {type(raw).__name__}")
+    _reject_unknown_keys(raw, _COVERAGE_KEYS, f"{toml_path}: [coverage]")
+    values = dict(raw)
+    for key in ("cpp_threshold", "python_threshold"):
+        if key in values:
+            values[key] = float(values[key])
+    if values.get("python_version") is not None:
+        # An unquoted `python_version = 3.13` is a TOML float; every consumer
+        # wants the "X.Y" string.
+        values["python_version"] = str(values["python_version"])
+    return CoverageTable(**values)
+
+
+def _xms_dependency(entry, toml_path) -> XmsDependency:
+    where = f"{toml_path}: xms_dependencies entry"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{where} {entry!r} must be a table with name and version")
+    _reject_unknown_keys(entry, _XMS_DEPENDENCY_KEYS, f"{where} {entry.get('name', entry)!r}")
+    if "name" not in entry or "version" not in entry:
+        raise ValueError(f"{where} {entry!r} requires name and version")
+    return XmsDependency(**entry)
+
+
+def toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
+    """Convert a parsed ``build.toml`` into a :class:`BuildToml`.
+
+    Args:
+        toml_data: The parsed file, already checked by
+            :func:`validate_top_level_keys`.
+        toml_path: Where the data came from, for error messages.
+
+    Returns:
+        The typed configuration with every default applied.
+
+    Raises:
+        ValueError: When ``library_name`` is missing, or a sub-table carries an
+            unknown key or the wrong shape.
+    """
+    if not toml_data.get("library_name"):
+        raise ValueError(f"{toml_path} does not define library_name")
+    values = dict(toml_data)
+    values["ci"] = _ci_table(values.get("ci", {}))
+    values["coverage"] = _coverage_table(values.get("coverage", {}), toml_path)
+    values["xms_dependencies"] = [
+        _xms_dependency(entry, toml_path) for entry in values.get("xms_dependencies", [])
+    ]
+    return BuildToml(**values)

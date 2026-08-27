@@ -220,6 +220,8 @@ Consumed by `xmsconan coverage`; only relevant when `[ci].coverage = true` (or w
 
 Both thresholds default to `0`, which means "report only, don't gate." Set them to real values once a baseline has been established.
 
+An unknown `[coverage]` key is rejected, the same as an unknown `[ci]` key. Thresholds may be written as integers; they are read as floats.
+
 ### 5.8 Build matrix filter (`[filter]` table)
 
 A baseline restriction on the configuration matrix, for libraries that should never build part of it (no Debug packages, no Python bindings, dynamic runtime only). The table uses exactly the shape `build.py --filter` takes as JSON: top-level Conan settings plus the nested `options` and `buildenv` tables.
