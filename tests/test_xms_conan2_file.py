@@ -15,6 +15,7 @@ for mod_name in [
     "conan.errors",
     "conan.tools",
     "conan.tools.cmake",
+    "conan.tools.env",
     "conan.tools.files",
 ]:
     stub = MagicMock()
@@ -628,6 +629,94 @@ class TestCoverageWiring:
         assert not [c for c in obj.run.call_args_list if "_package" in str(c)]
         assert any("xmscore" in str(c) for c in obj.output.info.call_args_list)
 
+    def test_run_python_tests_applies_conanrun_environment(self, tmp_path):
+        """Run pytest under conanrun so dependency shared libraries resolve.
+
+        The installed module keeps only $ORIGIN as its RPATH, so without the
+        run environment the loader cannot find a dependency built shared.
+        """
+        obj = self._python_test_recipe(tmp_path)
+
+        obj.run_python_tests()
+
+        pytest_calls = [c for c in obj.run.call_args_list if "pytest" in str(c)]
+        assert pytest_calls, "expected a pytest invocation"
+        assert pytest_calls[-1].kwargs["env"] == "conanrun"
+
+    def test_dependency_runtime_dirs_keeps_existing_dirs_only(self, tmp_path):
+        """Directories that do not exist are dropped, and none repeats."""
+        obj = self._python_test_recipe(tmp_path)
+        shared_dir = tmp_path / "laslib" / "bin"
+        shared_dir.mkdir(parents=True)
+        dependency = MagicMock()
+        dependency.cpp_info.bindirs = [str(shared_dir), str(tmp_path / "gone")]
+        dependency.cpp_info.libdirs = [str(shared_dir)]
+        obj.dependencies.host = {"laslib": dependency}
+
+        assert obj._dependency_runtime_dirs() == [str(shared_dir)]
+
+    def test_windows_dll_hook_registers_dependency_dirs(self, tmp_path):
+        """The hook registers each dependency directory with the DLL loader."""
+        obj = self._python_test_recipe(tmp_path)
+        venv_dir = tmp_path / "venv"
+        (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+        shared_dir = tmp_path / "laslib" / "bin"
+        shared_dir.mkdir(parents=True)
+        dependency = MagicMock()
+        dependency.cpp_info.bindirs = [str(shared_dir)]
+        dependency.cpp_info.libdirs = []
+        obj.dependencies.host = {"laslib": dependency}
+
+        obj._write_windows_dll_hook(str(venv_dir))
+
+        hook = (venv_dir / "Lib" / "site-packages" / "sitecustomize.py").read_text()
+        compile(hook, "sitecustomize.py", "exec")
+        assert "os.add_dll_directory" in hook
+        assert repr(str(shared_dir)) in hook
+
+    def test_windows_dll_hook_handles_non_ascii_paths(self, tmp_path):
+        """A dependency path outside ASCII survives the write.
+
+        The hook records absolute paths, and repr() keeps non-ASCII characters
+        as themselves, so writing in the platform default encoding raised
+        UnicodeEncodeError on a host whose default is not UTF-8.
+        """
+        obj = self._python_test_recipe(tmp_path)
+        venv_dir = tmp_path / "venv"
+        (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+        shared_dir = tmp_path / "テスト" / "bin"
+        shared_dir.mkdir(parents=True)
+        dependency = MagicMock()
+        dependency.cpp_info.bindirs = [str(shared_dir)]
+        dependency.cpp_info.libdirs = []
+        obj.dependencies.host = {"laslib": dependency}
+
+        obj._write_windows_dll_hook(str(venv_dir))
+
+        hook_path = venv_dir / "Lib" / "site-packages" / "sitecustomize.py"
+        hook = hook_path.read_text(encoding="utf-8")
+        compile(hook, "sitecustomize.py", "exec")
+        assert "テスト" in hook
+
+    def test_windows_dll_hook_is_valid_python_without_dependencies(self, tmp_path):
+        """A package with no shared dependencies still gets a usable hook."""
+        obj = self._python_test_recipe(tmp_path)
+        venv_dir = tmp_path / "venv"
+        (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+
+        obj._write_windows_dll_hook(str(venv_dir))
+
+        hook = (venv_dir / "Lib" / "site-packages" / "sitecustomize.py").read_text()
+        compile(hook, "sitecustomize.py", "exec")
+
+    def test_windows_dll_hook_warns_when_site_packages_missing(self, tmp_path):
+        """A venv without site-packages warns rather than failing the build."""
+        obj = self._python_test_recipe(tmp_path)
+
+        obj._write_windows_dll_hook(str(tmp_path / "missing-venv"))
+
+        assert obj.output.warning.called
+
     def test_run_python_tests_does_not_add_cov_when_env_unset(self, tmp_path):
         """Without XMS_COVERAGE, no --cov flags are added."""
         obj = object.__new__(XmsConan2File)
@@ -851,12 +940,18 @@ class TestPackageInfo:
         assert obj.cpp_info.libs == ["data_objectslib"]
 
     def test_pybind_package_still_exports_pythonpath(self):
-        """Selecting the module's lib must not disturb the _package PYTHONPATH entry."""
+        """Selecting the module's lib must not disturb the _package PYTHONPATH entry.
+
+        It has to go through append_path: plain append joins with a space, so a
+        consumer that already has PYTHONPATH set ends up with the two paths in
+        one string that matches nothing.
+        """
         obj = self._make_obj(pybind=True, build_type="Release")
         obj.package_info()
-        obj.runenv_info.append.assert_called_once_with(
+        obj.runenv_info.append_path.assert_called_once_with(
             "PYTHONPATH", os.path.join("fake", "package", "_package")
         )
+        assert not obj.runenv_info.append.called
 
 
 class TestBuildsWheel:
@@ -1380,6 +1475,24 @@ class TestCMakeVariables:
         configure_variables = mock_cmake.return_value.configure.call_args.kwargs["variables"]
         assert toolchain_variables == configure_variables
         assert toolchain_variables["USE_TYPEDEF_WCHAR_T"] is True
+
+    @patch("xmsconan.xms_conan2_file.CMakeDeps")
+    @patch("xmsconan.xms_conan2_file.CMakeToolchain")
+    @patch("xmsconan.xms_conan2_file.VirtualRunEnv")
+    def test_generate_declares_a_run_environment(self, mock_run_env, mock_toolchain, mock_deps):
+        """generate() must write the conanrun script run_python_tests depends on.
+
+        The installed pybind module keeps only $ORIGIN as its RPATH, so without
+        conanrun the Python tests cannot load a dependency built as a shared
+        library. That is one line in generate(), and nothing else here would
+        notice if it went away.
+        """
+        recipe = self._make_recipe()
+
+        recipe.generate()
+
+        mock_run_env.assert_called_once_with(recipe)
+        mock_run_env.return_value.generate.assert_called_once()
 
     @patch("xmsconan.xms_conan2_file.CMake")
     def test_coverage_stays_out_of_the_toolchain(self, mock_cmake):

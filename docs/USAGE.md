@@ -413,6 +413,19 @@ Off Windows a Debug module keeps its importable name, and `build()` builds its w
 
 **Naming note for anything migrating off Conan 1.** The static library is `<name>lib`, not Conan 1's `lib<name>`. Anything reading `cpp_info` is unaffected; a consumer hard-coding the old file name is not.
 
+### 7.6 Python tests and dependency shared libraries
+
+`run_python_tests()` builds a venv, installs the **unrepaired** wheel into it, and runs pytest. That puts the module outside the build tree, where CMake's build RPATH no longer applies — the installed module keeps only `$ORIGIN`, and the wheel does not carry its dependencies yet. A dependency built as a shared library (`laslib/*:shared=True`, say) is then unreachable and the test fails at import with `libFoo.so: cannot open shared object file` or `DLL load failed while importing _<name>`.
+
+The recipe puts those libraries back on the loader's path, by a different route per platform:
+
+- **Linux and macOS.** `generate()` declares a `VirtualRunEnv`, and pytest runs with `env="conanrun"`, so `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` name every dependency's library directories. Conan degrades gracefully here: if nothing needs a run environment, no `conanrun` script is written and the command runs unwrapped. The same run environment also carries the `PYTHONPATH` entry each pybind dependency exports from `package_info` (§7.5), so those `_package` directories are on `sys.path` during the tests as well as pip-installed into the venv. Same files from the same package folder, so the duplication is harmless.
+- **Windows.** `PATH` does not work. Since Python 3.8 an extension module's dependent DLLs resolve only from the module's own directory, the system directories, and directories passed to `os.add_dll_directory` — so the `conanrun` `PATH` cannot carry them. The recipe writes a `sitecustomize.py` into the venv that registers each dependency's `bindirs` and `libdirs` at interpreter startup, before pytest imports anything. This is the same mechanism `delvewheel` injects into a repaired wheel.
+
+This affects the **test** only. The shipped wheel is repaired separately (§12), which vendors the dependencies next to the module where `$ORIGIN` and the Windows module-directory search already find them.
+
+A library whose dependencies are all static needs none of this and is unaffected.
+
 ---
 
 ## 8. Python version support (3.10, 3.13, 3.14)
@@ -1069,6 +1082,7 @@ Wheels are tagged `cp310-cp310-...` or `cp313-cp313-...`; pip picks the right on
 
 ## 19. Troubleshooting
 
+- **`ImportError: libFoo.so: cannot open shared object file`, or `DLL load failed while importing _<name>`, during the Python tests.** The module links a dependency built as a shared library and cannot find it. The recipe handles this (§7.6) through `conanrun` off Windows and a generated `sitecustomize.py` on it; if it still happens, check that the dependency declares the directory holding its shared library in `bindirs` or `libdirs`.
 - **`auditwheel`/`delocate`/`delvewheel` missing libraries.** Run `build.py --wheel-dir wheelhouse` before repair — that step populates `wheelhouse/libs/`. Repairing without it produces a wheel that loads fine on the build host and crashes everywhere else.
 - **`PYTHON_TARGET_VERSION` mismatch in CMake.** The recipe sets it from the `python_version` Conan option. If you're poking CMake directly, pass `-DPYTHON_TARGET_VERSION=3.13`.
 - **`No pybind package found to extract`.** Means `build.py` ran but no pybind config was built. Check `build.py --preview` to see the matrix; common causes are `--filter` or the `[filter]` table in `build.toml` (§5.8) excluding the pybind variant, or every pybind variant having failed.

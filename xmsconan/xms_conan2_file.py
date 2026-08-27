@@ -11,6 +11,7 @@ import sys
 from conan import ConanFile
 from conan.errors import ConanException
 from conan.tools.cmake import CMake, cmake_layout, CMakeDeps, CMakeToolchain
+from conan.tools.env import VirtualRunEnv
 from conan.tools.files import copy
 
 
@@ -570,6 +571,12 @@ class XmsConan2File(ConanFile):
             deps.build_context_activated = ["pybind11"]
         deps.generate()
 
+        # run_python_tests imports the built module from a wheel installed
+        # into a venv, where CMake's build RPATH no longer applies -- the
+        # installed module is left with $ORIGIN alone. Without conanrun the
+        # loader cannot find any dependency built as a shared library.
+        VirtualRunEnv(self).generate()
+
     def build(self):
         """The build method for the conan class."""
         cmake = CMake(self)
@@ -713,7 +720,9 @@ class XmsConan2File(ConanFile):
         diverge.
         """
         if self.options.pybind:
-            self.runenv_info.append('PYTHONPATH', os.path.join(self.package_folder, "_package"))
+            # append_path joins with os.pathsep; plain append joins with a space,
+            # which Python reads as one path that matches nothing.
+            self.runenv_info.append_path('PYTHONPATH', os.path.join(self.package_folder, "_package"))
 
         lib_name = f'_{self.name}' if self._advertises_module() else f'{self.name}lib'
         if self.settings.build_type == 'Debug':
@@ -854,6 +863,56 @@ class XmsConan2File(ConanFile):
             raise ConanException(f"No wheel found in {dist_dir}")
         return wheels[0]
 
+    def _dependency_runtime_dirs(self):
+        """Directories holding the shared libraries this package links against.
+
+        Returns:
+            Every existing ``bindirs`` and ``libdirs`` entry of the host
+            dependencies, without duplicates.
+        """
+        runtime_dirs = []
+        for _reference, dependency in self.dependencies.host.items():
+            cpp_info = dependency.cpp_info
+            for candidate in list(cpp_info.bindirs) + list(cpp_info.libdirs):
+                if candidate and candidate not in runtime_dirs and os.path.isdir(candidate):
+                    runtime_dirs.append(candidate)
+        return runtime_dirs
+
+    def _write_windows_dll_hook(self, build_venv_dir):
+        """Let the venv's interpreter find dependency DLLs on Windows.
+
+        Args:
+            build_venv_dir: The virtual environment to write the hook into.
+        """
+        # Since Python 3.8 an extension module's dependent DLLs are resolved from
+        # the module's own directory, the system directories, and whatever
+        # os.add_dll_directory registered. PATH is ignored, so the conanrun
+        # environment cannot carry them the way LD_LIBRARY_PATH does elsewhere.
+        # Repaired wheels solve this with the same call, injected by delvewheel.
+        site_packages = os.path.join(build_venv_dir, "Lib", "site-packages")
+        if not os.path.isdir(site_packages):
+            self.output.warning(
+                f"No site-packages under {build_venv_dir}; dependency DLLs will "
+                f"not be registered and importing the module may fail."
+            )
+            return
+
+        runtime_dirs = self._dependency_runtime_dirs()
+        lines = ["import os", "", "for _directory in ("]
+        lines += [f"    {directory!r}," for directory in runtime_dirs]
+        lines += [
+            "):",
+            "    if os.path.isdir(_directory):",
+            "        os.add_dll_directory(_directory)",
+            "",
+        ]
+        hook_path = os.path.join(site_packages, "sitecustomize.py")
+        with open(hook_path, "w", encoding="utf-8") as hook_file:
+            hook_file.write("\n".join(lines))
+        self.output.info(
+            f"Registered {len(runtime_dirs)} dependency library directories in {hook_path}."
+        )
+
     def run_python_tests(self):
         """Run Python tests in a virtual environment and optionally upload."""
         build_venv_dir = os.path.join(self.build_folder, "venv")
@@ -909,6 +968,9 @@ class XmsConan2File(ConanFile):
         wheel_path = self._find_wheel()
         self.run(_pip_install_cmd(python_executable, f'"{wheel_path}"'))
 
+        if sys.platform == "win32":
+            self._write_windows_dll_hook(build_venv_dir)
+
         # Copy the tests folder into the build directory
         tests_src_dir = os.path.join(self.source_folder, "_package", "tests")
         if os.path.exists(tests_dest_dir):
@@ -934,7 +996,7 @@ class XmsConan2File(ConanFile):
                 f' --cov-report=html:"{cov_html_dir}"'
                 f' --cov-report=json:"{cov_json}"'
             )
-        self.run(pytest_command, cwd=self.build_folder)
+        self.run(pytest_command, cwd=self.build_folder, env="conanrun")
 
     def export_sources(self):
         """Specify sources to be exported."""
