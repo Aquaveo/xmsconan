@@ -42,11 +42,11 @@ import traceback
 from typing import Optional
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
 )
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 LOGGER = logging.getLogger(__name__)

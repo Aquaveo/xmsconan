@@ -29,13 +29,13 @@ import shutil
 import subprocess
 import sys
 
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
 from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 def _read_library_name(toml_path="build.toml"):

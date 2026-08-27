@@ -15,7 +15,7 @@ import shlex
 import shutil
 import subprocess
 
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 
 # Docker image registry and naming convention (matches CI templates).
 DOCKER_REGISTRY = "docker.aquaveo.com/aquaveo/conan-docker"

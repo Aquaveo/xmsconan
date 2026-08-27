@@ -94,6 +94,7 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
@@ -101,7 +102,6 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 #: Username used to log in to :data:`VS2019_REMOTE_NAME` when neither the
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.

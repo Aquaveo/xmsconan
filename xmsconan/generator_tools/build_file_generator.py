@@ -12,10 +12,10 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 from xmsconan.constants import PYTHON_BINDING_TYPES, TESTING_FRAMEWORKS
 from xmsconan.generator_tools.build_filter import load_build_filter
 from xmsconan.package_tools.packager import XmsConanPackager
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 LOGGER = logging.getLogger(__name__)
 

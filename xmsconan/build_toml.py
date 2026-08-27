@@ -1,36 +1,29 @@
-"""One TOML reader for every tool in the package.
+"""The ``build.toml`` reader.
 
-Each entry point used to carry its own ``tomllib``/``toml`` fallback, and the
-copies had already drifted -- some called ``load`` on a binary handle, others
-``loads`` on decoded text, which read the same file with two different encoding
-rules. There is one shim here instead, so adding an entry point does not mean
-adding a fifth.
+Every tool reads the file through this module, so they cannot disagree about
+what it contains. ``~/.xmsconan.toml`` is a different file with a different
+contract; see :mod:`xmsconan.ci_tools.credentials`.
 """
 # 1. Standard python modules
 from pathlib import Path
 
 # 2. Third party modules
 try:
-    import tomllib
+    from tomllib import loads as parse_toml_text
 except ModuleNotFoundError:  # Python < 3.11
-    tomllib = None
-
-import toml
+    from toml import loads as parse_toml_text
 
 
 def load_toml(toml_path):
-    """Parse a TOML file, preferring the stdlib parser when it is available.
+    """Parse a TOML file.
 
     Args:
-        toml_path: Path to the TOML file, as ``str`` or ``Path``.
+        toml_path: Path to the file, as ``str`` or ``Path``.
 
     Returns:
         The parsed document as a dict.
     """
-    text = Path(toml_path).read_text(encoding="utf-8")
-    if tomllib:
-        return tomllib.loads(text)
-    return toml.loads(text)
+    return parse_toml_text(Path(toml_path).read_text(encoding="utf-8"))
 
 
 # Every top-level key a build.toml may carry. A key absent from here is a typo:

@@ -19,8 +19,8 @@ import os
 import sys
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 from xmsconan.package_tools.packager import configurations, XmsConanPackager
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 LOGGER = logging.getLogger(__name__)
 

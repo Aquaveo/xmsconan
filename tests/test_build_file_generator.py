@@ -9,13 +9,13 @@ import sys
 import pytest
 
 import xmsconan
+from xmsconan.build_toml import KNOWN_KEYS
 from xmsconan.generator_tools import build_file_generator as build_file_generator_module
 from xmsconan.generator_tools.build_file_generator import (
     _write_text_lf,
     copy_xms_conan2_file,
     render_template_with_toml,
 )
-from xmsconan.toml_utils import KNOWN_KEYS
 
 
 # --- Converted from existing unittest tests ---

@@ -9,6 +9,7 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import load_toml, validate_top_level_keys
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
@@ -17,7 +18,6 @@ from xmsconan.generator_tools.build_filter import (
     empty_ci_jobs,
     load_build_filter,
 )
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 LOGGER = logging.getLogger(__name__)
