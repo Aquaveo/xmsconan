@@ -288,3 +288,11 @@ def test_docker_publish_propagates_exit_code(
         with pytest.raises(SystemExit) as exc_info:
             docker_publish(args)
     assert exc_info.value.code == 42
+
+
+def test_resolve_image_rejects_an_unknown_top_level_key(tmp_path):
+    """--docker reads build.toml before the container starts; a typo should fail here."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        resolve_docker_image(toml_path=str(toml_file))

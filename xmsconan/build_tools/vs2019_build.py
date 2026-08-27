@@ -101,7 +101,7 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
-from xmsconan.toml_utils import load_toml
+from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 #: Username used to log in to :data:`VS2019_REMOTE_NAME` when neither the
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
@@ -646,9 +646,11 @@ def _library_build_toml(library_dir: str) -> dict:
     if not os.path.isfile(toml_path):
         return {}
     try:
-        return load_toml(toml_path)
+        data = load_toml(toml_path)
     except ValueError as exc:
         raise ValueError(f"could not parse {toml_path}: {exc}") from exc
+    validate_top_level_keys(data, toml_path)
+    return data
 
 
 def _library_repairs_wheel(library_dir: str) -> bool:

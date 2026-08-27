@@ -1762,3 +1762,11 @@ class TestReexecUnderXvfb:
         with patch("xmsconan.coverage_tools.coverage_generator.os.execvpe") as execvpe:
             _reexec_under_xvfb()
         execvpe.assert_not_called()
+
+
+def test_run_coverage_rejects_an_unknown_top_level_key(tmp_path):
+    """The coverage run validates build.toml before shelling out to anything."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        run_coverage(str(toml_file), "0.0.0", str(tmp_path))

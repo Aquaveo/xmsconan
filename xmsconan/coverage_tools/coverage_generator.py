@@ -46,7 +46,7 @@ from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
 )
-from xmsconan.toml_utils import load_toml
+from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 LOGGER = logging.getLogger(__name__)
@@ -82,8 +82,10 @@ def _opt_is_truthy(value) -> bool:
 
 
 def _load_toml(toml_path: Path) -> dict:
-    """Load a TOML file using stdlib tomllib when available."""
-    return load_toml(toml_path)
+    """Load and validate a build.toml."""
+    data = load_toml(toml_path)
+    validate_top_level_keys(data, toml_path)
+    return data
 
 
 def _reexec_under_xvfb():

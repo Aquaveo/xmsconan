@@ -427,3 +427,11 @@ def test_main_without_docker_runs_publish(
         os.chdir(original_dir)
 
     mock_setup.assert_called_once_with(login=True)
+
+
+def test_read_library_name_rejects_an_unknown_top_level_key(tmp_path):
+    """Publish validates the same way gen/ci/profiles do, so a typo fails here first."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        _read_library_name(str(toml_file))

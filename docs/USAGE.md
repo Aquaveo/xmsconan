@@ -84,7 +84,7 @@ Run `xmsconan <cmd> --help` for the full flag set. The legacy underscored names 
 
 `build.toml` is the **only** file you author for the build system. It controls everything xmsconan generates.
 
-**An unknown top-level key is an error.** `xmsconan gen`, `xmsconan ci` and `xmsconan profiles` all reject a key that is not in the tables below, naming it and listing what is accepted. Every optional key has a default that is applied with `setdefault`, so a misspelling otherwise had no symptom at all — the default was kept and the generated artifact quietly was not what the file asked for. The same rule already applied to the `[ci]`, `[matrix]`, `conan_profile_variants` and `vs2019_dependency_overrides` sub-tables; it now covers the top level too. `testing_framework`, `python_binding_type` and the keys of `xms_dependency_options` are checked against their vocabularies at the same point.
+**An unknown top-level key is an error.** Every tool that reads the file — `xmsconan gen`, `ci`, `profiles`, `coverage`, `publish` (with or without `--docker`) and `vs2019` — rejects a key that is not in the tables below, naming it and listing what is accepted. Every optional key has a default that is applied with `setdefault`, so a misspelling otherwise had no symptom at all — the default was kept and the generated artifact quietly was not what the file asked for. The same rule already applied to the `[ci]`, `[matrix]`, `conan_profile_variants` and `vs2019_dependency_overrides` sub-tables; it now covers the top level too. `testing_framework`, `python_binding_type` and the keys of `xms_dependency_options` are checked against their vocabularies at the same point.
 
 ### 5.1 Required
 

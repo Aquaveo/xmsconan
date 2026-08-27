@@ -35,12 +35,13 @@ from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
 from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
-from xmsconan.toml_utils import load_toml
+from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 def _read_library_name(toml_path="build.toml"):
     """Read ``library_name`` from *toml_path*."""
     data = load_toml(toml_path)
+    validate_top_level_keys(data, toml_path)
     name = data.get("library_name")
     if not name:
         raise ValueError(f"No library_name found in {toml_path}")
@@ -63,12 +64,15 @@ def _repairs_wheel(toml_path: str = "build.toml") -> bool:
     """
     if sys.platform != "win32":
         return True
-    return repairs_windows_wheel(load_toml(toml_path))
+    data = load_toml(toml_path)
+    validate_top_level_keys(data, toml_path)
+    return repairs_windows_wheel(data)
 
 
 def _read_ci_xvfb(toml_path="build.toml"):
     """Read ``ci.xvfb`` from *toml_path*.  Returns ``False`` if not set."""
     data = load_toml(toml_path)
+    validate_top_level_keys(data, toml_path)
     return data.get("ci", {}).get("xvfb", False)
 
 

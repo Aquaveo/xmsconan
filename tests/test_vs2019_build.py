@@ -1355,3 +1355,12 @@ def test_build_library_passes_the_librarys_own_matrix(mock_run, mock_packager_cl
     assert mock_packager_cls.call_args.kwargs["matrix"] == {
         "compiler_runtime": ["dynamic"],
     }
+
+
+def test_library_matrix_rejects_an_unknown_top_level_key(tmp_path):
+    """The VS2019 driver validates each library's build.toml like every other reader."""
+    (tmp_path / "build.toml").write_text(
+        'library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        vs._library_matrix(str(tmp_path))
