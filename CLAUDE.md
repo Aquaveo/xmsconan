@@ -45,3 +45,11 @@ Before declaring a feature or fix done:
 
 If a change genuinely has no doc impact, say so explicitly in the PR body —
 silence reads as "forgot to check."
+
+## Testing policy
+
+The CI runs tests on both Linux and Windows to catch platform-specific
+paths and reject them. Tests should compare paths in a platform-agnostic manner
+or they'll fail on the CI. Tests can use `pathlib.Path` or `os.path.*` methods
+to produce paths that can be compared safely. Prefer matching local style when
+there is one, or `pathlib.Path` when there isn't one.
