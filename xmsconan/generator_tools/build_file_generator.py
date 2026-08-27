@@ -12,7 +12,7 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import load_toml, validate_top_level_keys
+from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
 from xmsconan.constants import PYTHON_BINDING_TYPES, TESTING_FRAMEWORKS
 from xmsconan.generator_tools.build_filter import load_build_filter
 from xmsconan.package_tools.packager import XmsConanPackager
@@ -192,6 +192,7 @@ def render_template_with_toml(
     # invisible: every optional key gets its default whether or not the file
     # meant to set it.
     validate_top_level_keys(toml_data, toml_file)
+    config = toml_to_dataclass(toml_data, toml_file)
     toml_data["version"] = version
 
     # Set defaults for optional keys to prevent StrictUndefined template errors
@@ -221,7 +222,7 @@ def render_template_with_toml(
     # The [filter] table is a baseline matrix restriction; the generated
     # build.py applies it before its own --filter. Validate it here so a typo
     # fails `xmsconan gen` instead of every later build.
-    toml_data["build_filter"] = load_build_filter(toml_data)
+    toml_data["build_filter"] = load_build_filter(config)
 
     if "library_name" in toml_data:
         toml_data.setdefault("python_namespaced_dir", toml_data["library_name"][3:])

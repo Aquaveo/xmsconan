@@ -9,7 +9,7 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import load_toml, validate_top_level_keys
+from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
@@ -281,6 +281,7 @@ def generate_ci(
     # build.toml that `xmsconan gen` and `xmsconan profiles` both reject, and
     # the committed CI keeps whatever defaults the typo produced.
     validate_top_level_keys(toml_data, toml_file)
+    config = toml_to_dataclass(toml_data, toml_file)
 
     ci_type = toml_data.get("ci_type")
     if not ci_type:
@@ -381,10 +382,10 @@ def generate_ci(
         )
 
     coverage_config = toml_data.get("coverage", {})
-    build_filter = load_build_filter(toml_data)
+    build_filter = load_build_filter(config)
     # One measurement of the filter against the real matrix, feeding both the
     # build_type axis and the wheel-step gate below.
-    filter_effects = ci_filter_effects(build_filter, toml_data)
+    filter_effects = ci_filter_effects(build_filter, config)
 
     from xmsconan import __version__ as xmsconan_version
 
