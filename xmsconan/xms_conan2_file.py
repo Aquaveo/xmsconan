@@ -720,7 +720,9 @@ class XmsConan2File(ConanFile):
         diverge.
         """
         if self.options.pybind:
-            self.runenv_info.append('PYTHONPATH', os.path.join(self.package_folder, "_package"))
+            # append_path joins with os.pathsep; plain append joins with a space,
+            # which Python reads as one path that matches nothing.
+            self.runenv_info.append_path('PYTHONPATH', os.path.join(self.package_folder, "_package"))
 
         lib_name = f'_{self.name}' if self._advertises_module() else f'{self.name}lib'
         if self.settings.build_type == 'Debug':
@@ -905,7 +907,7 @@ class XmsConan2File(ConanFile):
             "",
         ]
         hook_path = os.path.join(site_packages, "sitecustomize.py")
-        with open(hook_path, "w") as hook_file:
+        with open(hook_path, "w", encoding="utf-8") as hook_file:
             hook_file.write("\n".join(lines))
         self.output.info(
             f"Registered {len(runtime_dirs)} dependency library directories in {hook_path}."
