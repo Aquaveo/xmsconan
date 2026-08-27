@@ -29,19 +29,18 @@ import shutil
 import subprocess
 import sys
 
-import toml
-
-from xmsconan.ci_options import repairs_windows_wheel_for
+from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
 from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
+from xmsconan.toml_utils import load_toml
 
 
 def _read_library_name(toml_path="build.toml"):
     """Read ``library_name`` from *toml_path*."""
-    data = toml.load(toml_path)
+    data = load_toml(toml_path)
     name = data.get("library_name")
     if not name:
         raise ValueError(f"No library_name found in {toml_path}")
@@ -64,12 +63,12 @@ def _repairs_wheel(toml_path: str = "build.toml") -> bool:
     """
     if sys.platform != "win32":
         return True
-    return repairs_windows_wheel_for(toml_path)
+    return repairs_windows_wheel(load_toml(toml_path))
 
 
 def _read_ci_xvfb(toml_path="build.toml"):
     """Read ``ci.xvfb`` from *toml_path*.  Returns ``False`` if not set."""
-    data = toml.load(toml_path)
+    data = load_toml(toml_path)
     return data.get("ci", {}).get("xvfb", False)
 
 

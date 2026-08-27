@@ -4,7 +4,6 @@ import pytest
 from xmsconan.ci_options import (
     CI_KEY_TYPES,
     repairs_windows_wheel,
-    repairs_windows_wheel_for,
     validate_ci_table,
 )
 
@@ -103,12 +102,3 @@ def test_resolver_validates_the_table():
     """The resolver is also the validation point, so no reader can skip it."""
     with pytest.raises(ValueError, match="windows_repair_wheel"):
         repairs_windows_wheel({"ci_type": "gitlab", "ci": {"windows_repair_wheel": True}})
-
-
-def test_reads_from_disk(tmp_path):
-    """The path-taking form is what the publish CLI and the VS2019 driver use."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\nci_type = "gitlab"\n', encoding="utf-8"
-    )
-    assert repairs_windows_wheel_for(str(toml_file)) is False

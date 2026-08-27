@@ -15,7 +15,7 @@ import shlex
 import shutil
 import subprocess
 
-import toml
+from xmsconan.toml_utils import load_toml
 
 # Docker image registry and naming convention (matches CI templates).
 DOCKER_REGISTRY = "docker.aquaveo.com/aquaveo/conan-docker"
@@ -42,7 +42,7 @@ def resolve_docker_image(docker_image=None, toml_path="build.toml"):
     if docker_image:
         return docker_image
 
-    data = toml.load(toml_path)
+    data = load_toml(toml_path)
     ci_config = data.get("ci", {})
 
     toml_image = ci_config.get("docker_image")

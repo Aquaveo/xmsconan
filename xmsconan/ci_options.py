@@ -7,13 +7,6 @@ name or the value's type -- so ``windows_repair_wheel = false`` or
 ``windows_wheel_repair = "false"`` both left repair silently enabled. The only
 symptom would have been the thing the option exists to prevent.
 """
-# 1. Standard python modules
-
-# 2. Third party modules
-
-# 3. Aquaveo modules
-from xmsconan.toml_utils import load_toml
-
 #: Every key the ``[ci]`` table accepts, mapped to the type a value must have.
 #: A key absent from here is a typo: the readers below would silently fall back
 #: to a default, which for a switch that turns work *off* means the work keeps
@@ -101,15 +94,3 @@ def repairs_windows_wheel(toml_data: dict) -> bool:
     if "windows_wheel_repair" in ci_config:
         return bool(ci_config["windows_wheel_repair"])
     return toml_data.get("ci_type") != "gitlab"
-
-
-def repairs_windows_wheel_for(toml_path: str) -> bool:
-    """Read ``build.toml`` from disk and resolve the Windows repair decision.
-
-    Args:
-        toml_path: Path to the library's ``build.toml``.
-
-    Returns:
-        True when the Windows wheel should be repaired.
-    """
-    return repairs_windows_wheel(load_toml(toml_path))
