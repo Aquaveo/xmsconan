@@ -2,6 +2,8 @@
 import os
 from unittest.mock import patch
 
+from xmsconan.build_toml import toml_to_dataclass
+
 
 _IS_WINDOWS = os.name == 'nt'
 
@@ -28,3 +30,15 @@ def patch_env(values=(), clear=False, **kwargs):
     if _IS_WINDOWS:
         values_dict['USERPROFILE'] = os.environ['USERPROFILE']
     return patch.dict(os.environ, values_dict, clear=clear, **kwargs)
+
+
+def make_build_toml(**overrides):
+    """Build a BuildToml the way the reader would from a dict of raw TOML values.
+
+    ``library_name`` defaults to ``"xmscore"``; pass any other top-level key as
+    it would appear in the file (``ci={"xvfb": True}``), and it goes through the
+    same conversion the real reader applies.
+    """
+    data = {"library_name": "xmscore"}
+    data.update(overrides)
+    return toml_to_dataclass(data, "build.toml")
