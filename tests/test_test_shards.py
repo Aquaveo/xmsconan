@@ -59,13 +59,18 @@ def test_resolve_shard_count_takes_an_explicit_number(value, expected):
     assert test_shards.resolve_shard_count(value) == expected
 
 
-def test_resolve_shard_count_auto_is_at_least_two():
+@pytest.mark.parametrize("cpus,expected", [(16, 8), (8, 4), (5, 2), (2, 2), (1, 2), (None, 2)])
+def test_resolve_shard_count_auto_is_half_the_cpus_floor_two(cpus, expected):
     """'auto' halves the CPU count but never drops below two.
 
-    A one-shard 'auto' would silently turn the feature off on a small runner,
-    which reads as sharding being enabled and doing nothing.
+    The count is pinned rather than bounded: asserting only `>= 2` against the
+    machine's real CPU count passes just as well for `max(cpu, 2)`, which is
+    the regression the halving exists to avoid. A one-shard 'auto' would
+    silently turn the feature off on a small runner, which reads as sharding
+    being enabled and doing nothing.
     """
-    assert test_shards.resolve_shard_count("auto") >= 2
+    with patch("os.cpu_count", return_value=cpus):
+        assert test_shards.resolve_shard_count("auto") == expected
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "many"])
@@ -90,16 +95,53 @@ def test_find_artifact_dir_honors_an_explicit_label(tmp_path):
     assert test_shards.find_artifact_dir(artifacts, "Debug-testing").name == "Debug-testing"
 
 
-def test_find_artifact_dir_refuses_to_guess_between_configurations(tmp_path):
-    """Several testing directories and no label is an error, not a coin flip.
+def test_find_artifact_dir_defaults_to_debug_when_both_are_staged(tmp_path, caplog):
+    """The default matrix stages both build types, so this is the ordinary case.
 
-    Picking one would test a configuration the operator never named and report
-    it as the whole suite.
+    The generated CI passes no --label, and every repo on the default matrix
+    stages Release-testing and Debug-testing side by side. Failing here would
+    redden the test job of every such repo, so the ambiguity resolves in a
+    fixed order instead -- Debug, which is what the `ls | head -1` shell this
+    replaced selected and what the coverage build instruments.
     """
     artifacts, _ = _staged(tmp_path, label="Release-testing")
     (artifacts / "Debug-testing").mkdir()
+    assert test_shards.find_artifact_dir(artifacts).name == "Debug-testing"
+
+
+def test_find_artifact_dir_announces_the_configuration_it_picked(tmp_path, caplog):
+    """Defaulting is allowed; defaulting silently is not.
+
+    The objection to the shell this replaced was that `ls | head -1` chose
+    without saying so, leaving a green job that had tested one configuration
+    look like it tested the matrix.
+    """
+    artifacts, _ = _staged(tmp_path, label="Release-testing")
+    (artifacts / "Debug-testing").mkdir()
+    with caplog.at_level("WARNING"):
+        test_shards.find_artifact_dir(artifacts)
+    assert "Debug-testing" in caplog.text
+    assert "--label" in caplog.text
+
+
+def test_find_artifact_dir_refuses_to_guess_among_unrecognized_configurations(tmp_path):
+    """Several testing directories and no build type to fall back to is an error.
+
+    Picking one out of a set the preference order does not cover would test a
+    configuration the operator never named and report it as the whole suite.
+    """
+    artifacts, _ = _staged(tmp_path, label="RelWithDebInfo-testing")
+    (artifacts / "MinSizeRel-testing").mkdir()
     with pytest.raises(ValueError, match="--label"):
         test_shards.find_artifact_dir(artifacts)
+
+
+def test_find_artifact_dir_label_still_wins_over_the_default(tmp_path):
+    """--label overrides the fallback, so an operator can test the other one."""
+    artifacts, _ = _staged(tmp_path, label="Release-testing")
+    (artifacts / "Debug-testing").mkdir()
+    picked = test_shards.find_artifact_dir(artifacts, "Release-testing")
+    assert picked.name == "Release-testing"
 
 
 def test_find_artifact_dir_names_what_it_saw_when_nothing_matches(tmp_path):
@@ -116,7 +158,7 @@ def test_find_artifact_dir_names_what_it_saw_when_nothing_matches(tmp_path):
 
 def test_find_artifact_dir_reports_a_missing_artifacts_directory(tmp_path):
     """An absent artifacts/ directory points at the job that should have staged it."""
-    with pytest.raises(FileNotFoundError, match="--artifacts-dir|artifacts"):
+    with pytest.raises(FileNotFoundError, match="--artifacts-dir"):
         test_shards.find_artifact_dir(tmp_path / "nope")
 
 
@@ -127,7 +169,11 @@ def test_find_runner_restores_the_executable_bit(tmp_path):
     _, artifact_dir = _staged(tmp_path)
     runner = test_shards.find_runner(artifact_dir)
     assert runner.is_file()
-    assert os.access(runner, os.X_OK)
+    if os.name == "nt":
+        # Windows has no exec bit: os.access(X_OK) answers True for any file
+        # that exists, so asserting it there would pass without the chmod.
+        pytest.skip("no executable bit on Windows")
+    assert runner.stat().st_mode & 0o111
 
 
 def test_find_runner_missing_is_an_error_not_a_skip(tmp_path):
@@ -430,3 +476,113 @@ def test_run_fails_on_a_failure_only_the_report_records(tmp_path, monkeypatch):
         code = test_shards.run(artifacts, 1, output=str(tmp_path / "merged.xml"))
 
     assert code == 1
+
+
+# --- regressions found in review ---
+
+def test_single_xvfb_shard_lets_xvfb_run_choose_the_display(tmp_path):
+    """One shard has nobody to race, so it keeps the pre-sharding allocation.
+
+    A fixed --server-num fails outright on a stale /tmp/.X99-lock, which is
+    exactly what `xvfb-run -a` recovers from. Pinning the number is worth that
+    risk only when N starts would otherwise race each other.
+    """
+    _, artifact_dir = _staged(tmp_path)
+    runner = test_shards.find_runner(artifact_dir)
+    commands = []
+
+    def _record(command, env=None, timeout=None, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    with patch.object(test_shards.subprocess, "run", _record):
+        test_shards.run_shards(runner, 1, artifact_dir, xvfb=True)
+
+    assert commands[0][0] == "xvfb-run"
+    assert "-a" in commands[0]
+    assert not any(str(arg).startswith("--server-num=") for arg in commands[0])
+
+
+def test_run_fails_when_the_merged_report_holds_no_tests(tmp_path, monkeypatch):
+    """Zero tests is an empty run, not a clean one.
+
+    With sharding on the recipe skips cmake.test(), so these shards are the
+    only thing that runs the C++ suite. A runner handed a filter that matches
+    nothing exits 0 and writes a well-formed report with no cases in it, which
+    clears both the exit-code and the recorded-failure checks and ships an
+    all-green, entirely empty JUnit tab.
+    """
+    artifacts, _ = _staged(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def _empty_report(command, env=None, timeout=None, **kwargs):
+        for arg in command:
+            if str(arg).startswith("--gtest_output=xml:"):
+                Path(str(arg).split(":", 1)[1]).write_text(
+                    _shard_xml("Suite", []), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    with patch.object(test_shards.subprocess, "run", _empty_report):
+        code = test_shards.run(artifacts, 2, output=str(tmp_path / "merged.xml"))
+
+    assert code == 1
+
+
+def test_link_test_files_survives_metadata_that_is_not_an_object(tmp_path):
+    """A JSON array subscripts with a TypeError, which main() would not catch.
+
+    ValueError and KeyError cover a corrupt document and a missing key; a
+    well-formed array or scalar raises neither, so without TypeError in the
+    same clause the run ends in a traceback rather than the warning this path
+    exists to print.
+    """
+    _, artifact_dir = _staged(tmp_path, with_test_files=True)
+    (artifact_dir / "test_metadata.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+    assert test_shards.link_test_files(artifact_dir) is None
+
+
+# --- the command line ---
+
+def test_main_exits_zero_when_the_run_passes(tmp_path, monkeypatch):
+    """main() surrenders run()'s exit code through SystemExit."""
+    artifacts, _ = _staged(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xmsconan_test_shards", "--artifacts-dir", str(artifacts), "--shards", "2"],
+    )
+
+    with patch.object(test_shards.subprocess, "run", _stub_run()):
+        with pytest.raises(SystemExit) as excinfo:
+            test_shards.main()
+
+    assert excinfo.value.code == 0
+
+
+def test_main_reports_a_missing_artifacts_directory_as_exit_one(tmp_path, monkeypatch):
+    """A FileNotFoundError becomes exit 1 and a log line, not a traceback."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xmsconan_test_shards", "--artifacts-dir", str(tmp_path / "nope")],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        test_shards.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_main_rejects_a_nonsense_shard_count(tmp_path, monkeypatch):
+    """argparse.error() exits 2, so a bad --shards never reaches the runner."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xmsconan_test_shards", "--shards", "0"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        test_shards.main()
+
+    assert excinfo.value.code == 2

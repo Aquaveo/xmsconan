@@ -2,12 +2,15 @@
 
 The generated GitLab ``Run C++ Tests`` job used to get its parallelism from
 GitLab itself: ``parallel: N`` started N *jobs*, each on its own runner, each
-paying for a container start, a ``pip install`` of conan and xmsconan, and a
-download of the build artifacts -- to run one Nth of the tests. For a suite
-that takes a couple of minutes, that fixed cost was most of the wall clock.
+paying for a container start and a download of the build artifacts -- to run
+one Nth of the tests. For a suite that takes a couple of minutes, that fixed
+cost was most of the wall clock, and it grew with the shard count rather than
+shrinking against it.
 
 This module does the same fan-out inside a single container: one artifact
-download, one process per shard. The cost of doing so is that N processes now
+download, one process per shard. It is not free -- the job now installs
+xmsconan to get this script, which the inline shell it replaced did not need --
+but that is one install against N container starts and N artifact downloads. The cost of doing so is that N processes now
 write to one log, which interleaves line by line and makes a failure
 unreadable. So each shard's output is captured to a buffer and replayed whole,
 under a banner, once that shard finishes -- and the per-shard gtest XML reports
@@ -34,7 +37,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Sequence
 from xml.etree import ElementTree
 
 # 2. Third party modules
@@ -51,11 +54,25 @@ DEFAULT_SHARD_TIMEOUT = 600
 #: what the generated CI passes to ``build.py --artifacts-dir``.
 DEFAULT_ARTIFACTS_DIR = "test_artifacts"
 
+#: Name of the merged JUnit report. The generated GitLab job names the same
+#: file in ``artifacts:reports:junit``, so the default and the CI have to agree
+#: or the MR widget reports on a file nothing wrote.
+DEFAULT_REPORT_NAME = "TEST-cxxtest.xml"
+
 #: Suffix ``_save_test_artifacts`` gives the directory of a ``testing=True``
 #: configuration. The label in front of it is the configuration's own
 #: (``Release-testing``), which the CI job does not know, so the directory is
 #: found by this suffix instead.
 _TESTING_LABEL_SUFFIX = "-testing"
+
+#: Which testing configuration an unlabelled run picks when the build staged
+#: several. The default matrix stages both ``Release-testing`` and
+#: ``Debug-testing``, so "several" is the ordinary case, not an edge one.
+#: Debug leads because the shell this replaced selected it -- ``ls -d
+#: test_artifacts/*-testing | head -1`` is alphabetical -- and because it is
+#: the configuration ``xmsconan coverage`` instruments. The pick is announced,
+#: never silent; ``--label`` overrides it.
+_LABEL_PREFERENCE = ("Debug-testing", "Release-testing")
 
 #: X display numbers start here and step by one per shard. Two shards sharing a
 #: display race on the X server's first client connection; ``xvfb-run -a``
@@ -94,8 +111,14 @@ class ShardResult(NamedTuple):
 
     @property
     def passed(self) -> bool:
-        """Whether this shard reported success."""
-        return self.returncode == 0
+        """Whether this shard reported success.
+
+        Both halves, so the property states the invariant instead of relying on
+        it: every constructor that sets *error* also leaves *returncode* None,
+        and a future one that forgets would otherwise report a failed shard as
+        passed.
+        """
+        return self.returncode == 0 and self.error is None
 
 
 class MergeTotals(NamedTuple):
@@ -150,9 +173,10 @@ def find_artifact_dir(artifacts_dir, label: Optional[str] = None) -> Path:
             this replaces was a bare ``ls | head -1`` producing an empty
             string, and then a "runner not found at /runner" naming a path
             nobody wrote.
-        ValueError: When several ``*-testing`` directories match and no label
-            says which. Picking one would silently test a configuration the
-            operator did not name.
+        ValueError: When several ``*-testing`` directories match, no label says
+            which, and none of them is a build type :data:`_LABEL_PREFERENCE`
+            can fall back to. Picking one out of an unrecognized set would
+            silently test a configuration the operator did not name.
     """
     root = Path(artifacts_dir)
     if label:
@@ -180,9 +204,25 @@ def find_artifact_dir(artifacts_dir, label: Optional[str] = None) -> Path:
             f"{_describe_contents(root)}"
         )
     if len(matches) > 1:
+        # The default matrix stages a testing copy of every build type, so
+        # arriving here is normal rather than exceptional and must not fail the
+        # job. Fall back in a fixed, documented order and say which one won --
+        # the objection to `ls | head -1` was that it chose silently, not that
+        # it chose.
+        by_name = {match.name: match for match in matches}
+        for preferred in _LABEL_PREFERENCE:
+            if preferred in by_name:
+                LOGGER.warning(
+                    "Several testing configurations are staged under %s: %s. "
+                    "Testing %s; pass --label to test another.",
+                    root, ", ".join(sorted(by_name)), preferred,
+                )
+                return by_name[preferred]
         raise ValueError(
             f"Several testing configurations are staged under {root}: "
-            f"{', '.join(m.name for m in matches)}. Name one with --label."
+            f"{', '.join(m.name for m in matches)}, and none of them is one of "
+            f"{', '.join(_LABEL_PREFERENCE)} to fall back to. "
+            f"Name one with --label."
         )
     return matches[0]
 
@@ -245,7 +285,10 @@ def link_test_files(artifact_dir: Path) -> Optional[Path]:
 
     try:
         test_path = json.loads(metadata_path.read_text(encoding="utf-8"))["test_path"]
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
+        # TypeError covers a metadata file holding a JSON array or scalar:
+        # subscripting that raises before KeyError can, and main() only handles
+        # FileNotFoundError and ValueError, so it would surface as a traceback.
         LOGGER.warning(
             "Could not read test_path from %s (%s); tests that load data from "
             "test_files/ will fail to find it.", metadata_path, exc,
@@ -265,22 +308,31 @@ def link_test_files(artifact_dir: Path) -> Optional[Path]:
             target.unlink()
     try:
         target.symlink_to(staged.resolve(), target_is_directory=True)
-    except (OSError, NotImplementedError):
+    except (OSError, NotImplementedError) as exc:
         # Windows needs a privilege for symlinks that a CI account may not
         # hold. A copy costs disk but is otherwise equivalent, and losing the
-        # test data is not an acceptable alternative.
+        # test data is not an acceptable alternative. Name the cause anyway:
+        # the fallback also covers a full disk and a read-only parent, which
+        # copytree is about to fail on for a reason worth having in the log.
+        LOGGER.info("Could not symlink %s (%s); copying instead.", target, exc)
         shutil.copytree(staged, target)
     return target
 
 
-def _shard_command(runner: Path, xml_path: Path, index: int, xvfb: bool,
-                   runner_args) -> list:
+def _shard_command(runner: Path, xml_path: Path, index: int, total: int,
+                   xvfb: bool, runner_args) -> list:
     """Build one shard's argv."""
     command = [str(runner), f"--gtest_output=xml:{xml_path}", *runner_args]
     if xvfb:
+        # One shard has nobody to collide with, so let xvfb-run choose the
+        # display as it did before sharding existed: a fixed --server-num
+        # fails outright on a stale /tmp/.X99-lock that -a would step over.
+        # Fixed numbers are only worth their cost when N starts race.
+        allocation = (["-a"] if total < 2
+                      else [f"--server-num={_XVFB_BASE_DISPLAY + index}"])
         command = [
             "xvfb-run",
-            f"--server-num={_XVFB_BASE_DISPLAY + index}",
+            *allocation,
             "-s", "-screen 0 1280x1024x24",
             *command,
         ]
@@ -298,7 +350,7 @@ def _run_one_shard(runner: Path, index: int, total: int, output_dir: Path,
     # the captured buffer is replayed into the CI log, which does render color.
     env.setdefault("GTEST_COLOR", "yes")
 
-    command = _shard_command(runner, xml_path, index, xvfb, runner_args)
+    command = _shard_command(runner, xml_path, index, total, xvfb, runner_args)
     started = time.monotonic()
     try:
         completed = subprocess.run(
@@ -351,7 +403,8 @@ def _print_shard_output(result: ShardResult, total: int, stream=None) -> None:
 
 
 def run_shards(runner: Path, shards: int, output_dir: Path, *, xvfb: bool = False,
-               timeout: int = DEFAULT_SHARD_TIMEOUT, runner_args=()) -> list:
+               timeout: int = DEFAULT_SHARD_TIMEOUT,
+               runner_args: Sequence[str] = ()) -> list[ShardResult]:
     """Run *shards* shards of *runner* concurrently, in this container.
 
     Args:
@@ -523,7 +576,7 @@ def run(artifacts_dir, shards: int, *, label=None, output=None, xvfb=False,
     if linked:
         LOGGER.info("test_files/ linked at %s", linked)
 
-    output_path = Path(output) if output else Path("TEST-cxxtest.xml")
+    output_path = Path(output) if output else Path(DEFAULT_REPORT_NAME)
     LOGGER.info("Running %s shard(s) of %s", shards, runner)
 
     started = time.monotonic()
@@ -545,6 +598,15 @@ def run(artifacts_dir, shards: int, *, label=None, output=None, xvfb=False,
     if totals.failures or totals.errors:
         LOGGER.error("Every shard exited 0, but the merged report records "
                      "%s failure(s) and %s error(s).", totals.failures, totals.errors)
+        return 1
+    if not totals.tests:
+        # The comment above is only true with this branch present. A runner
+        # given a filter that matches nothing exits 0 and writes a well-formed
+        # report holding no cases, which passes both checks above and ships an
+        # empty, entirely green JUnit tab as a successful test run.
+        LOGGER.error("Every shard exited 0 but no test ran: the merged report "
+                     "records 0 tests. With sharding on, the recipe skips "
+                     "cmake.test(), so this is an empty run, not a clean one.")
         return 1
     return 0
 
@@ -572,8 +634,8 @@ def main():
              "(minimum 2). Default: auto.",
     )
     parser.add_argument(
-        "--output", default="TEST-cxxtest.xml",
-        help="Path of the merged JUnit report (default: TEST-cxxtest.xml).",
+        "--output", default=DEFAULT_REPORT_NAME,
+        help=f"Path of the merged JUnit report (default: {DEFAULT_REPORT_NAME}).",
     )
     parser.add_argument(
         "--xvfb", action="store_true",

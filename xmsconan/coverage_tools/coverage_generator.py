@@ -124,6 +124,13 @@ def _run(cmd, env=None, cwd=None):
     subprocess.run(cmd, env=env, cwd=cwd, check=True)
 
 
+#: Seconds a captured coverage leg may run before it is killed and its partial
+#: output surrendered. Longer than any healthy coverage build -- the point is
+#: not to bound the work but to beat the CI job's own timeout, which would
+#: otherwise discard the whole buffer along with the container.
+DEFAULT_LEG_TIMEOUT = 7200
+
+
 class _BuildLeg(NamedTuple):
     """One of the two builds a coverage run drives.
 
@@ -164,20 +171,35 @@ def _build_command(leg: _BuildLeg, version: str) -> list:
     return [sys.executable, "build.py", "--version", version, "--filter", leg.filter_json]
 
 
-def _run_leg_captured(leg: _BuildLeg, version: str, env, cwd) -> _LegResult:
+def _run_leg_captured(leg: _BuildLeg, version: str, env, cwd,
+                      timeout: int = DEFAULT_LEG_TIMEOUT) -> _LegResult:
     """Run one leg to completion, holding its output rather than streaming it.
 
     Every failure is returned, never raised. This runs on a worker thread, and
     an exception there surfaces from ``future.result()`` in the driver -- which
     would abort the whole coverage run at the point it is specifically supposed
     to carry on and report whatever the other leg produced.
+
+    The timeout is what keeps a hung build debuggable. Streaming showed an
+    operator where a build stopped; capturing shows nothing until the process
+    ends, so a hang that runs out the CI job's own clock takes the entire
+    buffered log down with it. Timing out first surrenders the partial output.
     """
     started = time.monotonic()
     try:
         completed = subprocess.run(
-            _build_command(leg, version), env=env, cwd=cwd,
+            _build_command(leg, version), env=env, cwd=cwd, timeout=timeout,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="replace",
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.output or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        return _LegResult(
+            leg.name, 1, time.monotonic() - started,
+            f"{output}\n{leg.name} build timed out after {timeout}s; "
+            f"the output above is everything it produced first.",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return _LegResult(leg.name, 1, time.monotonic() - started,
@@ -753,7 +775,8 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
     The packager emits a Debug+testing-only config and a Release+pybind-only
-    config independently; this function builds each in sequence, runs gcovr
+    config independently; this function builds both -- concurrently unless
+    ``[coverage].parallel = false`` (§11) turns that off -- then runs gcovr
     against both build folders and merges the result, and copies pytest-cov
     artifacts out of the pybind build folder. The two builds never share a
     binary shape, so changes to CxxTest linkage or pybind options cannot break

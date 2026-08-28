@@ -928,10 +928,13 @@ def test_gtest_discovery_survives_behind_an_opt_in_option(tmp_path):
     assert "option(XMS_GTEST_DISCOVER_TESTS" in content
     assert "if (XMS_GTEST_DISCOVER_TESTS)" in content
     assert "gtest_discover_tests(runner)" in content
-    # Guarded, not merely present: an unindented call would run unconditionally
+    # Guarded, not merely present: an unguarded call would run unconditionally
     # and put the per-case spawns back while the add_test() above still stands.
-    assert "\n    gtest_discover_tests(runner)" not in content
-    assert "\n        gtest_discover_tests(runner)" in content
+    # Sliced rather than matched on leading whitespace, so reindenting the
+    # template does not fail a test about what the guard covers.
+    guard_start = content.index("if (XMS_GTEST_DISCOVER_TESTS)")
+    guarded = content[guard_start:content.index("endif()", guard_start)]
+    assert "gtest_discover_tests(runner)" in guarded
 
 
 def test_generates_build_py_with_test_shards(build_toml, tmp_path):
@@ -952,7 +955,10 @@ def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     assert build_py.exists()
     content = build_py.read_text(encoding="utf-8")
     assert "--test-shards" in content
-    assert "auto" in content
+    # The resolution itself, not the word: `assert "auto" in content` passes on
+    # the argparse help text alone, so it held while the branch it names was
+    # absent.
+    assert 'args.test_shards == "auto"' in content
     assert "os.cpu_count()" in content
 
 

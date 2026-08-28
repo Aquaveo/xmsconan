@@ -6,7 +6,6 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +15,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _assert_gcovr_collected_data,
     _BuildLeg,
     _conan_cache_path,
+    DEFAULT_LEG_TIMEOUT,
     _cpp_percent_from_summary,
     _find_coverage_package,
     _find_pytest_cov_artifact,
@@ -1813,23 +1813,33 @@ class TestConcurrentCoverageBuilds:
         on the display. A flag that quietly kept overlapping would be worse than
         no flag at all.
         """
-        intervals = []
         lock = threading.Lock()
+        in_flight = 0
+        peak = 0
+        started_count = 0
 
-        def _timed(cmd, env=None, cwd=None, **kwargs):
-            started = time.monotonic()
-            time.sleep(0.05)
+        def _counted(cmd, env=None, cwd=None, **kwargs):
+            nonlocal in_flight, peak, started_count
             with lock:
-                intervals.append((started, time.monotonic()))
-            return subprocess.CompletedProcess(cmd, 0, stdout="")
+                in_flight += 1
+                started_count += 1
+                peak = max(peak, in_flight)
+            try:
+                return subprocess.CompletedProcess(cmd, 0, stdout="")
+            finally:
+                with lock:
+                    in_flight -= 1
 
         with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
-                   _timed):
+                   _counted):
             _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=False)
 
-        intervals.sort()
-        assert len(intervals) == 2
-        assert intervals[0][1] <= intervals[1][0]
+        # A peak of one is the property under test, and it holds without a
+        # sleep: comparing wall-clock intervals needs the legs to last long
+        # enough to measure, which makes the test both slower and flaky on a
+        # loaded runner.
+        assert started_count == 2
+        assert peak == 1
 
     def test_build_output_is_replayed_per_leg(self, capsys):
         """Each leg's output is printed whole rather than interleaved.
@@ -1878,3 +1888,38 @@ class TestConcurrentCoverageBuilds:
             failed = _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
 
         assert failed is True
+
+    def test_hung_leg_times_out_and_keeps_what_it_had_printed(self, capsys):
+        """A hung build must not take its buffered log down with it.
+
+        Streaming let an operator see where a build stopped. Capturing shows
+        nothing until the process ends, so a leg that never ends loses every
+        line it produced when the CI job's own clock kills the container. The
+        timeout fires first and surrenders the partial output.
+        """
+        def _hang(cmd, env=None, cwd=None, timeout=None, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd, timeout or 1, output="configuring...\ncompiling foo.cpp\n")
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _hang):
+            failed = _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
+
+        assert failed is True
+        out = capsys.readouterr().out
+        assert "compiling foo.cpp" in out
+        assert "timed out" in out
+
+    def test_captured_legs_are_given_a_timeout(self):
+        """The timeout has to reach subprocess.run, not just exist as a default."""
+        seen = {}
+
+        def _record(cmd, env=None, cwd=None, timeout=None, **kwargs):
+            seen["timeout"] = timeout
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _record):
+            _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
+
+        assert seen["timeout"] == DEFAULT_LEG_TIMEOUT

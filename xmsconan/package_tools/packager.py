@@ -480,6 +480,18 @@ class XmsConanPackager(object):
         self._build_missing = build_missing
         self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
         self._test_shards = test_shards
+        if test_shards > 1 and not self._artifacts_dir:
+            # Sharding needs somewhere to have staged the runner. Without it,
+            # the build still exports XMS_SKIP_CXX_TESTS=1 for every testing
+            # configuration but never reaches _run_sharded_tests, so the run
+            # skips the C++ suite, shards nothing, and exits 0 -- a green build
+            # in which no test executed. Refuse the combination instead.
+            raise ValueError(
+                f'test_shards={test_shards} needs an artifacts_dir: the runner is '
+                'sharded from the staged artifacts, and without them the recipe '
+                'would skip the C++ tests and nothing would run them. Pass '
+                '--artifacts-dir alongside --test-shards.'
+            )
         self._profile_options = profile_options or {}
         # Only consulted by write_profiles(); the ephemeral build profile has
         # never carried a [conf] section and still does not.
