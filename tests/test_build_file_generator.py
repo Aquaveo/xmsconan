@@ -882,6 +882,61 @@ def test_testing_sources_are_compiled_into_the_library(framework, tmp_path):
     assert "target_sources(runner PRIVATE ${xmscore_testing_sources})" in content
 
 
+def test_gtest_registers_one_in_process_ctest_entry(tmp_path):
+    """The gtest branch registers a single ctest entry, not one per TEST_F.
+
+    gtest_discover_tests() gives ctest an entry per case, and ctest spawns a
+    process per entry -- so a few thousand cases cost a few thousand process
+    spawns before a single assertion runs. The default is now one entry that
+    hands ctest the whole binary, which gtest runs in one process.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'python_namespaced_dir = "core"\n'
+        'testing_framework = "gtest"\n',
+        encoding="utf-8",
+    )
+
+    content = _render_cmakelists(toml_file, tmp_path)
+
+    assert "add_test(NAME runner" in content
+    assert "--gtest_output=xml:TEST-cxxtest.xml" in content
+    # The report has to land where run_cxx_tests() looks for it, which is the
+    # build folder -- the same place the cxxtest runner writes its copy.
+    assert "WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}" in content
+
+
+def test_gtest_discovery_survives_behind_an_opt_in_option(tmp_path):
+    """Per-case ctest entries are still reachable via -DXMS_GTEST_DISCOVER_TESTS=ON.
+
+    Dropping gtest_discover_tests() outright would take `ctest -R <case>` with
+    it, so the call is kept -- guarded, never reached by default.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'python_namespaced_dir = "core"\n'
+        'testing_framework = "gtest"\n',
+        encoding="utf-8",
+    )
+
+    content = _render_cmakelists(toml_file, tmp_path)
+
+    assert "option(XMS_GTEST_DISCOVER_TESTS" in content
+    assert "if (XMS_GTEST_DISCOVER_TESTS)" in content
+    assert "gtest_discover_tests(runner)" in content
+    # Guarded, not merely present: an unguarded call would run unconditionally
+    # and put the per-case spawns back while the add_test() above still stands.
+    # Sliced rather than matched on leading whitespace, so reindenting the
+    # template does not fail a test about what the guard covers.
+    guard_start = content.index("if (XMS_GTEST_DISCOVER_TESTS)")
+    guarded = content[guard_start:content.index("endif()", guard_start)]
+    assert "gtest_discover_tests(runner)" in guarded
+
+
 def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     """build.py is generated with --test-shards argument and auto mode logic."""
     tpl_dir = tmp_path / "tpl"
@@ -900,7 +955,10 @@ def test_generates_build_py_with_test_shards(build_toml, tmp_path):
     assert build_py.exists()
     content = build_py.read_text(encoding="utf-8")
     assert "--test-shards" in content
-    assert "auto" in content
+    # The resolution itself, not the word: `assert "auto" in content` passes on
+    # the argparse help text alone, so it held while the branch it names was
+    # absent.
+    assert 'args.test_shards == "auto"' in content
     assert "os.cpu_count()" in content
 
 

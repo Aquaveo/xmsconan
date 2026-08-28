@@ -389,7 +389,6 @@ def test_gitlab_ci_deploy_jobs_set_package_version(tmp_path):
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     # Every section that calls xmsconan_conan_deploy must first set PACKAGE_VERSION
-    import re
     deploy_blocks = re.split(r'\n(?=\S)', content)
     for block in deploy_blocks:
         if "xmsconan_conan_deploy" in block:
@@ -631,25 +630,13 @@ def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
 
 def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
     """When split_tests = true, generates separate Build and Test jobs."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmsvtk"\n'
-        'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'split_tests = true\n'
-        'coverage = true\n'
-        'xvfb = true\n',
-        encoding="utf-8",
-    )
+    toml_file = write_gitlab_toml(tmp_path, split_tests=True, coverage=True, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     assert '"Run C++ Tests":' in content
     assert "XMS_SKIP_CXX_TESTS" in content
-    import yaml
     ci = yaml.safe_load(content)
     # Build and Test should be separate stages
     assert ci["Conan Build"]["stage"] == "Build"
@@ -672,7 +659,6 @@ def test_gitlab_ci_no_split_tests_by_default(tmp_path):
     assert '"Run C++ Tests":' not in content
     assert "XMS_SKIP_CXX_TESTS" not in content
     # No Build stage — everything stays in Test
-    import yaml
     ci = yaml.safe_load(content)
     assert ci["Conan Build"]["stage"] == "Test"
     assert "Build" not in ci.get("stages", [])
@@ -680,86 +666,60 @@ def test_gitlab_ci_no_split_tests_by_default(tmp_path):
 
 def test_gitlab_ci_coverage_allow_failure_without_split_tests(tmp_path):
     """Coverage is required (no allow_failure) when split_tests is not set."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmsvtk"\n'
-        'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'coverage = true\n'
-        'xvfb = true\n',
-        encoding="utf-8",
-    )
+    toml_file = write_gitlab_toml(tmp_path, coverage=True, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    import yaml
     ci = yaml.safe_load(content)
     assert "allow_failure" not in ci.get("Coverage", {})
 
 
-def test_gitlab_ci_test_shards_generates_parallel_jobs(tmp_path):
-    """When test_shards > 1, Run C++ Tests uses parallel and GTEST_SHARD env vars."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmsvtk"\n'
-        'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'split_tests = true\n'
-        'test_shards = 4\n'
-        'xvfb = true\n',
-        encoding="utf-8",
-    )
+def test_gitlab_ci_test_shards_run_in_one_container(tmp_path):
+    """test_shards > 1 shards inside one job rather than fanning out into N jobs.
+
+    `parallel: N` bought its concurrency by starting N containers, each
+    repeating the container start, the pip install and the artifact download to
+    run one Nth of the suite. The shard count now reaches xmsconan_test_shards,
+    which forks N processes in the single container this job already has.
+    """
+    toml_file = write_gitlab_toml(tmp_path, split_tests=True, test_shards=4, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    import yaml
     ci = yaml.safe_load(content)
-    assert ci["Run C++ Tests"]["parallel"] == 4
-    assert "GTEST_TOTAL_SHARDS=4" in content
-    assert "GTEST_SHARD_INDEX" in content
+    assert "parallel" not in ci["Run C++ Tests"]
+    assert "--shards 4" in content
+    # The GTEST_* variables are the shard runner's business now. Exporting them
+    # from the job would pin every shard in the container to the same index.
+    assert "GTEST_TOTAL_SHARDS" not in content
+    assert "GTEST_SHARD_INDEX" not in content
+    # The merged report is what makes a failing case visible in the MR widget.
+    assert ci["Run C++ Tests"]["artifacts"]["reports"]["junit"] == "TEST-cxxtest.xml"
 
 
 def test_gitlab_ci_no_shards_without_config(tmp_path):
-    """Without test_shards, no parallel or GTEST env vars are generated."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmsvtk"\n'
-        'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'split_tests = true\n'
-        'xvfb = true\n',
-        encoding="utf-8",
-    )
+    """Without test_shards the job runs a single shard, still via the runner script.
+
+    One code path for both cases: a single shard is the N=1 degenerate one, so
+    the artifact-finding and test_files relinking that the job needs either way
+    does not have to exist twice.
+    """
+    toml_file = write_gitlab_toml(tmp_path, split_tests=True, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    import yaml
     ci = yaml.safe_load(content)
     assert "parallel" not in ci["Run C++ Tests"]
     assert "GTEST_TOTAL_SHARDS" not in content
+    assert "--shards 1" in content
 
 
 def test_gitlab_ci_test_shards_without_split_tests_no_parallel(tmp_path):
     """test_shards alone (without split_tests) does not produce a parallel test job."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmsvtk"\n'
-        'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'test_shards = 4\n',
-        encoding="utf-8",
-    )
+    toml_file = write_gitlab_toml(tmp_path, test_shards=4)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
@@ -772,27 +732,21 @@ def test_gitlab_ci_test_shards_without_split_tests_no_parallel(tmp_path):
 
 
 def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
-    """Split test job wraps runner with xvfb-run when xvfb = true."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmsvtk"\n'
-        'description = "desc"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'split_tests = true\n'
-        'xvfb = true\n',
-        encoding="utf-8",
-    )
+    """Setting xvfb = true reaches the shard runner as --xvfb.
+
+    The wrapping moved into the script because each shard needs its *own*
+    display: `xvfb-run -a` picks a free server number, but between that check
+    and the bind is a window that N simultaneous starts land in.
+    """
+    toml_file = write_gitlab_toml(tmp_path, split_tests=True, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     # Find the "Run C++ Tests:" section
-    import re
     test_section = re.search(r'"Run C\+\+ Tests":.*?(?=\n\S|\Z)', content, re.DOTALL)
     assert test_section is not None
-    assert "xvfb-run" in test_section.group()
+    assert "--xvfb" in test_section.group()
 
 
 def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
@@ -2092,3 +2046,72 @@ def test_gitlab_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):
     warned = [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
     assert len(warned) == 1, warned  # the Linux build job; the Windows one is off
     assert "'Conan Build'" in warned[0]
+
+
+def test_github_ci_build_step_shards_the_suite(tmp_path):
+    """[ci].test_shards reaches build.py on every GitHub platform job.
+
+    GitHub has no split-test job -- the runner that built the package is the
+    one that tests it -- so the shard count goes to build.py, which skips
+    cmake.test() during the build and then runs N in-process gtest shards.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'test_shards = 4\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    workflow = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = workflow.read_text(encoding="utf-8")
+
+    build_steps = [line for line in content.splitlines()
+                   if "--artifacts-dir test_artifacts" in line]
+    assert build_steps
+    assert all("--test-shards 4" in line for line in build_steps)
+    # The upload-only invocation builds nothing, so a shard count there would
+    # be noise at best and a skipped-test claim at worst.
+    upload_steps = [line for line in content.splitlines()
+                    if "--skip-build --upload" in line]
+    assert upload_steps
+    assert all("--test-shards" not in line for line in upload_steps)
+
+
+def test_github_ci_omits_the_shard_flag_when_unset(ci_toml, tmp_path):
+    """Without [ci].test_shards the build command is unchanged.
+
+    ctest keeps its own parallelism in that case; adding `--test-shards 1`
+    would route the suite through the shard path for no benefit.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    workflow = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = workflow.read_text(encoding="utf-8")
+
+    assert "--artifacts-dir test_artifacts" in content
+    assert "--test-shards" not in content
+
+
+def test_github_ci_shard_flag_needs_more_than_one_shard(tmp_path):
+    """test_shards = 1 is the same as not asking for shards."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'test_shards = 1\n',
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    workflow = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+    content = workflow.read_text(encoding="utf-8")
+
+    assert "--test-shards" not in content

@@ -91,6 +91,19 @@ Conan Build:
 <% endif %>
 
 <% if ci_split_tests %>
+<# One job, N shards inside it -- not `parallel: N`, which is N jobs on N
+   runners. Each of those paid for a container start, a pip install and a
+   download of the build artifacts to run one Nth of the suite; for a suite
+   measured in minutes that overhead was most of the wall clock, and it scaled
+   with the shard count instead of against it.
+
+   xmsconan_test_shards is what makes one container viable: N runners writing
+   to one log interleave line by line, so it buffers each shard's output and
+   replays it whole, then merges the per-shard gtest XML into the single
+   TEST-cxxtest.xml reported below. It also does the artifact spelunking that
+   used to be inline shell here -- finding the staged *-testing directory,
+   restoring the runner's executable bit, and linking test_files/ back to the
+   absolute path the binary was compiled with. #>
 "Run C++ Tests":
   stage: Test
 <% if docker_image %>
@@ -100,9 +113,6 @@ Conan Build:
 <% else %>
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py<< gitlab_linux_image_py >>
 <% endif %>
-<% if ci_test_shards > 1 %>
-  parallel: << ci_test_shards >>
-<% endif %>
   except:
     - tags
   needs:
@@ -111,42 +121,18 @@ Conan Build:
   artifacts:
     expire_in: '1d'
     when: always
+<# The merged report, so a failing case is named in the MR widget rather than
+   only in the job log. A shard that died before gtest serialized anything is
+   merged in as an explicit error case, so a red job never shows an all-green
+   test tab. #>
+    reports:
+      junit: TEST-cxxtest.xml
     paths:
       - test_artifacts/
+      - TEST-cxxtest.xml
   script:
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-<% if ci_test_shards > 1 %>
-    - export GTEST_TOTAL_SHARDS=<< ci_test_shards >>
-    - export GTEST_SHARD_INDEX=$((CI_NODE_INDEX - 1))
-<% endif %>
-    - |
-      ARTIFACT_DIR=$(ls -d test_artifacts/*-testing 2>/dev/null | head -1)
-      if [ -z "$ARTIFACT_DIR" ]; then
-        echo "ERROR: No testing artifacts found in test_artifacts/"
-        exit 1
-      fi
-      RUNNER="$ARTIFACT_DIR/runner"
-      if [ ! -f "$RUNNER" ]; then
-        echo "ERROR: Runner binary not found at $RUNNER"
-        exit 1
-      fi
-      chmod +x "$RUNNER"
-      # Reconstruct test_files at the compiled-in path
-      if [ -f "$ARTIFACT_DIR/test_metadata.json" ]; then
-        TEST_PATH=$(python3 -c "import json; print(json.load(open('$ARTIFACT_DIR/test_metadata.json'))['test_path'])")
-        mkdir -p "$(dirname "$TEST_PATH")"
-        if [ -d "$ARTIFACT_DIR/test_files" ]; then
-          ln -sfn "$(pwd)/$ARTIFACT_DIR/test_files" "${TEST_PATH%/}"
-        fi
-      fi
-<% if ci_xvfb and ci_test_shards > 1 %>
-    - DISPLAY_NUM=$((99 + CI_NODE_INDEX))
-    - xvfb-run --server-num=${DISPLAY_NUM} -s "-screen 0 1280x1024x24" "$ARTIFACT_DIR/runner" --gtest_output=xml:TEST-cxxtest.xml
-<% elif ci_xvfb %>
-    - xvfb-run -a -s "-screen 0 1280x1024x24" "$ARTIFACT_DIR/runner" --gtest_output=xml:TEST-cxxtest.xml
-<% else %>
-    - "$ARTIFACT_DIR/runner --gtest_output=xml:TEST-cxxtest.xml"
-<% endif %>
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_test_shards --artifacts-dir test_artifacts --shards << ci_test_shards if ci_test_shards > 1 else 1 >><% if ci_xvfb %> --xvfb<% endif %>
 
 <% endif %>
 <% endif %>

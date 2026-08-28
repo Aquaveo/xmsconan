@@ -201,13 +201,96 @@ def test_coverage_obeys_an_explicit_release_only_pybind_list():
 
 
 @patch_env(clear=True)
+@pytest.mark.parametrize("system_platform", ["linux", "windows"])
+def test_matrix_wheel_only_reduces_the_matrix_to_three_builds(system_platform):
+    """A library whose only deliverable is the wheel builds three configurations.
+
+    Release+testing and Debug+testing run the C++ suite; the pybind build
+    carries the wheel and runs the Python suite. Everything else in the
+    historical fan-out exists for a C++ consumer linking the library, which a
+    wheel_only library does not have.
+    """
+    # Relative to the default fan-out rather than a hard-coded 5 and 13: this
+    # test owns what wheel_only removes, not how large the untouched matrix is,
+    # and pinning the latter reddens it whenever an unrelated axis grows.
+    default = XmsConanPackager("xmscore", python_versions=["3.13"])
+    default_count = len(default.generate_configurations(system_platform=system_platform))
+    assert default_count > 3
+
+    p = XmsConanPackager("xmscore", python_versions=["3.13"],
+                         matrix={"wheel_only": True})
+    configs = p.generate_configurations(system_platform=system_platform)
+
+    assert len(configs) == 3
+    shapes = {
+        (c["build_type"], c["options"]["pybind"], c["options"]["testing"])
+        for c in configs
+    }
+    assert shapes == {
+        ("Release", True, False),
+        ("Release", False, True),
+        ("Debug", False, True),
+    }
+
+
+@patch_env(clear=True)
+def test_matrix_wheel_only_leaves_every_setting_matching_except_pybind():
+    """The three builds differ in build_type and pybind, and in nothing else.
+
+    Windows is where this can break: the base matrix fans out over both CRTs
+    and both wchar_t spellings, and msvc only gets a pybind variant on the
+    dynamic runtime. A testing build on the static CRT would be a fourth
+    configuration whose settings no longer match the wheel's.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.13"],
+                         matrix={"wheel_only": True})
+    configs = p.generate_configurations(system_platform="windows")
+
+    assert {c["compiler.runtime"] for c in configs} == {"dynamic"}
+    assert {c["options"]["wchar_t"] for c in configs} == {"builtin"}
+    for key in ("os", "arch", "compiler", "compiler.version", "compiler.cppstd"):
+        assert len({c[key] for c in configs}) == 1, key
+
+
+@patch_env(clear=True)
+def test_matrix_wheel_only_respects_an_explicit_compiler_runtime():
+    """An explicit [matrix].compiler_runtime still wins over the implied narrowing.
+
+    wheel_only narrows to the dynamic CRT only because that is the one msvc
+    gets a pybind variant on. A library that stated the restriction itself has
+    already made that call, and silently overriding it would make the two keys
+    disagree about which is authoritative.
+    """
+    p = XmsConanPackager("xmscore", python_versions=["3.13"],
+                         matrix={"wheel_only": True,
+                                 "compiler_runtime": ["dynamic", "static"]})
+    configs = p.generate_configurations(system_platform="windows")
+
+    assert {c["compiler.runtime"] for c in configs} == {"dynamic", "static"}
+
+
+@patch_env(clear=True)
+def test_matrix_wheel_only_defaults_off():
+    """Omitting the key leaves the historical fan-out untouched."""
+    p = XmsConanPackager("xmscore", python_versions=["3.13"])
+    configs = p.generate_configurations(system_platform="linux")
+
+    assert any(
+        not c["options"]["pybind"] and not c["options"]["testing"]
+        for c in configs
+    )
+
+
+@patch_env(clear=True)
 @pytest.mark.parametrize("matrix,expected", [
     ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),
     ({"compiler_runtime": ["MD"]}, "MD"),
-    ({"compiler_runtime": []}, "compiler_runtime"),
-    ({"compiler_runtime": "dynamic"}, "compiler_runtime"),
+    ({"compiler_runtime": []}, "would build nothing"),
+    ({"compiler_runtime": "dynamic"}, "must be a list"),
     ({"pybind_build_types": ["RelWithDebInfo"]}, "RelWithDebInfo"),
-    ({"pybind_build_types": []}, "pybind_build_types"),
+    ({"pybind_build_types": []}, "would build nothing"),
+    ({"wheel_only": "true"}, "must be a boolean"),
+    ({"wheel_onley": True}, "wheel_onley"),
     (["dynamic"], "matrix"),
 ], ids=[
     "misspelled-key",
@@ -216,6 +299,8 @@ def test_coverage_obeys_an_explicit_release_only_pybind_list():
     "runtime-string-not-list",
     "unsupported-build-type",
     "empty-build-type-list",
+    "wheel-only-string-not-bool",
+    "misspelled-wheel-only",
     "matrix-is-a-list-not-a-table",
 ])
 def test_matrix_rejects_bad_input(matrix, expected):
@@ -2439,3 +2524,25 @@ def test_empty_matrix_table_matches_no_matrix_at_all():
     from_default = default.generate_configurations(system_platform="windows")
     from_explicit = explicit.generate_configurations(system_platform="windows")
     assert from_default == from_explicit
+
+
+@patch_env(clear=True)
+def test_test_shards_without_an_artifacts_dir_is_refused():
+    """Sharding with nowhere to shard from would run no tests and still pass.
+
+    `shard_this` alone exports XMS_SKIP_CXX_TESTS=1 for every testing
+    configuration, but the shard run is gated on an artifacts_dir as well. With
+    the flag and without the directory the recipe therefore skips the C++
+    suite, nothing replaces it, and build.py exits 0 having executed no test at
+    all -- the exact green-but-empty result the shard runner exists to prevent.
+    """
+    with pytest.raises(ValueError, match="artifacts_dir"):
+        XmsConanPackager("xmscore", test_shards=4)
+
+
+@patch_env(clear=True)
+def test_one_shard_without_an_artifacts_dir_is_still_allowed():
+    """test_shards=1 means no sharding, so it has nothing to stage and read back."""
+    p = XmsConanPackager("xmscore", test_shards=1)
+
+    assert p is not None
