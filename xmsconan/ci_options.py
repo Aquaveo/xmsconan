@@ -1,72 +1,17 @@
-"""The ``[ci]`` table of ``build.toml``: its vocabulary, types, and defaults.
+"""The Windows wheel-repair decision, read from ``build.toml``.
 
-One module so the several readers of that table cannot drift apart. Before this
-existed, ``windows_wheel_repair`` was read independently in the CI generator and
-in the publish CLI, each restating the default, and neither checking the key
-name or the value's type -- so ``windows_repair_wheel = false`` or
-``windows_wheel_repair = "false"`` both left repair silently enabled. The only
-symptom would have been the thing the option exists to prevent.
+One function so the several readers of that switch cannot drift apart. Before
+this existed, ``windows_wheel_repair`` was read independently in the CI
+generator and in the publish CLI, each restating the default -- so a misspelled
+key or a quoted boolean left repair silently enabled, and the only symptom
+would have been the thing the option exists to prevent. The key and type
+checks that catch those now live with the ``[ci]`` schema in
+:mod:`xmsconan.build_toml`.
 """
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from xmsconan.build_toml import BuildToml
+from xmsconan.build_toml import BuildToml
 
 
-#: Every key the ``[ci]`` table accepts, mapped to the type a value must have.
-#: A key absent from here is a typo: the readers below would silently fall back
-#: to a default, which for a switch that turns work *off* means the work keeps
-#: happening.
-CI_KEY_TYPES = {
-    "windows": bool,
-    "linux": bool,
-    "linux_arm": bool,
-    "deploy": bool,
-    "coverage": bool,
-    "xvfb": bool,
-    "split_tests": bool,
-    "windows_wheel_repair": bool,
-    "test_shards": int,
-    "docker_image": str,
-    "python_versions": list,
-    "linux_python_versions": list,
-    "mac_python_versions": list,
-}
-
-
-def validate_ci_table(ci_config: dict) -> None:
-    """Reject an unknown key or a wrongly typed value in ``[ci]``.
-
-    Args:
-        ci_config: The ``[ci]`` table, possibly empty.
-
-    Raises:
-        ValueError: When ``ci_config`` is not a table, carries a key outside
-            :data:`CI_KEY_TYPES`, or gives a key a value of the wrong type.
-    """
-    if not isinstance(ci_config, dict):
-        raise ValueError(f'[ci] must be a table, got {type(ci_config).__name__}')
-
-    unknown = sorted(set(ci_config) - set(CI_KEY_TYPES))
-    if unknown:
-        raise ValueError(
-            f'[ci] has unknown key(s) {", ".join(unknown)}. '
-            f'Accepted keys: {", ".join(sorted(CI_KEY_TYPES))}.'
-        )
-
-    for key, value in ci_config.items():
-        expected = CI_KEY_TYPES[key]
-        # bool is a subclass of int, so an int-typed key must not accept True.
-        if expected is int and isinstance(value, bool):
-            raise ValueError(f'[ci].{key} must be an integer, got a boolean')
-        if not isinstance(value, expected):
-            raise ValueError(
-                f'[ci].{key} must be {expected.__name__}, got '
-                f'{type(value).__name__} ({value!r})'
-            )
-
-
-def repairs_windows_wheel(config: "BuildToml") -> bool:
+def repairs_windows_wheel(config: BuildToml) -> bool:
     """Whether the Windows wheel should be repaired for this library.
 
     The default follows ``ci_type``, because it decides who installs the wheel:

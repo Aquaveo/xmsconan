@@ -1,10 +1,10 @@
 """Tests for the build.toml reader."""
-from dataclasses import FrozenInstanceError
+from dataclasses import fields, FrozenInstanceError
 
 import pytest
 
 from xmsconan.build_toml import (
-    _load_toml, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, read_build_toml,
+    _CI_KEY_TYPES, _load_toml, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, read_build_toml,
     read_optional_build_toml, XmsDependency
 )
 
@@ -112,10 +112,57 @@ def test_toml_to_dataclass_leaves_matrix_and_filter_as_dicts():
     assert config.filter == {"build_type": "Release"}
 
 
-def test_toml_to_dataclass_rejects_a_bad_ci_key():
-    """The [ci] allowlist is applied during conversion, so no reader can skip it."""
-    with pytest.raises(ValueError, match="windows_repair_wheel"):
-        _toml_to_dataclass({"library_name": "x", "ci": {"windows_repair_wheel": True}}, "build.toml")
+def test_ci_key_types_name_every_ci_table_field():
+    """The type table and the dataclass describe the same [ci] keys.
+
+    They are two independent definitions of one schema, so either can grow a
+    key the other lacks; this is the check that they cannot drift.
+    """
+    assert set(_CI_KEY_TYPES) == {f.name for f in fields(CiTable)}
+
+
+def test_toml_to_dataclass_accepts_every_ci_key_at_its_declared_type():
+    """A [ci] table naming every key at its declared type converts cleanly."""
+    sample = {
+        key: {bool: True, int: 4, str: "image", list: ["3.13"]}[expected]
+        for key, expected in _CI_KEY_TYPES.items()
+    }
+    config = _toml_to_dataclass({"library_name": "x", "ci": sample}, "build.toml")
+    assert config.ci == CiTable(**sample)
+
+
+@pytest.mark.parametrize("table,expected", [
+    ({"window_wheel_repair": False}, r"build\.toml: \[ci\] has unknown key\(s\) window_wheel_repair"),
+    ({"windows_repair_wheel": False}, "windows_repair_wheel"),
+    ({"windows_wheel_repair": "false"}, r"build\.toml: \[ci\]\.windows_wheel_repair must be bool"),
+    ({"windows_wheel_repair": 0}, "must be bool"),
+    ({"test_shards": True}, "must be an integer"),
+    ({"docker_image": ["a"]}, "must be str"),
+    ({"python_versions": "3.13"}, "must be list"),
+], ids=[
+    "misspelled-key-transposed",
+    "misspelled-key-reordered",
+    "quoted-boolean",
+    "int-for-boolean",
+    "boolean-for-int",
+    "list-for-string",
+    "string-for-list",
+])
+def test_toml_to_dataclass_rejects_bad_ci_keys_and_types(table, expected):
+    """A typo or a quoted boolean fails at read time, naming the file.
+
+    Every case here previously read as its default. For a switch whose whole
+    purpose is to turn work *off*, the default means the work keeps happening,
+    and the only symptom is the thing the switch exists to prevent.
+    """
+    with pytest.raises(ValueError, match=expected):
+        _toml_to_dataclass({"library_name": "x", "ci": table}, "build.toml")
+
+
+def test_toml_to_dataclass_rejects_a_non_table_ci():
+    """[ci] itself has to be a table, and the error names the file."""
+    with pytest.raises(ValueError, match=r"build\.toml: \[ci\] must be a table"):
+        _toml_to_dataclass({"library_name": "x", "ci": ["windows"]}, "build.toml")
 
 
 def test_toml_to_dataclass_rejects_an_unknown_coverage_key():

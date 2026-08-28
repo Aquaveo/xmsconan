@@ -15,9 +15,6 @@ try:
 except ModuleNotFoundError:  # Python < 3.11
     from toml import loads as parse_toml_text
 
-# 3. Aquaveo modules
-from xmsconan.ci_options import validate_ci_table
-
 
 def _load_toml(toml_path):
     """Parse a TOML file.
@@ -164,7 +161,7 @@ class BuildToml:
 #: Every top-level key a build.toml may carry -- the fields of :class:`BuildToml`.
 #: A key absent from here is a typo: the readers fall back to a default, so a
 #: misspelling has no symptom until a generated artifact is not what was asked
-#: for. The sub-tables ``[ci]`` (ci_options.validate_ci_table), ``[matrix]``
+#: for. The sub-tables ``[ci]`` (_validate_ci_table), ``[matrix]``
 #: (XmsConanPackager.resolve_matrix), ``[filter]`` (build_filter.load_build_filter),
 #: ``conan_profile_variants`` and ``vs2019_dependency_overrides`` enforce the same
 #: rule for their own keys.
@@ -192,6 +189,26 @@ def _validate_top_level_keys(toml_data, toml_path):
 _COVERAGE_KEYS = frozenset(f.name for f in fields(CoverageTable))
 _XMS_DEPENDENCY_KEYS = frozenset(f.name for f in fields(XmsDependency))
 
+#: Every key the ``[ci]`` table accepts, mapped to the type a value must have.
+#: An explicit table rather than one derived from :class:`CiTable`, whose
+#: annotations carry ``Optional`` and would need unwrapping; the tests check
+#: that the two name the same keys.
+_CI_KEY_TYPES = {
+    "windows": bool,
+    "linux": bool,
+    "linux_arm": bool,
+    "deploy": bool,
+    "coverage": bool,
+    "xvfb": bool,
+    "split_tests": bool,
+    "windows_wheel_repair": bool,
+    "test_shards": int,
+    "docker_image": str,
+    "python_versions": list,
+    "linux_python_versions": list,
+    "mac_python_versions": list,
+}
+
 
 def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
     """Raise a ``ValueError`` naming ``where`` when ``table`` has a key outside ``accepted``."""
@@ -203,9 +220,26 @@ def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
         )
 
 
-def _ci_table(raw) -> CiTable:
+def _validate_ci_table(raw, toml_path) -> None:
+    """Raise a ``ValueError`` naming ``toml_path`` when ``raw`` is not a valid ``[ci]`` table."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{toml_path}: [ci] must be a table, got {type(raw).__name__}")
+    _reject_unknown_keys(raw, frozenset(_CI_KEY_TYPES), f"{toml_path}: [ci]")
+    for key, value in raw.items():
+        expected = _CI_KEY_TYPES[key]
+        # bool is a subclass of int, so an int-typed key must not accept True.
+        if expected is int and isinstance(value, bool):
+            raise ValueError(f"{toml_path}: [ci].{key} must be an integer, got a boolean")
+        if not isinstance(value, expected):
+            raise ValueError(
+                f"{toml_path}: [ci].{key} must be {expected.__name__}, got "
+                f"{type(value).__name__} ({value!r})"
+            )
+
+
+def _ci_table(raw, toml_path) -> CiTable:
     """Validate ``raw`` as a ``[ci]`` table and return it as a :class:`CiTable`."""
-    validate_ci_table(raw)
+    _validate_ci_table(raw, toml_path)
     return CiTable(**raw)
 
 
@@ -259,7 +293,7 @@ def _toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
     if not toml_data.get("library_name"):
         raise ValueError(f"{toml_path} does not define library_name")
     values = dict(toml_data)
-    values["ci"] = _ci_table(values.get("ci", {}))
+    values["ci"] = _ci_table(values.get("ci", {}), toml_path)
     values["coverage"] = _coverage_table(values.get("coverage", {}), toml_path)
     values["xms_dependencies"] = [
         _xms_dependency(entry, toml_path) for entry in values.get("xms_dependencies", [])
