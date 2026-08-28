@@ -15,7 +15,6 @@ from xmsconan.coverage_tools.coverage_generator import (
     _assert_gcovr_collected_data,
     _BuildLeg,
     _conan_cache_path,
-    DEFAULT_LEG_TIMEOUT,
     _cpp_percent_from_summary,
     _find_coverage_package,
     _find_pytest_cov_artifact,
@@ -26,6 +25,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _resolve_gcovr_filters,
     _run_coverage_builds,
     _warn_if_tracefile_empty,
+    DEFAULT_LEG_TIMEOUT,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
