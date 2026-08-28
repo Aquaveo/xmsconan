@@ -81,13 +81,6 @@ def _opt_is_truthy(value) -> bool:
     return False
 
 
-def _load_toml(toml_path: Path) -> dict:
-    """Load and validate a build.toml."""
-    data = load_toml(toml_path)
-    validate_top_level_keys(data, toml_path)
-    return data
-
-
 def _reexec_under_xvfb():
     """Re-exec the current process under xvfb-run.
 
@@ -616,14 +609,14 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             f"The specified TOML file does not exist: {toml_file_path}"
         )
 
-    toml_data = _load_toml(toml_file)
+    toml_data = load_toml(toml_file)
+    validate_top_level_keys(toml_data, toml_file)
     config = toml_to_dataclass(toml_data, toml_file)
     library_name = config.library_name
-    ci_config = toml_data.get("ci", {})
     coverage_cfg = _coverage_context(config.coverage, library_name)
     coverage_python_version = _resolve_coverage_python_version(config)
 
-    if ci_config.get("xvfb"):
+    if config.ci.xvfb:
         _reexec_under_xvfb()
 
     # 1. Generate build artifacts.
