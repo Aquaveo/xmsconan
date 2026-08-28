@@ -4,7 +4,8 @@ from dataclasses import fields, FrozenInstanceError
 import pytest
 
 from xmsconan.build_toml import (
-    BuildToml, CiTable, CoverageTable, KNOWN_KEYS, load_toml, toml_to_dataclass, XmsDependency
+    BuildToml, CiTable, CoverageTable, KNOWN_KEYS, load_toml, read_build_toml,
+    read_optional_build_toml, toml_to_dataclass, XmsDependency
 )
 
 
@@ -144,3 +145,47 @@ def test_toml_to_dataclass_rejects_malformed_xms_dependencies(entry, expected):
     """An entry the conanfile template could not render fails at conversion instead."""
     with pytest.raises(ValueError, match=expected):
         toml_to_dataclass({"library_name": "x", "xms_dependencies": [entry]}, "build.toml")
+
+
+def test_read_build_toml_returns_a_typed_config(tmp_path):
+    """One call parses, validates, and converts."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\ndescription = "Core"\n[ci]\nxvfb = true\n', encoding="utf-8"
+    )
+    config = read_build_toml(toml_file)
+    assert config == BuildToml(library_name="xmscore", description="Core", ci=CiTable(xvfb=True))
+
+
+def test_read_build_toml_rejects_an_unknown_top_level_key(tmp_path):
+    """The reader validates; load_toml alone does not."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        read_build_toml(toml_file)
+
+
+def test_read_build_toml_names_the_file_on_a_parse_error(tmp_path):
+    """A decode error says which file, not just which line."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text("library_name = \n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"could not parse .*build\.toml"):
+        read_build_toml(toml_file)
+
+
+def test_read_build_toml_raises_when_the_file_is_missing(tmp_path):
+    """The required reader does not guess; use read_optional_build_toml for that."""
+    with pytest.raises(FileNotFoundError):
+        read_build_toml(tmp_path / "build.toml")
+
+
+def test_read_optional_build_toml_returns_none_when_absent(tmp_path):
+    """A checkout with no build.toml is a normal state for the VS2019 driver."""
+    assert read_optional_build_toml(tmp_path / "build.toml") is None
+
+
+def test_read_optional_build_toml_reads_a_present_file(tmp_path):
+    """Present files go through the same reader as the required form."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    assert read_optional_build_toml(toml_file) == read_build_toml(toml_file)

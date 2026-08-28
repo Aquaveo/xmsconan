@@ -256,3 +256,34 @@ def toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
         _xms_dependency(entry, toml_path) for entry in values.get("xms_dependencies", [])
     ]
     return BuildToml(**values)
+
+
+def read_build_toml(toml_path) -> BuildToml:
+    """Read a ``build.toml`` into a :class:`BuildToml`.
+
+    Args:
+        toml_path: Path to the file, as ``str`` or ``Path``.
+
+    Returns:
+        The typed configuration with every default applied.
+
+    Raises:
+        FileNotFoundError: The file does not exist.
+        ValueError: The file does not parse, carries a key nothing knows, or is
+            missing ``library_name``. Parse errors name the file.
+    """
+    try:
+        data = load_toml(toml_path)
+    except FileNotFoundError:
+        raise
+    except ValueError as exc:
+        raise ValueError(f"could not parse {toml_path}: {exc}") from exc
+    validate_top_level_keys(data, toml_path)
+    return toml_to_dataclass(data, toml_path)
+
+
+def read_optional_build_toml(toml_path) -> Optional[BuildToml]:
+    """Like :func:`read_build_toml`, but ``None`` when the file does not exist."""
+    if not Path(toml_path).is_file():
+        return None
+    return read_build_toml(toml_path)
