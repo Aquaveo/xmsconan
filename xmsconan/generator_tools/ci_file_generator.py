@@ -231,10 +231,8 @@ def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, 
 
     if not context["ci_coverage"]:
         return
-    # Deferred: coverage_generator imports _coverage_context from this module,
-    # so importing it at module scope would close a cycle.
-    from xmsconan.coverage_tools.coverage_generator import _resolve_coverage_python_version
-    for conflict in coverage_conflicts(build_filter, _resolve_coverage_python_version(config)):
+    coverage_python_version = _resolve_coverage_python_version(config)
+    for conflict in coverage_conflicts(build_filter, coverage_python_version):
         LOGGER.warning(
             "[ci].coverage is enabled but the [filter] table %s — "
             "`xmsconan coverage` will find no configurations to build.", conflict,

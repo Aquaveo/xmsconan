@@ -94,7 +94,8 @@ def load_build_filter(config: BuildToml) -> dict:
         raise ValueError(f"Invalid [filter] table in build.toml: {e}") from e
     if build_filter:
         _reject_matrix_conflict(build_filter, config.matrix)
-        _reject_unbuildable_filter(build_filter, ci_python_versions(config), config.matrix)
+        python_versions = ci_python_versions(config)
+        _reject_unbuildable_filter(build_filter, python_versions, config.matrix)
     return build_filter
 
 

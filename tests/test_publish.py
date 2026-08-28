@@ -285,7 +285,8 @@ def test_check_xvfb_true_on_linux(mock_which, tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(read_build_toml(toml_file)) is True
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is True
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "darwin")
@@ -296,7 +297,8 @@ def test_check_xvfb_false_on_macos(tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(read_build_toml(toml_file)) is False
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is False
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
@@ -308,7 +310,8 @@ def test_check_xvfb_false_when_display_set(tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(read_build_toml(toml_file)) is False
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is False
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
@@ -317,7 +320,8 @@ def test_check_xvfb_false_when_xvfb_not_configured(tmp_path):
     """Returns False when ci.xvfb is not set."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-    assert _check_xvfb(read_build_toml(toml_file)) is False
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is False
 
 
 def test_publish_calls_conan_setup_with_login(mock_steps, tmp_path):

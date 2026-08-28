@@ -224,7 +224,8 @@ def _effects(build_filter, matrix=None, ci=None):
     if ci:
         overrides["ci"] = ci
     config = make_build_toml(**overrides)
-    return ci_filter_effects(load_build_filter(config), config)
+    build_filter = load_build_filter(config)
+    return ci_filter_effects(build_filter, config)
 
 
 @pytest.mark.parametrize("build_filter,expected", [

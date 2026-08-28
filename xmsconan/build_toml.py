@@ -25,7 +25,8 @@ def _load_toml(toml_path):
     Returns:
         The parsed document as a dict.
     """
-    return parse_toml_text(Path(toml_path).read_text(encoding="utf-8"))
+    text = Path(toml_path).read_text(encoding="utf-8")
+    return parse_toml_text(text)
 
 
 _DEFAULT_COVERAGE_EXCLUDES = (r".*\.t\.h$", r".*/_package/tests/.*")
