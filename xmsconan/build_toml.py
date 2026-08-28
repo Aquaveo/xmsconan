@@ -106,6 +106,7 @@ class CoverageTable:
     python_threshold: float = 0.0
     filters: Optional[list] = None
     excludes: list = field(default_factory=lambda: list(_DEFAULT_COVERAGE_EXCLUDES))
+    parallel: bool = True
     python_version: Optional[str] = None
 
 
@@ -263,6 +264,13 @@ def _coverage_table(raw, toml_path) -> CoverageTable:
             raise ValueError(
                 f"{toml_path}: [coverage].{key} must be a list, got {type(values[key]).__name__}"
             )
+    if "parallel" in values and not isinstance(values["parallel"], bool):
+        # A quoted `parallel = "false"` is a non-empty string, so it would read
+        # as true and keep overlapping the very builds it was written to separate.
+        raise ValueError(
+            f"{toml_path}: [coverage].parallel must be true or false, "
+            f"got {values['parallel']!r}"
+        )
     python_version = values.get("python_version")
     if python_version is not None and not isinstance(python_version, str):
         # An unquoted `python_version = 3.10` is the TOML float 3.1; coercing it

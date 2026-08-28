@@ -76,6 +76,7 @@ def test_coverage_table_defaults():
     assert coverage.python_threshold == 0.0
     assert coverage.filters is None
     assert coverage.excludes == [r".*\.t\.h$", r".*/_package/tests/.*"]
+    assert coverage.parallel is True
     assert coverage.python_version is None
 
 
@@ -198,6 +199,12 @@ def test_toml_to_dataclass_rejects_a_scalar_coverage_pattern_list(key):
     """A lone string would be iterated character by character into gcovr patterns."""
     with pytest.raises(ValueError, match=rf"\[coverage\]\.{key} must be a list"):
         _toml_to_dataclass({"library_name": "x", "coverage": {key: "xmscore/"}}, "build.toml")
+
+
+def test_toml_to_dataclass_rejects_a_non_boolean_parallel():
+    """A quoted "false" is truthy, so it would keep the overlap it was written to stop."""
+    with pytest.raises(ValueError, match=r"\[coverage\]\.parallel must be true or false"):
+        _toml_to_dataclass({"library_name": "x", "coverage": {"parallel": "false"}}, "build.toml")
 
 
 def test_toml_to_dataclass_rejects_an_unquoted_coverage_python_version():

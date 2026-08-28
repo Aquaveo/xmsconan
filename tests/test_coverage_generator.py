@@ -82,6 +82,14 @@ class TestCoverageContextDefaults:
         assert ctx["cpp_threshold"] == 70.0
         assert ctx["python_threshold"] == 65.0
 
+    def test_parallel_defaults_on(self):
+        """The two coverage builds overlap unless the library opts out."""
+        assert _coverage_context(CoverageTable(), "xmscore")["parallel"] is True
+
+    def test_parallel_can_be_disabled(self):
+        """[coverage].parallel = false puts the builds back in sequence."""
+        assert _coverage_context(CoverageTable(parallel=False), "xmscore")["parallel"] is False
+
 
 class TestPercentExtraction:
     """JSON summary parsing for both layers."""

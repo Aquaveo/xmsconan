@@ -191,6 +191,13 @@ def _coverage_context(coverage: CoverageTable, library_name: str) -> dict:
         "python_threshold": coverage.python_threshold,
         "filters": list(coverage.filters if coverage.filters is not None else default_filters),
         "excludes": list(coverage.excludes),
+        # The C++ and Python halves of a coverage run are two independent
+        # `conan create`s that share only the report step, so they overlap by
+        # default -- the run costs about as long as its slower half instead of
+        # the sum. Set false where that is not safe: a shared Conan cache under
+        # heavy concurrent use, or an xvfb library whose image tests do not
+        # tolerate a second client on the same display.
+        "parallel": coverage.parallel,
     }
 
 
