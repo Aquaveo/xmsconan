@@ -194,6 +194,7 @@ _XMS_DEPENDENCY_KEYS = frozenset(f.name for f in fields(XmsDependency))
 
 
 def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
+    """Raise a ``ValueError`` naming ``where`` when ``table`` has a key outside ``accepted``."""
     unknown = sorted(set(table) - accepted)
     if unknown:
         raise ValueError(
@@ -203,18 +204,25 @@ def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
 
 
 def _ci_table(raw) -> CiTable:
+    """Validate ``raw`` as a ``[ci]`` table and return it as a :class:`CiTable`."""
     validate_ci_table(raw)
     return CiTable(**raw)
 
 
 def _coverage_table(raw, toml_path) -> CoverageTable:
+    """Validate ``raw`` as a ``[coverage]`` table and return it as a :class:`CoverageTable`."""
     if not isinstance(raw, dict):
         raise ValueError(f"{toml_path}: [coverage] must be a table, got {type(raw).__name__}")
     _reject_unknown_keys(raw, _COVERAGE_KEYS, f"{toml_path}: [coverage]")
     values = dict(raw)
     for key in ("cpp_threshold", "python_threshold"):
         if key in values:
-            values[key] = float(values[key])
+            try:
+                values[key] = float(values[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{toml_path}: [coverage].{key} must be a number, got {values[key]!r}"
+                ) from exc
     if values.get("python_version") is not None:
         # An unquoted `python_version = 3.13` is a TOML float; every consumer
         # wants the "X.Y" string.
@@ -223,6 +231,7 @@ def _coverage_table(raw, toml_path) -> CoverageTable:
 
 
 def _xms_dependency(entry, toml_path) -> XmsDependency:
+    """Validate one ``xms_dependencies`` entry and return it as an :class:`XmsDependency`."""
     where = f"{toml_path}: xms_dependencies entry"
     if not isinstance(entry, dict):
         raise ValueError(f"{where} {entry!r} must be a table with name and version")
@@ -274,8 +283,6 @@ def read_build_toml(toml_path) -> BuildToml:
     """
     try:
         data = _load_toml(toml_path)
-    except FileNotFoundError:
-        raise
     except ValueError as exc:
         raise ValueError(f"could not parse {toml_path}: {exc}") from exc
     _validate_top_level_keys(data, toml_path)

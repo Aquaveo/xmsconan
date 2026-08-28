@@ -130,6 +130,12 @@ def test_toml_to_dataclass_rejects_a_non_table_coverage():
         _toml_to_dataclass({"library_name": "x", "coverage": 80}, "build.toml")
 
 
+def test_toml_to_dataclass_names_a_non_numeric_threshold():
+    """A threshold that is not a number is reported with its file and key."""
+    with pytest.raises(ValueError, match=r"build\.toml: \[coverage\]\.cpp_threshold must be a number"):
+        _toml_to_dataclass({"library_name": "x", "coverage": {"cpp_threshold": "80%"}}, "build.toml")
+
+
 @pytest.mark.parametrize("entry,expected", [
     pytest.param("xmscore/7.0.0", "must be a table", id="string-entry"),
     pytest.param({"name": "xmscore"}, "requires name and version", id="missing-version"),

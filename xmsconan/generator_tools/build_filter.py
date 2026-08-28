@@ -14,6 +14,9 @@ where it is applied before any ``--filter`` given on the command line (the two
 AND together). ``xmsconan ci`` reads the same table so the generated pipeline
 does not emit steps the filter has made unbuildable.
 """
+# 1. Standard python modules
+from typing import Optional
+
 # 3. Aquaveo modules
 from xmsconan.build_toml import BuildToml
 from xmsconan.constants import version_sort_key
@@ -105,7 +108,7 @@ def load_build_filter(config: BuildToml) -> dict:
 CI_PYTHON_VERSION_KEYS = ("python_versions", "linux_python_versions", "mac_python_versions")
 
 
-def ci_python_versions(config: BuildToml) -> list:
+def ci_python_versions(config: BuildToml) -> Optional[list]:
     """The Python versions the pybind fan-out covers for this ``build.toml``."""
     versions = set()
     for key in CI_PYTHON_VERSION_KEYS:

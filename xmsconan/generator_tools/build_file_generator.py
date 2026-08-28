@@ -203,7 +203,6 @@ def render_template_with_toml(
     if not template_dir.exists() or not template_dir.is_dir():
         raise FileNotFoundError(f"The specified template directory does not exist: {template_dir}")
 
-    # Parse and validate the TOML file
     config = read_build_toml(toml_file)
     # Validated here rather than only where it is consumed: this function writes
     # [matrix] verbatim into the generated conanfile.py, so a caller that renders
@@ -211,7 +210,7 @@ def render_template_with_toml(
     # artifact from unvalidated input. XmsConanPackager owns the vocabulary.
     XmsConanPackager.resolve_matrix(config.matrix)
     _validate_vocabularies(config, toml_file)
-    toml_data = _render_context(config, version)
+    context = _render_context(config, version)
 
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +238,7 @@ def render_template_with_toml(
 
         # Render the template with the TOML data
         try:
-            rendered_content = template.render(toml_data)
+            rendered_content = template.render(context)
         except UndefinedError as e:
             raise ValueError(f'Missing field in build.toml: {e}.') from e
 

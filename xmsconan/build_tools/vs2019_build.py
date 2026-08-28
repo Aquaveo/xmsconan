@@ -635,9 +635,9 @@ def _library_build_toml(library_dir: str):
         the file is absent.
 
     Raises:
-        ValueError: When the file exists but does not parse or validate; the
-            message names the file so the CLI's ``ValueError`` handler does not
-            blame a flag.
+        ValueError: When the file exists but does not parse or validate.
+            Parse errors name the file so the CLI's ``ValueError`` handler
+            does not blame a flag.
     """
     return read_optional_build_toml(os.path.join(library_dir, "build.toml"))
 
