@@ -17,7 +17,7 @@ from xmsconan.build_toml import (
     toml_to_dataclass,
     validate_top_level_keys,
 )
-from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
+from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
     ci_filter_effects,
@@ -271,29 +271,17 @@ def generate_ci(
 
     # Parse the TOML file
     toml_data = load_toml(toml_file)
-    # Third entry point reading this file with .get(), and the last one that
-    # was not validating. Without this, `xmsconan ci` emits a pipeline from a
-    # build.toml that `xmsconan gen` and `xmsconan profiles` both reject, and
-    # the committed CI keeps whatever defaults the typo produced.
     validate_top_level_keys(toml_data, toml_file)
     config = toml_to_dataclass(toml_data, toml_file)
 
-    ci_type = toml_data.get("ci_type")
+    ci_type = config.ci_type
     if not ci_type:
         raise ValueError("build.toml must include a 'ci_type' key ('github' or 'gitlab')")
     if ci_type not in ("github", "gitlab"):
         raise ValueError(f"ci_type must be 'github' or 'gitlab', got '{ci_type}'")
 
-    library_name = toml_data["library_name"]
+    library_name = config.library_name
     display = _display_name(library_name)
-
-    # CI-specific options (for GitLab conditional sections)
-    ci_config = toml_data.get("ci", {})
-
-    # A misspelled key or a quoted boolean here is otherwise invisible: the
-    # reader falls back to a default, and for a switch that turns work off the
-    # work simply keeps happening.
-    validate_ci_table(ci_config)
 
     # A GitLab pipeline with neither platform builds nothing, and coverage runs
     # only under gcc.  Reject the impossible combinations here rather than
@@ -302,12 +290,12 @@ def generate_ci(
     # job, Windows in place inside its build job -- so a Windows-only pipeline
     # publishes wheels and only the coverage rule below still needs Linux.
     if ci_type == "gitlab":
-        if not ci_config.get("linux", True) and not ci_config.get("windows", True):
+        if not config.ci.linux_enabled and not config.ci.windows_enabled:
             raise ValueError(
                 "build.toml sets both [ci].linux and [ci].windows to false, "
                 "which would generate a pipeline with nothing to build."
             )
-        if ci_config.get("coverage", False) and not ci_config.get("linux", True):
+        if config.ci.coverage and not config.ci.linux_enabled:
             raise ValueError(
                 "build.toml sets [ci].coverage = true with [ci].linux = false. "
                 "Coverage builds with --coverage under gcc; the generated "
@@ -322,7 +310,7 @@ def generate_ci(
         # dies in build.py with "no complete set of wheels was extracted". The
         # Debug leg that could have produced one never stages it. Same class of
         # check as the two above.
-        pybind_build_types = toml_data.get("matrix", {}).get("pybind_build_types")
+        pybind_build_types = config.matrix.get("pybind_build_types")
         if pybind_build_types and "Release" not in pybind_build_types:
             raise ValueError(
                 f"build.toml sets [matrix].pybind_build_types = "
@@ -337,7 +325,7 @@ def generate_ci(
     # generation time. Warn on any explicit setting, not just false: setting
     # one to true is equally inert and equally worth knowing.
     if ci_type == "github":
-        ignored = [key for key in ("linux", "windows") if key in ci_config]
+        ignored = [key for key in ("linux", "windows") if getattr(config.ci, key) is not None]
         if ignored:
             LOGGER.warning(
                 "build.toml sets %s, but %s GitLab-only; the generated GitHub "
@@ -347,7 +335,7 @@ def generate_ci(
                 "them" if len(ignored) > 1 else "it",
             )
 
-    ci_python_versions = list(ci_config.get("python_versions", ["3.13"]))
+    ci_python_versions = list(config.ci.python_versions)
     ci_mac_python_versions = _platform_python_versions(config.ci, "mac", ci_python_versions)
     ci_linux_python_versions = _platform_python_versions(config.ci, "linux", ci_python_versions)
 
@@ -365,8 +353,8 @@ def generate_ci(
 
     # This guard is about the Linux fan-out, so it is moot when Linux is
     # switched off entirely -- the list is inert in that case.
-    gitlab_split_tests = ci_type == "gitlab" and ci_config.get("split_tests", False)
-    linux_enabled = ci_config.get("linux", True)
+    gitlab_split_tests = ci_type == "gitlab" and config.ci.split_tests
+    linux_enabled = config.ci.linux_enabled
     if gitlab_split_tests and linux_enabled and len(ci_linux_python_versions) > 1:
         raise ValueError(
             "build.toml combines [ci].split_tests with more than one "
@@ -389,20 +377,20 @@ def generate_ci(
         "library_name": library_name,
         "display_name": display,
         "version": version,
-        "python_namespaced_dir": toml_data.get("python_namespaced_dir", library_name[3:]),
-        "ci_windows": ci_config.get("windows", True),
+        "python_namespaced_dir": config.python_namespaced_dir,
+        "ci_windows": config.ci.windows_enabled,
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
         # installable, so there is no equivalent switch for Linux or macOS. The
         # default follows ci_type -- see repairs_windows_wheel.
         "ci_windows_wheel_repair": repairs_windows_wheel(config),
-        "ci_linux": ci_config.get("linux", True),
-        "ci_deploy": ci_config.get("deploy", True),
-        "ci_coverage": ci_config.get("coverage", False),
-        "ci_xvfb": ci_config.get("xvfb", False),
-        "ci_linux_arm": ci_config.get("linux_arm", False),
-        "docker_image": ci_config.get("docker_image", ""),
-        "ci_split_tests": ci_config.get("split_tests", False),
-        "ci_test_shards": ci_config.get("test_shards", 0),
+        "ci_linux": config.ci.linux_enabled,
+        "ci_deploy": config.ci.deploy,
+        "ci_coverage": config.ci.coverage,
+        "ci_xvfb": config.ci.xvfb,
+        "ci_linux_arm": config.ci.linux_arm,
+        "docker_image": config.ci.docker_image,
+        "ci_split_tests": config.ci.split_tests,
+        "ci_test_shards": config.ci.test_shards,
         "ci_python_versions": ci_python_versions,
         "ci_mac_python_versions": ci_mac_python_versions,
         "ci_linux_python_versions": ci_linux_python_versions,
