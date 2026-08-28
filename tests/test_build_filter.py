@@ -1,6 +1,7 @@
 """Tests for generator_tools.build_filter."""
 import pytest
 
+from xmsconan.build_toml import BuildToml, CiTable
 from xmsconan.generator_tools.build_filter import (
     ci_filter_effects,
     CI_JOB_SETTINGS,
@@ -11,7 +12,6 @@ from xmsconan.generator_tools.build_filter import (
     load_build_filter,
 )
 from xmsconan.package_tools.packager import configurations
-from .utils import make_build_toml
 
 
 # --- load_build_filter ---
@@ -19,20 +19,20 @@ from .utils import make_build_toml
 
 def test_load_build_filter_defaults_to_empty():
     """A build.toml with no [filter] table yields no restriction."""
-    config = make_build_toml()
+    config = BuildToml(library_name="xmscore")
     assert load_build_filter(config) == {}
 
 
 def test_load_build_filter_returns_table():
     """A valid table comes back as-is."""
     build_filter = {"build_type": "Release", "options": {"pybind": False}}
-    config = make_build_toml(filter=build_filter)
+    config = BuildToml(library_name="xmscore", filter=build_filter)
     assert load_build_filter(config) == build_filter
 
 
 def test_load_build_filter_reports_build_toml_context():
     """Validation errors name build.toml so the fix location is obvious."""
-    config = make_build_toml(filter={"pybind": True})
+    config = BuildToml(library_name="xmscore", filter={"pybind": True})
     with pytest.raises(ValueError, match=r"Invalid \[filter\] table in build.toml"):
         load_build_filter(config)
 
@@ -44,7 +44,7 @@ def test_load_build_filter_rejects_filter_matching_nothing():
     filter empties the matrix on every platform — previously that surfaced only
     as an exit-1 from every CI leg, after the workflow had been committed.
     """
-    config = make_build_toml(filter={"options": {"testing": True, "pybind": True}})
+    config = BuildToml(library_name="xmscore", filter={"options": {"testing": True, "pybind": True}})
     with pytest.raises(ValueError, match="matches no configuration on any platform"):
         load_build_filter(config)
 
@@ -55,15 +55,16 @@ def test_load_build_filter_rejects_python_version_outside_ci_versions():
     The matrix stays non-empty (every non-pybind configuration survives), so
     only the pybind-specific check catches this one.
     """
-    config = make_build_toml(filter={"options": {"python_version": "3.9"}})
+    config = BuildToml(library_name="xmscore", filter={"options": {"python_version": "3.9"}})
     with pytest.raises(ValueError, match="matches no pybind configuration"):
         load_build_filter(config)
 
 
 def test_load_build_filter_accepts_python_version_from_ci_config():
     """A pin that [ci].python_versions does build is accepted."""
-    config = make_build_toml(
-        ci={"python_versions": ["3.10", "3.13"]},
+    config = BuildToml(
+        library_name="xmscore",
+        ci=CiTable(python_versions=["3.10", "3.13"]),
         filter={"options": {"python_version": "3.10"}},
     )
     assert load_build_filter(config) == {"options": {"python_version": "3.10"}}
@@ -123,14 +124,14 @@ def test_load_build_filter_accepts_a_buildenv_pin():
     rejected every buildenv pin, making a documented feature unusable.
     """
     for name in ("XMS_VERSION", "XMS_COVERAGE", "XMS_TEST_ARTIFACTS_LABEL"):
-        config = make_build_toml(filter={"buildenv": {name: "1"}})
+        config = BuildToml(library_name="xmscore", filter={"buildenv": {name: "1"}})
 
         assert load_build_filter(config) == {"buildenv": {name: "1"}}
 
 
 def test_load_build_filter_still_rejects_settings_beside_a_buildenv_pin():
     """Skipping buildenv must not smuggle an impossible options table past the check."""
-    config = make_build_toml(filter={
+    config = BuildToml(library_name="xmscore", filter={
         "buildenv": {"XMS_VERSION": "1"},
         "options": {"testing": True, "pybind": True},
     })
@@ -145,7 +146,8 @@ def test_load_build_filter_rejects_a_runtime_matrix_excludes():
     compiler.runtime is Windows-only, so the all-platforms emptiness check can't
     see this: the pin is a no-op on Linux and macOS, which stay non-empty.
     """
-    config = make_build_toml(
+    config = BuildToml(
+        library_name="xmscore",
         matrix={"compiler_runtime": ["dynamic"]},
         filter={"compiler.runtime": "static"},
     )
@@ -156,7 +158,8 @@ def test_load_build_filter_rejects_a_runtime_matrix_excludes():
 
 def test_load_build_filter_accepts_a_runtime_the_matrix_keeps():
     """The same pin is fine when [matrix] still builds it."""
-    config = make_build_toml(
+    config = BuildToml(
+        library_name="xmscore",
         matrix={"compiler_runtime": ["dynamic", "static"]},
         filter={"compiler.runtime": "static"},
     )
@@ -173,11 +176,12 @@ def test_load_build_filter_checks_the_filter_against_the_narrowed_matrix():
     """
     debug_pybind = {"build_type": "Debug", "options": {"pybind": True}}
 
-    narrowed = make_build_toml(filter=debug_pybind)
+    narrowed = BuildToml(library_name="xmscore", filter=debug_pybind)
     with pytest.raises(ValueError, match="matches no configuration"):
         load_build_filter(narrowed)
 
-    widened = make_build_toml(
+    widened = BuildToml(
+        library_name="xmscore",
         matrix={"pybind_build_types": ["Release", "Debug"]},
         filter=debug_pybind,
     )
@@ -186,8 +190,8 @@ def test_load_build_filter_checks_the_filter_against_the_narrowed_matrix():
 
 def test_ci_python_versions_defaults_to_the_packager_default():
     """With no [ci] table the union is the one version the packager builds anyway."""
-    absent = make_build_toml()
-    explicit = make_build_toml(ci={"python_versions": ["3.13"]})
+    absent = BuildToml(library_name="xmscore")
+    explicit = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.13"]))
     assert ci_python_versions(absent) == ["3.13"]
     assert ci_python_versions(explicit) == ["3.13"]
 
@@ -198,11 +202,11 @@ def test_ci_python_versions_unions_the_per_platform_keys():
     linux_python_versions and mac_python_versions override python_versions for
     their platform, so a version named only there is still built.
     """
-    config = make_build_toml(ci={
-        "python_versions": ["3.13"],
-        "linux_python_versions": ["3.14"],
-        "mac_python_versions": ["3.9"],
-    })
+    config = BuildToml(library_name="xmscore", ci=CiTable(
+        python_versions=["3.13"],
+        linux_python_versions=["3.14"],
+        mac_python_versions=["3.9"],
+    ))
 
     assert ci_python_versions(config) == ["3.9", "3.13", "3.14"]
 
@@ -213,8 +217,9 @@ def test_load_build_filter_accepts_python_version_from_a_platform_key():
     Validating against [ci].python_versions alone would fail `xmsconan gen` on a
     build.toml whose Linux legs really do build that ABI.
     """
-    config = make_build_toml(
-        ci={"python_versions": ["3.13"], "linux_python_versions": ["3.13", "3.14"]},
+    config = BuildToml(
+        library_name="xmscore",
+        ci=CiTable(python_versions=["3.13"], linux_python_versions=["3.13", "3.14"]),
         filter={"options": {"python_version": "3.14"}},
     )
 
@@ -224,14 +229,9 @@ def test_load_build_filter_accepts_python_version_from_a_platform_key():
 # --- ci_filter_effects ---
 
 
-def _effects(build_filter, matrix=None, ci=None):
+def _effects(build_filter, matrix=None):
     """Measure a filter the way generate_ci does, through load_build_filter."""
-    overrides = {"filter": build_filter}
-    if matrix:
-        overrides["matrix"] = matrix
-    if ci:
-        overrides["ci"] = ci
-    config = make_build_toml(**overrides)
+    config = BuildToml(library_name="xmscore", filter=build_filter, matrix=matrix or {})
     build_filter = load_build_filter(config)
     return ci_filter_effects(build_filter, config)
 

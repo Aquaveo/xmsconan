@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from xmsconan.build_toml import BuildToml, CiTable, CoverageTable
 from xmsconan.coverage_tools.coverage_generator import (
     _append_github_summary,
     _assert_gcovr_collected_data,
@@ -25,7 +26,6 @@ from xmsconan.coverage_tools.coverage_generator import (
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
-from .utils import make_build_toml
 
 
 #: Scoping a caplog capture to this logger keeps an unrelated library's warning
@@ -45,13 +45,13 @@ class TestCoverageContextDefaults:
 
     def test_thresholds_default_to_zero(self):
         """Both thresholds default to 0 (report-only mode)."""
-        ctx = _coverage_context(make_build_toml().coverage, "xmscore")
+        ctx = _coverage_context(CoverageTable(), "xmscore")
         assert ctx["cpp_threshold"] == 0.0
         assert ctx["python_threshold"] == 0.0
 
     def test_filters_default_to_library_prefix(self):
         """The default gcovr filter scopes to the library's own source tree."""
-        ctx = _coverage_context(make_build_toml().coverage, "xmsgrid")
+        ctx = _coverage_context(CoverageTable(), "xmsgrid")
         assert ctx["filters"] == ["xmsgrid/"]
 
     def test_excludes_baked_in_when_absent(self):
@@ -63,7 +63,7 @@ class TestCoverageContextDefaults:
         and merged in now, so excluding it would collect the binding layer's
         coverage and then throw it away.
         """
-        ctx = _coverage_context(make_build_toml().coverage, "xmsgrid")
+        ctx = _coverage_context(CoverageTable(), "xmsgrid")
         excludes = ctx["excludes"]
         assert any(r".*\.t\.h$" in e for e in excludes)
         assert any("_package/tests" in e for e in excludes)
@@ -71,13 +71,13 @@ class TestCoverageContextDefaults:
 
     def test_user_supplied_filters_win(self):
         """User-supplied filters replace the defaults entirely."""
-        config = make_build_toml(coverage={"filters": ["only/"]})
+        config = BuildToml(library_name="xmscore", coverage=CoverageTable(filters=["only/"]))
         ctx = _coverage_context(config.coverage, "xmsgrid")
         assert ctx["filters"] == ["only/"]
 
     def test_user_supplied_thresholds_win(self):
-        """User-supplied thresholds replace the defaults and are coerced to float."""
-        config = make_build_toml(coverage={"cpp_threshold": 70, "python_threshold": 65})
+        """User-supplied thresholds replace the defaults."""
+        config = BuildToml(library_name="xmscore", coverage=CoverageTable(cpp_threshold=70.0, python_threshold=65.0))
         ctx = _coverage_context(config.coverage, "xmsgrid")
         assert ctx["cpp_threshold"] == 70.0
         assert ctx["python_threshold"] == 65.0
@@ -370,30 +370,31 @@ class TestResolveCoveragePythonVersion:
 
     def test_defaults_to_3_13_when_no_ci_python_versions(self):
         """An empty toml falls back to the global default ABI."""
-        config = make_build_toml()
+        config = BuildToml(library_name="xmscore")
         assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_uses_highest_ci_python_versions(self):
         """Highest entry in [ci].python_versions wins by (major, minor)."""
-        config = make_build_toml(ci={"python_versions": ["3.10", "3.13"]})
+        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.10", "3.13"]))
         assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_handles_list_order_independence(self):
         """Order in [ci].python_versions doesn't matter."""
-        config = make_build_toml(ci={"python_versions": ["3.13", "3.10"]})
+        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.13", "3.10"]))
         assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_explicit_coverage_python_version_overrides(self):
         """[coverage].python_version overrides the [ci].python_versions default."""
-        config = make_build_toml(
-            ci={"python_versions": ["3.13"]},
-            coverage={"python_version": "3.10"},
+        config = BuildToml(
+            library_name="xmscore",
+            ci=CiTable(python_versions=["3.13"]),
+            coverage=CoverageTable(python_version="3.10"),
         )
         assert _resolve_coverage_python_version(config) == "3.10"
 
     def test_empty_ci_python_versions_falls_back(self):
         """An empty list in [ci] is treated like the key was missing."""
-        config = make_build_toml(ci={"python_versions": []})
+        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=[]))
         assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_rejects_a_coverage_python_version_the_recipe_does_not_allow(self):
@@ -404,7 +405,7 @@ class TestResolveCoveragePythonVersion:
         image name and PYTHON_TARGET_VERSION unchecked and only failed at conan
         configure time, inside the build, attributed to the wrong thing.
         """
-        config = make_build_toml(coverage={"python_version": "3.11"})
+        config = BuildToml(library_name="xmscore", coverage=CoverageTable(python_version="3.11"))
         with pytest.raises(ValueError, match="python_version option does not allow"):
             _resolve_coverage_python_version(config)
 
@@ -416,7 +417,7 @@ class TestResolveCoveragePythonVersion:
         only for comparison, so without a coercion here the float reaches
         subprocess's env, which rejects non-str values with a bare TypeError.
         """
-        config = make_build_toml(ci={"linux_python_versions": [3.14]})
+        config = BuildToml(library_name="xmscore", ci=CiTable(linux_python_versions=[3.14]))
         resolved = _resolve_coverage_python_version(config)
         assert resolved == "3.14"
         assert isinstance(resolved, str), f"resolver returned {type(resolved).__name__}"

@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from .utils import make_build_toml, patch_env
+from .utils import patch_env
 
 WINDOWS = os.name == 'nt'
 
@@ -95,10 +95,3 @@ def test_no_args_is_valid():
     """patch_env() with no arguments is a valid no-op patch."""
     with patch_env():
         pass
-
-
-def test_make_build_toml_applies_overrides():
-    """The factory goes through the real converter."""
-    config = make_build_toml(ci={"xvfb": True})
-    assert config.library_name == "xmscore"
-    assert config.ci.xvfb is True

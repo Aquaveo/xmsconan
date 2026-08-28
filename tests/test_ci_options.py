@@ -1,8 +1,8 @@
 """Tests for the Windows wheel-repair decision."""
 import pytest
 
+from xmsconan.build_toml import BuildToml, CiTable
 from xmsconan.ci_options import repairs_windows_wheel
-from .utils import make_build_toml
 
 
 # --- repairs_windows_wheel ----------------------------------------------
@@ -24,7 +24,7 @@ def test_default_follows_ci_type(ci_type, expected):
     A flat default is wrong in one direction or the other, and both directions
     change what an existing repo publishes on its next tag.
     """
-    config = make_build_toml(ci_type=ci_type)
+    config = BuildToml(library_name="xmscore", ci_type=ci_type)
     assert repairs_windows_wheel(config) is expected
 
 
@@ -32,11 +32,11 @@ def test_default_follows_ci_type(ci_type, expected):
 @pytest.mark.parametrize("explicit", [True, False])
 def test_explicit_value_overrides_the_default(ci_type, explicit):
     """An explicit key wins on either host."""
-    config = make_build_toml(ci_type=ci_type, ci={"windows_wheel_repair": explicit})
+    config = BuildToml(library_name="xmscore", ci_type=ci_type, ci=CiTable(windows_wheel_repair=explicit))
     assert repairs_windows_wheel(config) is explicit
 
 
 def test_unknown_ci_type_repairs():
     """An unrecognized (or absent) ci_type keeps the safer, DLL-bundling default."""
-    config = make_build_toml()
+    config = BuildToml(library_name="xmscore")
     assert repairs_windows_wheel(config) is True
