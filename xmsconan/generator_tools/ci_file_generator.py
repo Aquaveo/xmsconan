@@ -9,7 +9,14 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import (
+    BuildToml,
+    CiTable,
+    CoverageTable,
+    load_toml,
+    toml_to_dataclass,
+    validate_top_level_keys,
+)
 from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
@@ -82,7 +89,7 @@ def _job_name_py(platform_python_versions: list) -> str:
     return ""
 
 
-def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions: list) -> list:
+def _platform_python_versions(ci: CiTable, platform: str, ci_python_versions: list) -> list:
     """Resolve the Python fan-out for one non-Windows platform.
 
     ``[ci].python_versions`` fans out Windows only, because Windows is the
@@ -102,7 +109,7 @@ def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions
     Defaults to the single highest entry of ``ci_python_versions``, which is
     the behavior these platforms had when the version was hardcoded.
     """
-    configured = ci_config.get(f"{platform}_python_versions")
+    configured = getattr(ci, f"{platform}_python_versions")
     if configured:
         return list(configured)
     return [max(ci_python_versions, key=version_sort_key)]
@@ -139,7 +146,7 @@ def _unsupported_python_versions(versions) -> list:
 _DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
 
 
-def _resolve_coverage_python_version(toml_data: dict) -> str:
+def _resolve_coverage_python_version(config: BuildToml) -> str:
     """Pick the single python_version the coverage build should pin to.
 
     Precedence: ``[coverage].python_version`` (explicit opt-in) > highest
@@ -160,24 +167,21 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
             check in :func:`generate_ci`, but coverage reads this key directly
             and so never reaches it.
     """
-    coverage_cfg = toml_data.get("coverage", {})
-    explicit = coverage_cfg.get("python_version")
+    explicit = config.coverage.python_version
     if explicit:
-        resolved = str(explicit)
-        if _unsupported_python_versions([resolved]):
+        if _unsupported_python_versions([explicit]):
             raise ValueError(
-                f"build.toml [coverage].python_version names Python {resolved}, "
+                f"build.toml [coverage].python_version names Python {explicit}, "
                 f"which the conanfile's python_version option does not allow "
                 f"(supported: {', '.join(SUPPORTED_PYTHON_VERSIONS)}). The [ci] "
                 "version lists are checked for this, but the coverage run reads "
                 "this key directly, so an unsupported value here would surface "
                 "much later as a conan configure error inside the build."
             )
-        return resolved
-    ci_config = toml_data.get("ci", {})
+        return explicit
     linux_versions = _platform_python_versions(
-        ci_config, "linux",
-        list(ci_config.get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
+        config.ci, "linux",
+        list(config.ci.python_versions or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
     )
     # str() because the fallback returns an element of the TOML list verbatim,
     # and an unquoted `linux_python_versions = [3.14]` puts a float there.
@@ -186,23 +190,14 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
     return str(max(linux_versions, key=version_sort_key))
 
 
-def _coverage_context(coverage_config: dict, library_name: str) -> dict:
-    """Build the coverage template context, applying sensible defaults."""
+def _coverage_context(coverage: CoverageTable, library_name: str) -> dict:
+    """Build the coverage template context, applying the library-dependent default."""
     default_filters = [f"{library_name}/"]
-    # The binding directory is NOT excluded. It used to be, because only the
-    # testing build was read and that build does not compile the bindings --
-    # so the exclude removed nothing that existed. Now that the pybind build is
-    # instrumented and merged in, excluding it would collect the binding
-    # layer's coverage and then discard it.
-    default_excludes = [
-        r".*\.t\.h$",
-        r".*/_package/tests/.*",
-    ]
     return {
-        "cpp_threshold": float(coverage_config.get("cpp_threshold", 0)),
-        "python_threshold": float(coverage_config.get("python_threshold", 0)),
-        "filters": list(coverage_config.get("filters", default_filters)),
-        "excludes": list(coverage_config.get("excludes", default_excludes)),
+        "cpp_threshold": coverage.cpp_threshold,
+        "python_threshold": coverage.python_threshold,
+        "filters": list(coverage.filters if coverage.filters is not None else default_filters),
+        "excludes": list(coverage.excludes),
     }
 
 
@@ -227,7 +222,7 @@ def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
     return jobs
 
 
-def _warn_filter_conflicts(build_filter: dict, toml_data: dict, ci_type: str, context: dict) -> None:
+def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, context: dict) -> None:
     """Warn about pipelines the ``[filter]`` table leaves unbuildable.
 
     Emptying a job is only reported, never fixed: the platform fan-out lives in
@@ -246,7 +241,7 @@ def _warn_filter_conflicts(build_filter: dict, toml_data: dict, ci_type: str, co
     # Deferred: coverage_generator imports _coverage_context from this module,
     # so importing it at module scope would close a cycle.
     from xmsconan.coverage_tools.coverage_generator import _resolve_coverage_python_version
-    for conflict in coverage_conflicts(build_filter, _resolve_coverage_python_version(toml_data)):
+    for conflict in coverage_conflicts(build_filter, _resolve_coverage_python_version(config)):
         LOGGER.warning(
             "[ci].coverage is enabled but the [filter] table %s — "
             "`xmsconan coverage` will find no configurations to build.", conflict,
@@ -353,8 +348,8 @@ def generate_ci(
             )
 
     ci_python_versions = list(ci_config.get("python_versions", ["3.13"]))
-    ci_mac_python_versions = _platform_python_versions(ci_config, "mac", ci_python_versions)
-    ci_linux_python_versions = _platform_python_versions(ci_config, "linux", ci_python_versions)
+    ci_mac_python_versions = _platform_python_versions(config.ci, "mac", ci_python_versions)
+    ci_linux_python_versions = _platform_python_versions(config.ci, "linux", ci_python_versions)
 
     for key, versions in (("python_versions", ci_python_versions),
                           ("mac_python_versions", ci_mac_python_versions),
@@ -381,7 +376,6 @@ def generate_ci(
             "linux_python_versions to a single entry."
         )
 
-    coverage_config = toml_data.get("coverage", {})
     build_filter = load_build_filter(config)
     # One measurement of the filter against the real matrix, feeding both the
     # build_type axis and the wheel-step gate below.
@@ -425,8 +419,8 @@ def generate_ci(
         ),
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
-        "coverage": _coverage_context(coverage_config, library_name),
-        "coverage_python_version": _resolve_coverage_python_version(toml_data),
+        "coverage": _coverage_context(config.coverage, library_name),
+        "coverage_python_version": _resolve_coverage_python_version(config),
         "ci_build_types": filter_effects["build_types"],
         # Per platform: a filter can leave one platform building wheels and
         # another not (see ci_filter_effects). linux-arm reads the Linux flag.
@@ -436,7 +430,7 @@ def generate_ci(
     }
 
     if build_filter:
-        _warn_filter_conflicts(build_filter, toml_data, ci_type, context)
+        _warn_filter_conflicts(build_filter, config, ci_type, context)
 
     # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"
