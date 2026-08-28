@@ -1770,5 +1770,7 @@ def test_run_coverage_rejects_an_unknown_top_level_key(tmp_path):
     """The coverage run validates build.toml before shelling out to anything."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
-    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
-        run_coverage(toml_file, "0.0.0", tmp_path)
+    shelled_out = AssertionError("run_coverage shelled out before rejecting build.toml")
+    with patch("xmsconan.coverage_tools.coverage_generator._run", side_effect=shelled_out):
+        with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+            run_coverage(toml_file, "0.0.0", tmp_path)

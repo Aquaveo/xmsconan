@@ -179,11 +179,7 @@ def _validate_top_level_keys(toml_data, toml_path):
     Raises:
         ValueError: When *toml_data* carries a key outside :data:`_KNOWN_KEYS`.
     """
-    unknown = sorted(set(toml_data) - _KNOWN_KEYS)
-    if unknown:
-        unknown_keys = ", ".join(unknown)
-        accepted_keys = ", ".join(sorted(_KNOWN_KEYS))
-        raise ValueError(f'{toml_path} has unknown top-level key(s) {unknown_keys}. Accepted keys: {accepted_keys}.')
+    _reject_unknown_keys(toml_data, _KNOWN_KEYS, str(toml_path), kind="top-level key")
 
 
 _COVERAGE_KEYS = frozenset(f.name for f in fields(CoverageTable))
@@ -210,13 +206,13 @@ _CI_KEY_TYPES = {
 }
 
 
-def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
+def _reject_unknown_keys(table: dict, accepted: frozenset, where: str, kind: str = "key") -> None:
     """Raise a ``ValueError`` naming ``where`` when ``table`` has a key outside ``accepted``."""
     unknown = sorted(set(table) - accepted)
     if unknown:
         unknown_keys = ", ".join(unknown)
         accepted_keys = ", ".join(sorted(accepted))
-        raise ValueError(f'{where} has unknown key(s) {unknown_keys}. Accepted keys: {accepted_keys}.')
+        raise ValueError(f'{where} has unknown {kind}(s) {unknown_keys}. Accepted keys: {accepted_keys}.')
 
 
 def _validate_ci_table(raw, toml_path) -> None:
@@ -242,6 +238,17 @@ def _ci_table(raw, toml_path) -> CiTable:
     return CiTable(**raw)
 
 
+def _coverage_threshold(value, key, toml_path) -> float:
+    """Return ``value`` as a float, rejecting a boolean or a non-number with a message naming ``key``."""
+    # bool is a subclass of int, so `cpp_threshold = true` would otherwise read as 1.0.
+    if isinstance(value, bool):
+        raise ValueError(f"{toml_path}: [coverage].{key} must be a number, got a boolean")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{toml_path}: [coverage].{key} must be a number, got {value!r}") from exc
+
+
 def _coverage_table(raw, toml_path) -> CoverageTable:
     """Validate ``raw`` as a ``[coverage]`` table and return it as a :class:`CoverageTable`."""
     if not isinstance(raw, dict):
@@ -250,16 +257,20 @@ def _coverage_table(raw, toml_path) -> CoverageTable:
     values = dict(raw)
     for key in ("cpp_threshold", "python_threshold"):
         if key in values:
-            try:
-                values[key] = float(values[key])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"{toml_path}: [coverage].{key} must be a number, got {values[key]!r}"
-                ) from exc
-    if values.get("python_version") is not None:
-        # An unquoted `python_version = 3.13` is a TOML float; every consumer
-        # wants the "X.Y" string.
-        values["python_version"] = str(values["python_version"])
+            values[key] = _coverage_threshold(values[key], key, toml_path)
+    for key in ("filters", "excludes"):
+        if key in values and not isinstance(values[key], list):
+            raise ValueError(
+                f"{toml_path}: [coverage].{key} must be a list, got {type(values[key]).__name__}"
+            )
+    python_version = values.get("python_version")
+    if python_version is not None and not isinstance(python_version, str):
+        # An unquoted `python_version = 3.10` is the TOML float 3.1; coercing it
+        # would pin a version nobody wrote.
+        raise ValueError(
+            f'{toml_path}: [coverage].python_version must be a quoted string like "3.13", '
+            f"got {python_version!r}"
+        )
     return CoverageTable(**values)
 
 
@@ -271,6 +282,15 @@ def _xms_dependency(entry, toml_path) -> XmsDependency:
     _reject_unknown_keys(entry, _XMS_DEPENDENCY_KEYS, f"{where} {entry.get('name', entry)!r}")
     if "name" not in entry or "version" not in entry:
         raise ValueError(f"{where} {entry!r} requires name and version")
+    for key in ("name", "version"):
+        if not isinstance(entry[key], str):
+            raise ValueError(
+                f"{where} {entry['name']!r}: {key} must be a string, got {type(entry[key]).__name__}"
+            )
+    no_python = entry.get("no_python", False)
+    if not isinstance(no_python, bool):
+        # A quoted "false" is a truthy string and would drop the dependency from the wheel.
+        raise ValueError(f"{where} {entry['name']!r}: no_python must be true or false, got {no_python!r}")
     return XmsDependency(**entry)
 
 

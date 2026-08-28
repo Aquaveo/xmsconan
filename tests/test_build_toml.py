@@ -19,6 +19,10 @@ def test_load_toml_returns_the_parsed_table(tmp_path):
 def test_build_toml_derives_python_namespaced_dir():
     """The default strips the xms prefix, the same rule gen and ci applied."""
     assert BuildToml(library_name="xmscore").python_namespaced_dir == "core"
+
+
+def test_build_toml_keeps_an_explicit_python_namespaced_dir():
+    """A value from the file is not overwritten by the derived default."""
     assert BuildToml(library_name="xmscore", python_namespaced_dir="c").python_namespaced_dir == "c"
 
 
@@ -91,7 +95,7 @@ def test_toml_to_dataclass_converts_sub_tables():
     config = _toml_to_dataclass({
         "library_name": "xmscore",
         "ci": {"xvfb": True, "python_versions": ["3.10", "3.13"]},
-        "coverage": {"cpp_threshold": 80, "python_version": 3.13},
+        "coverage": {"cpp_threshold": 80, "python_version": "3.13"},
         "xms_dependencies": [{"name": "xmsgrid", "version": "7.0.0", "no_python": True}],
     }, "build.toml")
     assert config.ci == CiTable(xvfb=True, python_versions=["3.10", "3.13"])
@@ -183,11 +187,33 @@ def test_toml_to_dataclass_names_a_non_numeric_threshold():
         _toml_to_dataclass({"library_name": "x", "coverage": {"cpp_threshold": "80%"}}, "build.toml")
 
 
+def test_toml_to_dataclass_rejects_a_boolean_threshold():
+    """`cpp_threshold = true` is a mistake, not 100%; bool is an int subclass so float() would take it."""
+    with pytest.raises(ValueError, match=r"\[coverage\]\.cpp_threshold must be a number, got a boolean"):
+        _toml_to_dataclass({"library_name": "x", "coverage": {"cpp_threshold": True}}, "build.toml")
+
+
+@pytest.mark.parametrize("key", ["filters", "excludes"])
+def test_toml_to_dataclass_rejects_a_scalar_coverage_pattern_list(key):
+    """A lone string would be iterated character by character into gcovr patterns."""
+    with pytest.raises(ValueError, match=rf"\[coverage\]\.{key} must be a list"):
+        _toml_to_dataclass({"library_name": "x", "coverage": {key: "xmscore/"}}, "build.toml")
+
+
+def test_toml_to_dataclass_rejects_an_unquoted_coverage_python_version():
+    """An unquoted 3.10 is the float 3.1; coercing it would pin a version nobody wrote."""
+    with pytest.raises(ValueError, match=r"\[coverage\]\.python_version must be a quoted string"):
+        _toml_to_dataclass({"library_name": "x", "coverage": {"python_version": 3.10}}, "build.toml")
+
+
 @pytest.mark.parametrize("entry,expected", [
     pytest.param("xmscore/7.0.0", "must be a table", id="string-entry"),
     pytest.param({"name": "xmscore"}, "requires name and version", id="missing-version"),
     pytest.param({"name": "xmscore", "version": "7", "python": False}, r"unknown key\(s\) python",
                  id="unknown-key"),
+    pytest.param({"name": "xmscore", "version": 7}, "version must be a string", id="numeric-version"),
+    pytest.param({"name": "xmscore", "version": "7", "no_python": "false"}, "no_python must be true or false",
+                 id="quoted-boolean"),
 ])
 def test_toml_to_dataclass_rejects_malformed_xms_dependencies(entry, expected):
     """An entry the conanfile template could not render fails at conversion instead."""
