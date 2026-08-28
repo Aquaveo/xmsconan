@@ -1482,7 +1482,8 @@ def test_known_keys_matches_the_documented_option_table():
     here takes a valid build.toml down, and a key that is accepted but
     undocumented is a contract nobody can look up. Comparing against a source
     outside the module is the only way to catch either -- deriving the
-    expected set from KNOWN_KEYS would make this test pass by construction.
+    expected set from the ``BuildToml`` field set would make this test pass
+    by construction.
     """
     documented = _keys_documented_in_usage()
     known = frozenset(f.name for f in fields(BuildToml))
@@ -1493,10 +1494,11 @@ def test_known_keys_matches_the_documented_option_table():
 def test_every_documented_key_is_accepted(template_dir, tmp_path):
     """A build.toml exercising the whole documented vocabulary generates cleanly.
 
-    Guards the reverse failure of the test above: a KNOWN_KEYS that forgot a
-    real key would reject a valid file, taking every consumer's CI down at the
-    Generate step. The key list comes from the docs rather than from
-    KNOWN_KEYS, so a key the whitelist forgot is still exercised here.
+    Guards the reverse failure of the test above: a ``BuildToml`` field set
+    that forgot a real key would reject a valid file, taking every consumer's
+    CI down at the Generate step. The key list comes from the docs rather
+    than from the whitelist derived from ``BuildToml``, so a key the
+    whitelist forgot is still exercised here.
     """
     documented = sorted(_keys_documented_in_usage())
     lines = ['library_name = "xmscore"']
