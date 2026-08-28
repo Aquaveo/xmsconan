@@ -38,18 +38,8 @@ from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
 from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
 
 
-def _read_library_name(toml_path="build.toml"):
-    """Read ``library_name`` from *toml_path*."""
-    data = load_toml(toml_path)
-    validate_top_level_keys(data, toml_path)
-    name = data.get("library_name")
-    if not name:
-        raise ValueError(f"No library_name found in {toml_path}")
-    return name
-
-
-def _repairs_wheel(toml_path: str = "build.toml") -> bool:
-    """Whether this platform's wheel should be repaired for *toml_path*.
+def _repairs_wheel(config) -> bool:
+    """Whether this platform's wheel should be repaired.
 
     Only Windows is switchable, and the decision -- key name, type and
     ``ci_type``-derived default -- lives in :mod:`xmsconan.ci_options` so this
@@ -57,36 +47,27 @@ def _repairs_wheel(toml_path: str = "build.toml") -> bool:
     no such switch: an unrepaired manylinux wheel is not installable.
 
     Args:
-        toml_path: Path to the library's ``build.toml``.
+        config: The parsed build.toml.
 
     Returns:
         True when the wheel should be repaired on this platform.
     """
     if sys.platform != "win32":
         return True
-    data = load_toml(toml_path)
-    validate_top_level_keys(data, toml_path)
-    return repairs_windows_wheel(toml_to_dataclass(data, toml_path))
+    return repairs_windows_wheel(config)
 
 
-def _read_ci_xvfb(toml_path="build.toml"):
-    """Read ``ci.xvfb`` from *toml_path*.  Returns ``False`` if not set."""
-    data = load_toml(toml_path)
-    validate_top_level_keys(data, toml_path)
-    return data.get("ci", {}).get("xvfb", False)
-
-
-def _check_xvfb(toml_path="build.toml"):
+def _check_xvfb(config):
     """Check if xvfb-run should wrap commands.
 
-    Returns ``True`` on Linux when ``ci.xvfb`` is set, no ``$DISPLAY`` is
+    Returns ``True`` on Linux when ``[ci].xvfb`` is set, no ``$DISPLAY`` is
     available, and ``xvfb-run`` is on PATH.
     """
     if not sys.platform.startswith("linux"):
         return False
     if os.environ.get("DISPLAY"):
         return False
-    if not _read_ci_xvfb(toml_path):
+    if not config.ci.xvfb:
         return False
     if not shutil.which("xvfb-run"):
         print(
@@ -168,8 +149,11 @@ def publish(
             "Pass --version explicitly."
         )
 
-    library_name = _read_library_name(toml_path)
-    use_xvfb = steps.check_xvfb(toml_path)
+    toml_data = load_toml(toml_path)
+    validate_top_level_keys(toml_data, toml_path)
+    config = toml_to_dataclass(toml_data, toml_path)
+    library_name = config.library_name
+    use_xvfb = steps.check_xvfb(config)
     xvfb = _xvfb_prefix() if use_xvfb else []
 
     # 1. Setup Conan
@@ -185,7 +169,7 @@ def publish(
 
     # 3. Build (wrapped with xvfb-run if needed)
     print("==> Building...")
-    repair_wheel = _repairs_wheel(toml_path)
+    repair_wheel = _repairs_wheel(config)
     build_cmd = xvfb + [
         sys.executable, "build.py",
         "--version", version,
