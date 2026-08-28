@@ -94,7 +94,7 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
-from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import read_optional_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
@@ -627,12 +627,6 @@ def setup(password_file=None, username=None,
 def _library_build_toml(library_dir: str):
     """Parse a library's ``build.toml``, or return ``None`` if it has none.
 
-    A malformed file is re-raised naming the path. ``load_toml`` raises
-    ``TOMLDecodeError`` -- which is a ``ValueError`` -- and the CLI's top-level
-    handler catches ``ValueError`` as a bad ``--only`` / ``--from`` / ``--filter``
-    argument, so an unreported decode error here surfaced as advice about flags
-    the developer never typed.
-
     Args:
         library_dir: Directory holding the library's ``build.toml``.
 
@@ -641,17 +635,11 @@ def _library_build_toml(library_dir: str):
         the file is absent.
 
     Raises:
-        ValueError: When the file exists but does not parse, naming it.
+        ValueError: When the file exists but does not parse or validate; the
+            message names the file so the CLI's ``ValueError`` handler does not
+            blame a flag.
     """
-    toml_path = os.path.join(library_dir, "build.toml")
-    if not os.path.isfile(toml_path):
-        return None
-    try:
-        data = load_toml(toml_path)
-    except ValueError as exc:
-        raise ValueError(f"could not parse {toml_path}: {exc}") from exc
-    validate_top_level_keys(data, toml_path)
-    return toml_to_dataclass(data, toml_path)
+    return read_optional_build_toml(os.path.join(library_dir, "build.toml"))
 
 
 def _library_repairs_wheel(library_dir: str) -> bool:

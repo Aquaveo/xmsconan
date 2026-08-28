@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 
-from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
@@ -149,9 +149,7 @@ def publish(
             "Pass --version explicitly."
         )
 
-    toml_data = load_toml(toml_path)
-    validate_top_level_keys(toml_data, toml_path)
-    config = toml_to_dataclass(toml_data, toml_path)
+    config = read_build_toml(toml_path)
     library_name = config.library_name
     use_xvfb = steps.check_xvfb(config)
     xvfb = _xvfb_prefix() if use_xvfb else []

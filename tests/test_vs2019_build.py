@@ -1322,9 +1322,10 @@ def test_library_repairs_wheel_defaults_to_true_without_a_build_toml(tmp_path):
 def test_malformed_build_toml_names_the_file(tmp_path):
     """A decode error names the path instead of being blamed on a CLI flag.
 
-    load_toml raises TOMLDecodeError, a ValueError, and the CLI's top-level
-    handler reads a bare ValueError as a bad --only / --from / --filter -- so an
-    unwrapped decode error produced advice about flags nobody typed.
+    read_build_toml wraps the decode error in a ValueError naming the file, and
+    the CLI's top-level handler reads a bare ValueError as a bad --only / --from
+    / --filter -- so an unwrapped decode error produced advice about flags
+    nobody typed.
     """
     (tmp_path / "build.toml").write_text("library_name = \n", encoding="utf-8")
     with pytest.raises(ValueError, match="could not parse"):

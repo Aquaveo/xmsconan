@@ -19,7 +19,7 @@ import os
 import sys
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import read_build_toml
 from xmsconan.package_tools.packager import configurations, XmsConanPackager
 
 LOGGER = logging.getLogger(__name__)
@@ -80,9 +80,7 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
     Returns:
         List of paths (that would be) written.
     """
-    data = load_toml(toml_file_path)
-    validate_top_level_keys(data, toml_file_path)
-    config = toml_to_dataclass(data, toml_file_path)
+    config = read_build_toml(toml_file_path)
     library_name = config.library_name
 
     base_dir = os.path.dirname(os.path.abspath(toml_file_path))

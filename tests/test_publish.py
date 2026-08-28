@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_tools.publish import (
     _check_xvfb,
     main,
@@ -275,13 +275,6 @@ def test_publish_rejects_fallback_version(tmp_path):
 # --- _check_xvfb ---
 
 
-def _read_config(toml_file):
-    """Do what publish does with the file, for the helpers that now take a config."""
-    data = load_toml(toml_file)
-    validate_top_level_keys(data, toml_file)
-    return toml_to_dataclass(data, toml_file)
-
-
 @patch("xmsconan.ci_tools.publish.shutil.which", return_value="/usr/bin/xvfb-run")
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
 @patch_env(clear=True)
@@ -292,7 +285,7 @@ def test_check_xvfb_true_on_linux(mock_which, tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(_read_config(toml_file)) is True
+    assert _check_xvfb(read_build_toml(toml_file)) is True
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "darwin")
@@ -303,7 +296,7 @@ def test_check_xvfb_false_on_macos(tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(_read_config(toml_file)) is False
+    assert _check_xvfb(read_build_toml(toml_file)) is False
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
@@ -315,7 +308,7 @@ def test_check_xvfb_false_when_display_set(tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(_read_config(toml_file)) is False
+    assert _check_xvfb(read_build_toml(toml_file)) is False
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
@@ -324,7 +317,7 @@ def test_check_xvfb_false_when_xvfb_not_configured(tmp_path):
     """Returns False when ci.xvfb is not set."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-    assert _check_xvfb(_read_config(toml_file)) is False
+    assert _check_xvfb(read_build_toml(toml_file)) is False
 
 
 def test_publish_calls_conan_setup_with_login(mock_steps, tmp_path):

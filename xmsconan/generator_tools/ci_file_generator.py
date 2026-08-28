@@ -9,14 +9,7 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import (
-    BuildToml,
-    CiTable,
-    CoverageTable,
-    load_toml,
-    toml_to_dataclass,
-    validate_top_level_keys,
-)
+from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, read_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
@@ -269,10 +262,8 @@ def generate_ci(
     if not toml_file.exists():
         raise FileNotFoundError(f"The specified TOML file does not exist: {toml_file_path}")
 
-    # Parse the TOML file
-    toml_data = load_toml(toml_file)
-    validate_top_level_keys(toml_data, toml_file)
-    config = toml_to_dataclass(toml_data, toml_file)
+    # Parse and validate the TOML file
+    config = read_build_toml(toml_file)
 
     ci_type = config.ci_type
     if not ci_type:

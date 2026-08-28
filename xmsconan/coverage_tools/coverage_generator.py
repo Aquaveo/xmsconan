@@ -42,7 +42,7 @@ import traceback
 from typing import Optional
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import read_build_toml
 from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
@@ -609,9 +609,7 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             f"The specified TOML file does not exist: {toml_file_path}"
         )
 
-    toml_data = load_toml(toml_file)
-    validate_top_level_keys(toml_data, toml_file)
-    config = toml_to_dataclass(toml_data, toml_file)
+    config = read_build_toml(toml_file)
     library_name = config.library_name
     coverage_cfg = _coverage_context(config.coverage, library_name)
     coverage_python_version = _resolve_coverage_python_version(config)

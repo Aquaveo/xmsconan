@@ -13,7 +13,7 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import BuildToml, load_toml, toml_to_dataclass, validate_top_level_keys, XmsDependency
+from xmsconan.build_toml import BuildToml, read_build_toml, XmsDependency
 from xmsconan.constants import PYTHON_BINDING_TYPES, TESTING_FRAMEWORKS
 from xmsconan.generator_tools.build_filter import load_build_filter
 from xmsconan.package_tools.packager import XmsConanPackager
@@ -203,10 +203,8 @@ def render_template_with_toml(
     if not template_dir.exists() or not template_dir.is_dir():
         raise FileNotFoundError(f"The specified template directory does not exist: {template_dir}")
 
-    # Parse the TOML file into a dictionary
-    toml_data = load_toml(toml_file)
-    validate_top_level_keys(toml_data, toml_file)
-    config = toml_to_dataclass(toml_data, toml_file)
+    # Parse and validate the TOML file
+    config = read_build_toml(toml_file)
     # Validated here rather than only where it is consumed: this function writes
     # [matrix] verbatim into the generated conanfile.py, so a caller that renders
     # templates without going on to generate profiles would otherwise produce an
