@@ -624,8 +624,8 @@ def setup(password_file=None, username=None,
 # --- build ---------------------------------------------------------------
 
 
-def _library_build_toml(library_dir: str) -> dict:
-    """Parse a library's ``build.toml``, or return an empty table if it has none.
+def _library_build_toml(library_dir: str):
+    """Parse a library's ``build.toml``, or return ``None`` if it has none.
 
     A malformed file is re-raised naming the path. ``load_toml`` raises
     ``TOMLDecodeError`` -- which is a ``ValueError`` -- and the CLI's top-level
@@ -637,20 +637,21 @@ def _library_build_toml(library_dir: str) -> dict:
         library_dir: Directory holding the library's ``build.toml``.
 
     Returns:
-        The parsed table, or an empty dict when the file is absent.
+        The parsed :class:`~xmsconan.build_toml.BuildToml`, or ``None`` when
+        the file is absent.
 
     Raises:
         ValueError: When the file exists but does not parse, naming it.
     """
     toml_path = os.path.join(library_dir, "build.toml")
     if not os.path.isfile(toml_path):
-        return {}
+        return None
     try:
         data = load_toml(toml_path)
     except ValueError as exc:
         raise ValueError(f"could not parse {toml_path}: {exc}") from exc
     validate_top_level_keys(data, toml_path)
-    return data
+    return toml_to_dataclass(data, toml_path)
 
 
 def _library_repairs_wheel(library_dir: str) -> bool:
@@ -666,10 +667,10 @@ def _library_repairs_wheel(library_dir: str) -> bool:
     Returns:
         True when the wheel should be repaired.
     """
-    data = _library_build_toml(library_dir)
-    if not data:
+    config = _library_build_toml(library_dir)
+    if config is None:
         return True
-    return repairs_windows_wheel(toml_to_dataclass(data, os.path.join(library_dir, "build.toml")))
+    return repairs_windows_wheel(config)
 
 
 def _library_matrix(library_dir: str) -> dict:
@@ -691,7 +692,8 @@ def _library_matrix(library_dir: str) -> dict:
     Raises:
         ValueError: When the file exists but does not parse.
     """
-    return _library_build_toml(library_dir).get("matrix", {})
+    config = _library_build_toml(library_dir)
+    return config.matrix if config is not None else {}
 
 
 def _new_packager(library, conanfile_path, python_versions, matrix=None):
