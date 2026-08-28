@@ -295,4 +295,4 @@ def test_resolve_image_rejects_an_unknown_top_level_key(tmp_path):
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
-        resolve_docker_image(toml_path=str(toml_file))
+        resolve_docker_image(toml_path=toml_file)

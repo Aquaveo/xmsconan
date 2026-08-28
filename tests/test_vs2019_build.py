@@ -1364,4 +1364,4 @@ def test_library_matrix_rejects_an_unknown_top_level_key(tmp_path):
         'library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
-        vs._library_matrix(str(tmp_path))
+        vs._library_matrix(tmp_path)

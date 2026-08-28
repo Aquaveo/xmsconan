@@ -19,19 +19,22 @@ from .utils import make_build_toml
 
 def test_load_build_filter_defaults_to_empty():
     """A build.toml with no [filter] table yields no restriction."""
-    assert load_build_filter(make_build_toml()) == {}
+    config = make_build_toml()
+    assert load_build_filter(config) == {}
 
 
 def test_load_build_filter_returns_table():
     """A valid table comes back as-is."""
     build_filter = {"build_type": "Release", "options": {"pybind": False}}
-    assert load_build_filter(make_build_toml(filter=build_filter)) == build_filter
+    config = make_build_toml(filter=build_filter)
+    assert load_build_filter(config) == build_filter
 
 
 def test_load_build_filter_reports_build_toml_context():
     """Validation errors name build.toml so the fix location is obvious."""
+    config = make_build_toml(filter={"pybind": True})
     with pytest.raises(ValueError, match=r"Invalid \[filter\] table in build.toml"):
-        load_build_filter(make_build_toml(filter={"pybind": True}))
+        load_build_filter(config)
 
 
 def test_load_build_filter_rejects_filter_matching_nothing():
@@ -41,8 +44,9 @@ def test_load_build_filter_rejects_filter_matching_nothing():
     filter empties the matrix on every platform — previously that surfaced only
     as an exit-1 from every CI leg, after the workflow had been committed.
     """
+    config = make_build_toml(filter={"options": {"testing": True, "pybind": True}})
     with pytest.raises(ValueError, match="matches no configuration on any platform"):
-        load_build_filter(make_build_toml(filter={"options": {"testing": True, "pybind": True}}))
+        load_build_filter(config)
 
 
 def test_load_build_filter_rejects_python_version_outside_ci_versions():
@@ -51,8 +55,9 @@ def test_load_build_filter_rejects_python_version_outside_ci_versions():
     The matrix stays non-empty (every non-pybind configuration survives), so
     only the pybind-specific check catches this one.
     """
+    config = make_build_toml(filter={"options": {"python_version": "3.9"}})
     with pytest.raises(ValueError, match="matches no pybind configuration"):
-        load_build_filter(make_build_toml(filter={"options": {"python_version": "3.9"}}))
+        load_build_filter(config)
 
 
 def test_load_build_filter_accepts_python_version_from_ci_config():
@@ -168,8 +173,9 @@ def test_load_build_filter_checks_the_filter_against_the_narrowed_matrix():
     """
     debug_pybind = {"build_type": "Debug", "options": {"pybind": True}}
 
+    narrowed = make_build_toml(filter=debug_pybind)
     with pytest.raises(ValueError, match="matches no configuration"):
-        load_build_filter(make_build_toml(filter=debug_pybind))
+        load_build_filter(narrowed)
 
     widened = make_build_toml(
         matrix={"pybind_build_types": ["Release", "Debug"]},
@@ -180,8 +186,10 @@ def test_load_build_filter_checks_the_filter_against_the_narrowed_matrix():
 
 def test_ci_python_versions_defaults_to_the_packager_default():
     """With no [ci] table the union is the one version the packager builds anyway."""
-    assert ci_python_versions(make_build_toml()) == ["3.13"]
-    assert ci_python_versions(make_build_toml(ci={"python_versions": ["3.13"]})) == ["3.13"]
+    absent = make_build_toml()
+    explicit = make_build_toml(ci={"python_versions": ["3.13"]})
+    assert ci_python_versions(absent) == ["3.13"]
+    assert ci_python_versions(explicit) == ["3.13"]
 
 
 def test_ci_python_versions_unions_the_per_platform_keys():

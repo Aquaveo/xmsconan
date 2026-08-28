@@ -24,7 +24,8 @@ def test_default_follows_ci_type(ci_type, expected):
     A flat default is wrong in one direction or the other, and both directions
     change what an existing repo publishes on its next tag.
     """
-    assert repairs_windows_wheel(make_build_toml(ci_type=ci_type)) is expected
+    config = make_build_toml(ci_type=ci_type)
+    assert repairs_windows_wheel(config) is expected
 
 
 @pytest.mark.parametrize("ci_type", ["github", "gitlab"])
@@ -37,4 +38,5 @@ def test_explicit_value_overrides_the_default(ci_type, explicit):
 
 def test_unknown_ci_type_repairs():
     """An unrecognized (or absent) ci_type keeps the safer, DLL-bundling default."""
-    assert repairs_windows_wheel(make_build_toml()) is True
+    config = make_build_toml()
+    assert repairs_windows_wheel(config) is True

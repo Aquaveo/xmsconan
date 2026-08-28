@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Python < 3.11
     from toml import loads as parse_toml_text
 
 
-def _load_toml(toml_path):
+def _load_toml(toml_path: str | Path):
     """Parse a TOML file.
 
     Args:
@@ -300,7 +300,7 @@ def _toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
     return BuildToml(**values)
 
 
-def read_build_toml(toml_path) -> BuildToml:
+def read_build_toml(toml_path: str | Path) -> BuildToml:
     """Read a ``build.toml`` into a :class:`BuildToml`.
 
     Args:
@@ -322,7 +322,7 @@ def read_build_toml(toml_path) -> BuildToml:
     return _toml_to_dataclass(data, toml_path)
 
 
-def read_optional_build_toml(toml_path) -> Optional[BuildToml]:
+def read_optional_build_toml(toml_path: str | Path) -> Optional[BuildToml]:
     """Like :func:`read_build_toml`, but ``None`` when the file does not exist."""
     if not Path(toml_path).is_file():
         return None

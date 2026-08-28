@@ -370,7 +370,8 @@ class TestResolveCoveragePythonVersion:
 
     def test_defaults_to_3_13_when_no_ci_python_versions(self):
         """An empty toml falls back to the global default ABI."""
-        assert _resolve_coverage_python_version(make_build_toml()) == "3.13"
+        config = make_build_toml()
+        assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_uses_highest_ci_python_versions(self):
         """Highest entry in [ci].python_versions wins by (major, minor)."""
@@ -1770,4 +1771,4 @@ def test_run_coverage_rejects_an_unknown_top_level_key(tmp_path):
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
-        run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+        run_coverage(toml_file, "0.0.0", tmp_path)

@@ -26,7 +26,7 @@ DOCKER_IMAGE_XVFB = "conan-gcc13-x11-gdal-py3.13"
 PIP_INDEX = "https://public.aquapi.aquaveo.com/aquaveo/dev/+simple"
 
 
-def resolve_docker_image(docker_image=None, toml_path="build.toml"):
+def resolve_docker_image(docker_image=None, toml_path: str | Path = "build.toml"):
     """Determine the Docker image to use.
 
     When *docker_image* is ``None``, the image is chosen based on the

@@ -25,6 +25,7 @@ environment variables, or ``~/.xmsconan.toml`` (see
 import argparse
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -117,7 +118,7 @@ class PublishSteps:
 def publish(
     version=None,
     wheel_dir="wheelhouse",
-    toml_path="build.toml",
+    toml_path: str | Path = "build.toml",
     build_filter=None,
     deploy_wheel=True,
     deploy_conan=True,

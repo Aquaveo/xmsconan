@@ -86,6 +86,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -624,7 +625,7 @@ def setup(password_file=None, username=None,
 # --- build ---------------------------------------------------------------
 
 
-def _library_build_toml(library_dir: str):
+def _library_build_toml(library_dir: str | Path):
     """Parse a library's ``build.toml``, or return ``None`` if it has none.
 
     Args:
@@ -643,7 +644,7 @@ def _library_build_toml(library_dir: str):
     return read_optional_build_toml(toml_path)
 
 
-def _library_repairs_wheel(library_dir: str) -> bool:
+def _library_repairs_wheel(library_dir: str | Path) -> bool:
     """Whether this library's Windows wheel should be repaired.
 
     Read from the library's own ``build.toml`` through the shared resolver, so
@@ -662,7 +663,7 @@ def _library_repairs_wheel(library_dir: str) -> bool:
     return repairs_windows_wheel(config)
 
 
-def _library_matrix(library_dir: str) -> dict:
+def _library_matrix(library_dir: str | Path) -> dict:
     """Read the ``[matrix]`` table out of a library's ``build.toml``.
 
     The VS2019 driver builds each library from its own checkout rather than

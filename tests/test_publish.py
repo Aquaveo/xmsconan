@@ -39,7 +39,7 @@ def test_publish_rejects_a_build_toml_without_library_name(mock_steps, tmp_path)
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('description = "desc"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="does not define library_name"):
-        publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
+        publish(version="7.0.0", toml_path=toml_file, steps=mock_steps)
 
 
 def test_publish_rejects_an_unknown_top_level_key(mock_steps, tmp_path):
@@ -47,7 +47,7 @@ def test_publish_rejects_an_unknown_top_level_key(mock_steps, tmp_path):
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
-        publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
+        publish(version="7.0.0", toml_path=toml_file, steps=mock_steps)
 
 
 def test_publish_full_pipeline(mock_steps, tmp_path):

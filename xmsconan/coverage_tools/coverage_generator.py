@@ -587,7 +587,7 @@ def _append_github_summary(rows: list[tuple[str, float, float, bool]]):
         f.write("\n".join(lines))
 
 
-def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
+def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Path) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
     The packager emits a Debug+testing-only config and a Release+pybind-only
