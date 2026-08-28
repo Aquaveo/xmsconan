@@ -15,7 +15,7 @@ import shlex
 import shutil
 import subprocess
 
-from xmsconan.build_toml import load_toml, validate_top_level_keys
+from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
 
 # Docker image registry and naming convention (matches CI templates).
 DOCKER_REGISTRY = "docker.aquaveo.com/aquaveo/conan-docker"
@@ -44,13 +44,10 @@ def resolve_docker_image(docker_image=None, toml_path="build.toml"):
 
     data = load_toml(toml_path)
     validate_top_level_keys(data, toml_path)
-    ci_config = data.get("ci", {})
-
-    toml_image = ci_config.get("docker_image")
-    if toml_image:
-        return toml_image
-
-    image_name = DOCKER_IMAGE_XVFB if ci_config.get("xvfb", False) else DOCKER_IMAGE_BASE
+    config = toml_to_dataclass(data, toml_path)
+    if config.ci.docker_image:
+        return config.ci.docker_image
+    image_name = DOCKER_IMAGE_XVFB if config.ci.xvfb else DOCKER_IMAGE_BASE
     return f"{DOCKER_REGISTRY}/{image_name}"
 
 
