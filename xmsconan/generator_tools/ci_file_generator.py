@@ -400,7 +400,7 @@ def generate_ci(
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
         # installable, so there is no equivalent switch for Linux or macOS. The
         # default follows ci_type -- see repairs_windows_wheel.
-        "ci_windows_wheel_repair": repairs_windows_wheel(toml_data),
+        "ci_windows_wheel_repair": repairs_windows_wheel(config),
         "ci_linux": ci_config.get("linux", True),
         "ci_deploy": ci_config.get("deploy", True),
         "ci_coverage": ci_config.get("coverage", False),

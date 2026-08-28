@@ -6,6 +6,7 @@ from xmsconan.ci_options import (
     repairs_windows_wheel,
     validate_ci_table,
 )
+from .utils import make_build_toml
 
 
 # --- validate_ci_table ---------------------------------------------------
@@ -82,23 +83,17 @@ def test_default_follows_ci_type(ci_type, expected):
     A flat default is wrong in one direction or the other, and both directions
     change what an existing repo publishes on its next tag.
     """
-    assert repairs_windows_wheel({"ci_type": ci_type}) is expected
+    assert repairs_windows_wheel(make_build_toml(ci_type=ci_type)) is expected
 
 
 @pytest.mark.parametrize("ci_type", ["github", "gitlab"])
 @pytest.mark.parametrize("explicit", [True, False])
 def test_explicit_value_overrides_the_default(ci_type, explicit):
     """An explicit key wins on either host."""
-    data = {"ci_type": ci_type, "ci": {"windows_wheel_repair": explicit}}
-    assert repairs_windows_wheel(data) is explicit
+    config = make_build_toml(ci_type=ci_type, ci={"windows_wheel_repair": explicit})
+    assert repairs_windows_wheel(config) is explicit
 
 
 def test_unknown_ci_type_repairs():
     """An unrecognized (or absent) ci_type keeps the safer, DLL-bundling default."""
-    assert repairs_windows_wheel({}) is True
-
-
-def test_resolver_validates_the_table():
-    """The resolver is also the validation point, so no reader can skip it."""
-    with pytest.raises(ValueError, match="windows_repair_wheel"):
-        repairs_windows_wheel({"ci_type": "gitlab", "ci": {"windows_repair_wheel": True}})
+    assert repairs_windows_wheel(make_build_toml()) is True

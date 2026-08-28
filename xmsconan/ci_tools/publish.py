@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 
-from xmsconan.build_toml import load_toml, validate_top_level_keys
+from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
@@ -66,7 +66,7 @@ def _repairs_wheel(toml_path: str = "build.toml") -> bool:
         return True
     data = load_toml(toml_path)
     validate_top_level_keys(data, toml_path)
-    return repairs_windows_wheel(data)
+    return repairs_windows_wheel(toml_to_dataclass(data, toml_path))
 
 
 def _read_ci_xvfb(toml_path="build.toml"):

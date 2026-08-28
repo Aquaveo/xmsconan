@@ -7,6 +7,12 @@ name or the value's type -- so ``windows_repair_wheel = false`` or
 ``windows_wheel_repair = "false"`` both left repair silently enabled. The only
 symptom would have been the thing the option exists to prevent.
 """
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from xmsconan.build_toml import BuildToml
+
+
 #: Every key the ``[ci]`` table accepts, mapped to the type a value must have.
 #: A key absent from here is a typo: the readers below would silently fall back
 #: to a default, which for a switch that turns work *off* means the work keeps
@@ -60,7 +66,7 @@ def validate_ci_table(ci_config: dict) -> None:
             )
 
 
-def repairs_windows_wheel(toml_data: dict) -> bool:
+def repairs_windows_wheel(config: "BuildToml") -> bool:
     """Whether the Windows wheel should be repaired for this library.
 
     The default follows ``ci_type``, because it decides who installs the wheel:
@@ -80,17 +86,11 @@ def repairs_windows_wheel(toml_data: dict) -> bool:
     explicit ``[ci].windows_wheel_repair`` overrides either way.
 
     Args:
-        toml_data: The parsed ``build.toml``.
+        config: The parsed ``build.toml``.
 
     Returns:
         True when the Windows wheel should be repaired.
-
-    Raises:
-        ValueError: When the ``[ci]`` table is invalid (see
-            :func:`validate_ci_table`).
     """
-    ci_config = toml_data.get("ci", {})
-    validate_ci_table(ci_config)
-    if "windows_wheel_repair" in ci_config:
-        return bool(ci_config["windows_wheel_repair"])
-    return toml_data.get("ci_type") != "gitlab"
+    if config.ci.windows_wheel_repair is not None:
+        return config.ci.windows_wheel_repair
+    return config.ci_type != "gitlab"

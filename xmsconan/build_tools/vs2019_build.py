@@ -94,7 +94,7 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
-from xmsconan.build_toml import load_toml, validate_top_level_keys
+from xmsconan.build_toml import load_toml, toml_to_dataclass, validate_top_level_keys
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
@@ -669,7 +669,7 @@ def _library_repairs_wheel(library_dir: str) -> bool:
     data = _library_build_toml(library_dir)
     if not data:
         return True
-    return repairs_windows_wheel(data)
+    return repairs_windows_wheel(toml_to_dataclass(data, os.path.join(library_dir, "build.toml")))
 
 
 def _library_matrix(library_dir: str) -> dict:
