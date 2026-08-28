@@ -32,6 +32,7 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan ci` | Generate CI pipeline files (GitLab/GitHub) from templates |
 | `xmsconan profiles` | Generate Conan profiles and `CMakePresets.json` from `build.toml` (run automatically by `xmsconan gen`) |
 | `xmsconan coverage` | Run unified C++/Python coverage (see `docs/USAGE.md` §11) |
+| `xmsconan test-shards` | Run a staged gtest runner as N parallel shards in one container and merge their JUnit reports (see `docs/USAGE.md` §10.2) |
 | `xmsconan build` | Build XMS libraries |
 | `xmsconan vs2019` | Build/publish the manual VS2019 (msvc 192) matrix (see `docs/USAGE.md` §16) |
 | `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |
@@ -90,6 +91,7 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 | `pybind_root` | boolean | `false` | Whether this is the root pybind package |
 | `pybind_advertises_module` | boolean | `false` | Advertise the pybind module's import library (`_<name>`) to C++ consumers instead of the static library, and install the module to `bin/` + `lib/`. Windows-only in effect; opt-in because module consumers see only exported symbols. Also what renames the Windows Debug module to `_<name>_d`, matching what `cpp_info` advertises. See `docs/USAGE.md` §7.5. |
 | `[matrix].compiler_runtime` | array[string] | `["dynamic", "static"]` | Which MSVC runtimes the fan-out builds. `["dynamic"]` drops the static-CRT configurations (and their `wchar_t` / `testing` copies) for a library nothing consumes a `/MT` build of. Inert on Linux and macOS. See `docs/USAGE.md` §5.4.1. |
+| `[matrix].wheel_only` | boolean | `false` | Build only what a wheel release needs — Release with tests, Debug with tests, and the pybind build. Three configurations on every platform (down from 5 on Linux/macOS, 13 on Windows), matching in everything but `build_type` and `pybind`. Drops the library-only and `wchar_t=typedef` configurations and narrows `compiler_runtime` to `["dynamic"]` unless set explicitly. See `docs/USAGE.md` §5.4.1. |
 | `[matrix].pybind_build_types` | array[string] | `["Release"]` | Which build types get a pybind configuration. Add `"Debug"` when consumers link a Debug module; `XMS_COVERAGE=1` no longer adds `Debug` on top, because coverage takes its Python half from the Release pybind build. On Windows the Debug leg publishes no wheel and runs no Python tests. See `docs/USAGE.md` §5.4.1 and §7.5. |
 
 ### Build Matrix Filter (`[filter]`)

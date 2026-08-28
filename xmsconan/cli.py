@@ -41,6 +41,8 @@ COMMANDS = {
     "wheel-repair": Command("Repair Python wheels for the current platform", "xmsconan.ci_tools.wheel_repair", "main"),
     "wheel-deploy": Command("Upload repaired wheels to devpi", "xmsconan.ci_tools.wheel_deploy", "main"),
     "conan-deploy": Command("Save, restore, or upload Conan packages", "xmsconan.ci_tools.conan_deploy", "main"),
+    "test-shards": Command("Run staged gtest tests as parallel shards in one container",
+                           "xmsconan.ci_tools.test_shards", "main"),
     "publish": Command("Build, repair, and deploy a library", "xmsconan.ci_tools.publish", "main"),
 }
 

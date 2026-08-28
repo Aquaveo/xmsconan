@@ -30,6 +30,7 @@ exits non-zero on regression.
 """
 # 1. Standard python modules
 import argparse
+import concurrent.futures
 import json
 import logging
 import os
@@ -38,8 +39,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import traceback
-from typing import Optional
+from typing import NamedTuple, Optional
 
 # 3. Aquaveo modules
 from xmsconan.generator_tools.ci_file_generator import (
@@ -120,6 +122,161 @@ def _run(cmd, env=None, cwd=None):
     """Run a subprocess, streaming output and raising on non-zero exit."""
     LOGGER.info("$ %s", " ".join(cmd) if isinstance(cmd, list) else cmd)
     subprocess.run(cmd, env=env, cwd=cwd, check=True)
+
+
+class _BuildLeg(NamedTuple):
+    """One of the two builds a coverage run drives.
+
+    Attributes:
+        name: Human label used in the banners and the timing summary.
+        filter_json: The ``build.py --filter`` argument that selects this
+            leg's single configuration out of the generated matrix.
+    """
+
+    name: str
+    filter_json: str
+
+
+class _LegResult(NamedTuple):
+    """What one coverage build did.
+
+    Attributes:
+        name: The leg's label.
+        returncode: ``build.py``'s exit status.
+        duration: Wall-clock seconds the leg took.
+        output: The leg's combined stdout and stderr. Empty when the leg
+            streamed straight through instead of being captured.
+    """
+
+    name: str
+    returncode: int
+    duration: float
+    output: str
+
+    @property
+    def passed(self) -> bool:
+        """Whether this leg succeeded."""
+        return self.returncode == 0
+
+
+def _build_command(leg: _BuildLeg, version: str) -> list:
+    """The ``build.py`` argv for one coverage leg."""
+    return [sys.executable, "build.py", "--version", version, "--filter", leg.filter_json]
+
+
+def _run_leg_captured(leg: _BuildLeg, version: str, env, cwd) -> _LegResult:
+    """Run one leg to completion, holding its output rather than streaming it.
+
+    Every failure is returned, never raised. This runs on a worker thread, and
+    an exception there surfaces from ``future.result()`` in the driver -- which
+    would abort the whole coverage run at the point it is specifically supposed
+    to carry on and report whatever the other leg produced.
+    """
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            _build_command(leg, version), env=env, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _LegResult(leg.name, 1, time.monotonic() - started,
+                          f"{leg.name} build could not run: {exc}")
+    return _LegResult(leg.name, completed.returncode, time.monotonic() - started,
+                      completed.stdout or "")
+
+
+def _print_leg_output(result: _LegResult) -> None:
+    """Replay one leg's captured output under a banner.
+
+    Whole buffers, one leg at a time. Two concurrent `conan create`s writing to
+    the same log interleave per line, and a compiler diagnostic split from the
+    file name above it is not a diagnostic any more.
+    """
+    rule = "=" * 72
+    status = "OK" if result.passed else f"FAILED (exit {result.returncode})"
+    print(rule)
+    print(f"{result.name} coverage build -- {status} in {result.duration:.1f}s")
+    print(rule)
+    print(result.output.rstrip("\n") if result.output else "(no output)")
+    print("")
+
+
+def _run_legs_concurrently(legs, version: str, env, cwd) -> list:
+    """Run every leg at once, printing each one's output as it finishes."""
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(legs)) as executor:
+        futures = [executor.submit(_run_leg_captured, leg, version, env, cwd)
+                   for leg in legs]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            _print_leg_output(result)
+            results.append(result)
+    order = {leg.name: index for index, leg in enumerate(legs)}
+    return sorted(results, key=lambda r: order[r.name])
+
+
+def _run_legs_sequentially(legs, version: str, env, cwd) -> list:
+    """Run the legs one after another, streaming each straight through.
+
+    Output is not captured here: with one build running there is nothing to
+    interleave with, and streaming is what lets an operator watch a long
+    compile rather than wait for a wall of text at the end.
+    """
+    results = []
+    for leg in legs:
+        started = time.monotonic()
+        LOGGER.info("Running the %s coverage build", leg.name)
+        try:
+            completed = subprocess.run(_build_command(leg, version), env=env, cwd=cwd)
+            returncode = completed.returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Same contract as the concurrent path: one leg failing must not
+            # stop the other from running or the report from being written.
+            LOGGER.error("%s build could not run: %s", leg.name, exc)
+            returncode = 1
+        results.append(_LegResult(leg.name, returncode,
+                                  time.monotonic() - started, ""))
+    return results
+
+
+def _run_coverage_builds(legs, version: str, env, cwd, parallel: bool) -> bool:
+    """Drive the coverage builds and report how each one fared.
+
+    Args:
+        legs: The :class:`_BuildLeg` list to build.
+        version: Version passed to ``build.py``.
+        env: Environment for the builds.
+        cwd: Directory to build in.
+        parallel: Overlap the legs. They are independent ``conan create``s that
+            share only the report step, so the run costs about as long as its
+            slower half rather than the sum of both.
+
+    Returns:
+        True when any leg failed. A failure is reported, not raised: the
+        surviving artifacts still produce a partial report, and the caller
+        gates on this flag at the end.
+    """
+    started = time.monotonic()
+    runner = _run_legs_concurrently if parallel else _run_legs_sequentially
+    results = runner(legs, version, env, cwd)
+    elapsed = time.monotonic() - started
+
+    LOGGER.info("Coverage builds (%s):", "concurrent" if parallel else "sequential")
+    for result in results:
+        LOGGER.info("  %s: %s in %.1fs", result.name,
+                    "OK" if result.passed else f"exit {result.returncode}",
+                    result.duration)
+    LOGGER.info("  wall clock %.1fs", elapsed)
+
+    failed = [result for result in results if not result.passed]
+    for result in failed:
+        LOGGER.error(
+            "build.py exited %s during the %s coverage build; continuing so "
+            "gcovr and artifact collection still run and partial coverage "
+            "remains available.", result.returncode, result.name,
+        )
+    return bool(failed)
 
 
 def _find_coverage_package(
@@ -649,55 +806,40 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             ambient_python_version, coverage_python_version, ambient_python_version,
         )
     env["PYTHON_TARGET_VERSION"] = coverage_python_version
-    tests_failed = False
 
-    # 2. C++ coverage build: testing=True, pybind=False, Debug. Drives
-    #    CxxTest under --coverage, producing the .gcda set gcovr reads.
-    cpp_filter = json.dumps({
-        "build_type": "Debug",
-        "options": {"testing": True, "pybind": False},
-    })
-    try:
-        _run(
-            [sys.executable, "build.py", "--version", version, "--filter", cpp_filter],
-            env=env, cwd=str(output_dir),
-        )
-    except subprocess.CalledProcessError as exc:
-        tests_failed = True
-        LOGGER.error(
-            "build.py exited %s during the C++ coverage build; continuing "
-            "so partial artifacts and the Python build still happen.",
-            exc.returncode,
-        )
-
-    # 3. Python coverage build: pybind=True, testing=False, Release, pinned
-    #    to one Python ABI. Drives pytest-cov against the wheel inside the
-    #    recipe's run_python_tests, and is instrumented so step 5 can merge its
-    #    .gcda for the binding layer. Release rather than Debug because
-    #    Debug+pybind is often not published for XMS libraries and may not exist,
-    #    and the XMS_COVERAGE CMake block appends -O0 -g after CMake's -O3, so
-    #    a Release build is unoptimized and loses nothing in line data.
-    py_filter = json.dumps({
-        "build_type": "Release",
-        "options": {
-            "pybind": True,
-            "testing": False,
-            "python_version": coverage_python_version,
-        },
-    })
-    try:
-        _run(
-            [sys.executable, "build.py", "--version", version, "--filter", py_filter],
-            env=env, cwd=str(output_dir),
-        )
-    except subprocess.CalledProcessError as exc:
-        tests_failed = True
-        LOGGER.error(
-            "build.py exited %s during the Python coverage build; continuing "
-            "through gcovr and artifact collection so partial coverage "
-            "remains available.",
-            exc.returncode,
-        )
+    # 2/3. The two coverage builds.
+    #
+    #   * C++: testing=True, pybind=False, Debug. Runs the C++ suite under
+    #     --coverage, producing the .gcda set gcovr reads.
+    #   * Python: pybind=True, testing=False, Release, pinned to one Python
+    #     ABI. Drives pytest-cov against the wheel inside the recipe's
+    #     run_python_tests, and is instrumented so step 5 can merge its .gcda
+    #     for the binding layer. Release rather than Debug because Debug+pybind
+    #     is often not published for XMS libraries and may not exist, and the
+    #     XMS_COVERAGE CMake block appends -O0 -g after CMake's -O3, so a
+    #     Release build is unoptimized and loses nothing in line data.
+    #
+    # They share no binary shape and no output file -- separate conan package
+    # ids, separate build folders, separate reports -- which is what lets them
+    # overlap. Only the report step below reads both. `[coverage].parallel =
+    # false` puts them back in sequence for a library where that is not safe.
+    legs = [
+        _BuildLeg("C++", json.dumps({
+            "build_type": "Debug",
+            "options": {"testing": True, "pybind": False},
+        })),
+        _BuildLeg("Python", json.dumps({
+            "build_type": "Release",
+            "options": {
+                "pybind": True,
+                "testing": False,
+                "python_version": coverage_python_version,
+            },
+        })),
+    ]
+    tests_failed = _run_coverage_builds(
+        legs, version, env, str(output_dir), coverage_cfg["parallel"],
+    )
 
     # 4. Locate the two build folders. gcovr reads .gcda from both; pytest-cov
     #    artifacts live under the pybind folder.

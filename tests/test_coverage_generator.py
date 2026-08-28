@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ import pytest
 from xmsconan.coverage_tools.coverage_generator import (
     _append_github_summary,
     _assert_gcovr_collected_data,
+    _BuildLeg,
     _conan_cache_path,
     _cpp_percent_from_summary,
     _find_coverage_package,
@@ -21,6 +24,7 @@ from xmsconan.coverage_tools.coverage_generator import (
     _reexec_under_xvfb,
     _resolve_coverage_python_version,
     _resolve_gcovr_filters,
+    _run_coverage_builds,
     _warn_if_tracefile_empty,
     run_coverage,
 )
@@ -1762,3 +1766,115 @@ class TestReexecUnderXvfb:
         with patch("xmsconan.coverage_tools.coverage_generator.os.execvpe") as execvpe:
             _reexec_under_xvfb()
         execvpe.assert_not_called()
+
+
+_LEGS = (
+    _BuildLeg("C++", '{"build_type": "Debug"}'),
+    _BuildLeg("Python", '{"build_type": "Release"}'),
+)
+
+
+class TestConcurrentCoverageBuilds:
+    """The C++ and Python coverage builds run at the same time."""
+
+    def test_parallel_defaults_on(self):
+        """The two builds overlap unless the library opts out."""
+        assert _coverage_context({}, "xmscore")["parallel"] is True
+
+    def test_parallel_can_be_disabled(self):
+        """[coverage].parallel = false puts the builds back in sequence."""
+        assert _coverage_context({"parallel": False}, "xmscore")["parallel"] is False
+
+    def test_builds_run_concurrently(self):
+        """Both legs are in flight at once.
+
+        A barrier is the deterministic form of this assertion: it releases only
+        once both legs have reached it, so it cannot pass under a sequential
+        driver -- the first leg would sit there waiting for a partner that has
+        not been started yet, and time out.
+        """
+        barrier = threading.Barrier(2, timeout=10)
+
+        def _rendezvous(cmd, env=None, cwd=None, **kwargs):
+            barrier.wait()
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _rendezvous):
+            failed = _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
+
+        assert failed is False
+
+    def test_builds_do_not_overlap_when_parallel_is_off(self):
+        """[coverage].parallel = false really does serialize them.
+
+        The escape hatch exists for a shared Conan cache under concurrent load,
+        and for xvfb libraries whose image tests do not tolerate a second client
+        on the display. A flag that quietly kept overlapping would be worse than
+        no flag at all.
+        """
+        intervals = []
+        lock = threading.Lock()
+
+        def _timed(cmd, env=None, cwd=None, **kwargs):
+            started = time.monotonic()
+            time.sleep(0.05)
+            with lock:
+                intervals.append((started, time.monotonic()))
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _timed):
+            _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=False)
+
+        intervals.sort()
+        assert len(intervals) == 2
+        assert intervals[0][1] <= intervals[1][0]
+
+    def test_build_output_is_replayed_per_leg(self, capsys):
+        """Each leg's output is printed whole rather than interleaved.
+
+        Two concurrent `conan create`s writing to one log split every compiler
+        diagnostic away from the file name printed above it.
+        """
+        def _chatty(cmd, env=None, cwd=None, **kwargs):
+            name = "cpp" if "Debug" in " ".join(cmd) else "py"
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="\n".join(f"{name}-line{n}" for n in range(5)),
+            )
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _chatty):
+            _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
+
+        out = capsys.readouterr().out
+        for name in ("cpp", "py"):
+            assert "\n".join(f"{name}-line{n}" for n in range(5)) in out
+
+    def test_build_failure_is_reported_not_raised(self):
+        """A failing leg is recorded so the other leg and the report still run."""
+        def _fail_cpp(cmd, env=None, cwd=None, **kwargs):
+            code = 1 if "Debug" in " ".join(cmd) else 0
+            return subprocess.CompletedProcess(cmd, code, stdout="")
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _fail_cpp):
+            failed = _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
+
+        assert failed is True
+
+    def test_leg_that_cannot_start_is_a_failure_not_a_crash(self):
+        """An exception on a worker thread must not abort the whole run.
+
+        It would otherwise surface out of future.result() in the driver, at
+        exactly the point the run is supposed to carry on and report the half
+        that did work.
+        """
+        def _explode(cmd, env=None, cwd=None, **kwargs):
+            raise OSError("no such file: build.py")
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run",
+                   _explode):
+            failed = _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
+
+        assert failed is True
