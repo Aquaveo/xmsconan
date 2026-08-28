@@ -13,7 +13,7 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
-from xmsconan.build_toml import BuildToml, load_toml, toml_to_dataclass, validate_top_level_keys
+from xmsconan.build_toml import BuildToml, load_toml, toml_to_dataclass, validate_top_level_keys, XmsDependency
 from xmsconan.constants import PYTHON_BINDING_TYPES, TESTING_FRAMEWORKS
 from xmsconan.generator_tools.build_filter import load_build_filter
 from xmsconan.package_tools.packager import XmsConanPackager
@@ -54,7 +54,7 @@ _CMAKE_BUILTIN_DEPENDENCIES = frozenset({
 
 
 def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
-                              xms_dependencies: list) -> list[dict]:
+                              xms_dependencies: list[XmsDependency]) -> list[dict]:
     """Resolve which ``extra_dependencies`` the generated CMakeLists should find.
 
     ``extra_dependencies`` entries are Conan references (``"cereal/1.3.0"``), and
