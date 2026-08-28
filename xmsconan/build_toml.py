@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # Python < 3.11
 from xmsconan.ci_options import validate_ci_table
 
 
-def load_toml(toml_path):
+def _load_toml(toml_path):
     """Parse a TOML file.
 
     Args:
@@ -168,10 +168,10 @@ class BuildToml:
 #: (XmsConanPackager.resolve_matrix), ``[filter]`` (build_filter.load_build_filter),
 #: ``conan_profile_variants`` and ``vs2019_dependency_overrides`` enforce the same
 #: rule for their own keys.
-KNOWN_KEYS = frozenset(f.name for f in fields(BuildToml))
+_KNOWN_KEYS = frozenset(f.name for f in fields(BuildToml))
 
 
-def validate_top_level_keys(toml_data, toml_path):
+def _validate_top_level_keys(toml_data, toml_path):
     """Reject a build.toml key that no generator, template, or doc knows.
 
     Args:
@@ -179,13 +179,13 @@ def validate_top_level_keys(toml_data, toml_path):
         toml_path: Path the data came from, for the error message.
 
     Raises:
-        ValueError: When *toml_data* carries a key outside :data:`KNOWN_KEYS`.
+        ValueError: When *toml_data* carries a key outside :data:`_KNOWN_KEYS`.
     """
-    unknown = sorted(set(toml_data) - KNOWN_KEYS)
+    unknown = sorted(set(toml_data) - _KNOWN_KEYS)
     if unknown:
         raise ValueError(
             f'{toml_path} has unknown top-level key(s) {", ".join(unknown)}. '
-            f'Accepted keys: {", ".join(sorted(KNOWN_KEYS))}.'
+            f'Accepted keys: {", ".join(sorted(_KNOWN_KEYS))}.'
         )
 
 
@@ -232,12 +232,12 @@ def _xms_dependency(entry, toml_path) -> XmsDependency:
     return XmsDependency(**entry)
 
 
-def toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
+def _toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
     """Convert a parsed ``build.toml`` into a :class:`BuildToml`.
 
     Args:
         toml_data: The parsed file, already checked by
-            :func:`validate_top_level_keys`.
+            :func:`_validate_top_level_keys`.
         toml_path: Where the data came from, for error messages.
 
     Returns:
@@ -273,13 +273,13 @@ def read_build_toml(toml_path) -> BuildToml:
             missing ``library_name``. Parse errors name the file.
     """
     try:
-        data = load_toml(toml_path)
+        data = _load_toml(toml_path)
     except FileNotFoundError:
         raise
     except ValueError as exc:
         raise ValueError(f"could not parse {toml_path}: {exc}") from exc
-    validate_top_level_keys(data, toml_path)
-    return toml_to_dataclass(data, toml_path)
+    _validate_top_level_keys(data, toml_path)
+    return _toml_to_dataclass(data, toml_path)
 
 
 def read_optional_build_toml(toml_path) -> Optional[BuildToml]:

@@ -1,5 +1,6 @@
 """Tests for generator_tools.build_file_generator."""
 import ast
+from dataclasses import fields
 import os
 from pathlib import Path
 import re
@@ -9,7 +10,7 @@ import sys
 import pytest
 
 import xmsconan
-from xmsconan.build_toml import KNOWN_KEYS
+from xmsconan.build_toml import BuildToml
 from xmsconan.generator_tools import build_file_generator as build_file_generator_module
 from xmsconan.generator_tools.build_file_generator import (
     _write_text_lf,
@@ -1473,7 +1474,7 @@ def _keys_documented_in_usage():
 
 
 def test_known_keys_matches_the_documented_option_table():
-    """KNOWN_KEYS and the USAGE.md option table say the same thing.
+    """The BuildToml fields and the USAGE.md option table say the same thing.
 
     The whitelist rejects on first contact inside every consumer's Generate
     step, so the two ways it can be wrong are both expensive and neither is
@@ -1484,8 +1485,9 @@ def test_known_keys_matches_the_documented_option_table():
     expected set from KNOWN_KEYS would make this test pass by construction.
     """
     documented = _keys_documented_in_usage()
+    known = frozenset(f.name for f in fields(BuildToml))
 
-    assert documented == KNOWN_KEYS - _KEYS_WITHOUT_AN_OPTION_TABLE_ROW
+    assert documented == known - _KEYS_WITHOUT_AN_OPTION_TABLE_ROW
 
 
 def test_every_documented_key_is_accepted(template_dir, tmp_path):

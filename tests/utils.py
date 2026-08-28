@@ -2,7 +2,7 @@
 import os
 from unittest.mock import patch
 
-from xmsconan.build_toml import toml_to_dataclass
+from xmsconan.build_toml import _toml_to_dataclass
 
 
 _IS_WINDOWS = os.name == 'nt'
@@ -41,4 +41,4 @@ def make_build_toml(**overrides):
     """
     data = {"library_name": "xmscore"}
     data.update(overrides)
-    return toml_to_dataclass(data, "build.toml")
+    return _toml_to_dataclass(data, "build.toml")

@@ -1,24 +1,19 @@
 """Tests for the build.toml reader."""
-from dataclasses import fields, FrozenInstanceError
+from dataclasses import FrozenInstanceError
 
 import pytest
 
 from xmsconan.build_toml import (
-    BuildToml, CiTable, CoverageTable, KNOWN_KEYS, load_toml, read_build_toml,
-    read_optional_build_toml, toml_to_dataclass, XmsDependency
+    _load_toml, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, read_build_toml,
+    read_optional_build_toml, XmsDependency
 )
 
 
 def test_load_toml_returns_the_parsed_table(tmp_path):
-    """load_toml is a plain parser: no validation, no defaults."""
+    """_load_toml is a plain parser: no validation, no defaults."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\nanything = 1\n[ci]\nxvfb = true\n', encoding="utf-8")
-    assert load_toml(toml_file) == {"library_name": "xmscore", "anything": 1, "ci": {"xvfb": True}}
-
-
-def test_build_toml_fields_match_known_keys():
-    """The dataclass and the key allowlist describe the same file."""
-    assert frozenset(f.name for f in fields(BuildToml)) == KNOWN_KEYS
+    assert _load_toml(toml_file) == {"library_name": "xmscore", "anything": 1, "ci": {"xvfb": True}}
 
 
 def test_build_toml_derives_python_namespaced_dir():
@@ -88,12 +83,12 @@ def test_xms_dependency_defaults_no_python_off():
 def test_toml_to_dataclass_requires_library_name():
     """Every reader needs the name; the error names the file."""
     with pytest.raises(ValueError, match="build.toml does not define library_name"):
-        toml_to_dataclass({"description": "d"}, "build.toml")
+        _toml_to_dataclass({"description": "d"}, "build.toml")
 
 
 def test_toml_to_dataclass_converts_sub_tables():
     """[ci], [coverage] and xms_dependencies come back typed."""
-    config = toml_to_dataclass({
+    config = _toml_to_dataclass({
         "library_name": "xmscore",
         "ci": {"xvfb": True, "python_versions": ["3.10", "3.13"]},
         "coverage": {"cpp_threshold": 80, "python_version": 3.13},
@@ -108,7 +103,7 @@ def test_toml_to_dataclass_converts_sub_tables():
 
 def test_toml_to_dataclass_leaves_matrix_and_filter_as_dicts():
     """The packager owns those vocabularies and the templates write them verbatim."""
-    config = toml_to_dataclass({
+    config = _toml_to_dataclass({
         "library_name": "xmscore",
         "matrix": {"compiler_runtime": ["dynamic"]},
         "filter": {"build_type": "Release"},
@@ -120,19 +115,19 @@ def test_toml_to_dataclass_leaves_matrix_and_filter_as_dicts():
 def test_toml_to_dataclass_rejects_a_bad_ci_key():
     """The [ci] allowlist is applied during conversion, so no reader can skip it."""
     with pytest.raises(ValueError, match="windows_repair_wheel"):
-        toml_to_dataclass({"library_name": "x", "ci": {"windows_repair_wheel": True}}, "build.toml")
+        _toml_to_dataclass({"library_name": "x", "ci": {"windows_repair_wheel": True}}, "build.toml")
 
 
 def test_toml_to_dataclass_rejects_an_unknown_coverage_key():
     """[coverage] gets the same unknown-key rule [ci] already has."""
     with pytest.raises(ValueError, match=r"\[coverage\] has unknown key\(s\) cpp_treshold"):
-        toml_to_dataclass({"library_name": "x", "coverage": {"cpp_treshold": 80}}, "build.toml")
+        _toml_to_dataclass({"library_name": "x", "coverage": {"cpp_treshold": 80}}, "build.toml")
 
 
 def test_toml_to_dataclass_rejects_a_non_table_coverage():
     """A scalar where a table belongs is named, not passed through."""
     with pytest.raises(ValueError, match=r"\[coverage\] must be a table"):
-        toml_to_dataclass({"library_name": "x", "coverage": 80}, "build.toml")
+        _toml_to_dataclass({"library_name": "x", "coverage": 80}, "build.toml")
 
 
 @pytest.mark.parametrize("entry,expected", [
@@ -144,7 +139,7 @@ def test_toml_to_dataclass_rejects_a_non_table_coverage():
 def test_toml_to_dataclass_rejects_malformed_xms_dependencies(entry, expected):
     """An entry the conanfile template could not render fails at conversion instead."""
     with pytest.raises(ValueError, match=expected):
-        toml_to_dataclass({"library_name": "x", "xms_dependencies": [entry]}, "build.toml")
+        _toml_to_dataclass({"library_name": "x", "xms_dependencies": [entry]}, "build.toml")
 
 
 def test_read_build_toml_returns_a_typed_config(tmp_path):
@@ -158,7 +153,7 @@ def test_read_build_toml_returns_a_typed_config(tmp_path):
 
 
 def test_read_build_toml_rejects_an_unknown_top_level_key(tmp_path):
-    """The reader validates; load_toml alone does not."""
+    """The reader validates; _load_toml alone does not."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
