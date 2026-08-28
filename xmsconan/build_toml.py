@@ -181,10 +181,9 @@ def _validate_top_level_keys(toml_data, toml_path):
     """
     unknown = sorted(set(toml_data) - _KNOWN_KEYS)
     if unknown:
-        raise ValueError(
-            f'{toml_path} has unknown top-level key(s) {", ".join(unknown)}. '
-            f'Accepted keys: {", ".join(sorted(_KNOWN_KEYS))}.'
-        )
+        unknown_keys = ", ".join(unknown)
+        accepted_keys = ", ".join(sorted(_KNOWN_KEYS))
+        raise ValueError(f'{toml_path} has unknown top-level key(s) {unknown_keys}. Accepted keys: {accepted_keys}.')
 
 
 _COVERAGE_KEYS = frozenset(f.name for f in fields(CoverageTable))
@@ -215,10 +214,9 @@ def _reject_unknown_keys(table: dict, accepted: frozenset, where: str) -> None:
     """Raise a ``ValueError`` naming ``where`` when ``table`` has a key outside ``accepted``."""
     unknown = sorted(set(table) - accepted)
     if unknown:
-        raise ValueError(
-            f'{where} has unknown key(s) {", ".join(unknown)}. '
-            f'Accepted keys: {", ".join(sorted(accepted))}.'
-        )
+        unknown_keys = ", ".join(unknown)
+        accepted_keys = ", ".join(sorted(accepted))
+        raise ValueError(f'{where} has unknown key(s) {unknown_keys}. Accepted keys: {accepted_keys}.')
 
 
 def _validate_ci_table(raw, toml_path) -> None:
