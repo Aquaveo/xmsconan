@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from xmsconan.constants import version_sort_key
+from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
 from xmsconan.generator_tools.ci_file_generator import (
     _display_name,
     generate_ci,
@@ -643,7 +644,9 @@ def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
     assert ci["Run C++ Tests"]["stage"] == "Test"
     # Coverage is informational-only when tests run in a separate job -- but
     # only for the coverage gate itself. The tool failing still fails the job.
-    assert ci["Coverage"].get("allow_failure") == {"exit_codes": [3]}
+    # Asserted through the constant: the forgiven code must be the one the
+    # tool actually exits with, not a number the template happens to repeat.
+    assert ci["Coverage"].get("allow_failure") == {"exit_codes": [EXIT_GATE_FAILED]}
 
 
 def test_gitlab_ci_no_split_tests_by_default(tmp_path):

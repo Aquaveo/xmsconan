@@ -58,8 +58,8 @@ LOGGER = logging.getLogger(__name__)
 # The coverage *gate* failing and the coverage *tool* failing are different
 # events and the generated CI needs to tell them apart: under [ci].split_tests
 # the tests already gate the pipeline from their own job, so a threshold miss
-# here is advisory -- but a crash, a build leg that left no package, or gcovr
-# falling over is not, and collapsing both onto exit 1 is what let a Coverage
+# here is advisory -- but a crash, neither build leg leaving a package, or
+# gcovr falling over is not, and collapsing both onto exit 1 is what let a Coverage
 # stage report green while producing no report at all. GitLab's
 # `allow_failure: exit_codes:` keys off the number, so the gate gets one of its
 # own and everything else stays fatal.
@@ -287,9 +287,10 @@ def _run_coverage_builds(legs, version: str, env, cwd, parallel: bool) -> bool:
         version: Version passed to ``build.py``.
         env: Environment for the builds.
         cwd: Directory to build in.
-        parallel: Overlap the legs. They are independent ``conan create``s that
-            share only the report step, so the run costs about as long as its
-            slower half rather than the sum of both.
+        parallel: Overlap the legs. They are independent ``conan create``s
+            that share only the report step, but they also share the local
+            Conan cache and the machine's cores, so overlapping is opt-in --
+            see ``[coverage].parallel`` (§5.7).
 
     Returns:
         True when any leg failed. A failure is reported, not raised: the
@@ -802,8 +803,13 @@ def _py_percent_from_summary(summary_path: Path) -> float:
         ) from exc
 
 
-def _append_github_summary(rows: list[tuple[str, float, float, bool]]):
-    """Append a markdown table to $GITHUB_STEP_SUMMARY if present."""
+def _append_github_summary(rows: list[tuple[str, float, Optional[float], bool]]):
+    """Append a markdown table to $GITHUB_STEP_SUMMARY if present.
+
+    A row's actual of ``None`` means the layer was never (fully) measured.
+    It renders as words rather than a percent so a narrowed or absent
+    measurement cannot be misread as a merely low score.
+    """
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
@@ -816,7 +822,8 @@ def _append_github_summary(rows: list[tuple[str, float, float, bool]]):
     ]
     for layer, threshold, actual, passed in rows:
         status = "PASS" if passed else "FAIL"
-        lines.append(f"| {layer} | {threshold:.1f}% | {actual:.1f}% | {status} |")
+        actual_cell = f"{actual:.1f}%" if actual is not None else "n/a (unmeasured)"
+        lines.append(f"| {layer} | {threshold:.1f}% | {actual_cell} | {status} |")
     lines.append("")
     with open(summary_path, "a", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -826,8 +833,8 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
     The packager emits a Debug+testing-only config and a Release+pybind-only
-    config independently; this function builds both -- concurrently unless
-    ``[coverage].parallel = false`` (§11) turns that off -- then runs gcovr
+    config independently; this function builds both -- sequentially unless
+    ``[coverage].parallel = true`` (§5.7) overlaps them -- then runs gcovr
     against both build folders and merges the result, and copies pytest-cov
     artifacts out of the pybind build folder. The two builds never share a
     binary shape, so changes to CxxTest linkage or pybind options cannot break
@@ -836,10 +843,11 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     Python test exercises.
 
     Returns the process exit code: ``EXIT_OK`` when both layers clear their
-    thresholds and every leg built, ``EXIT_GATE_FAILED`` for a threshold miss
-    or a build.py failure in either layer, and ``EXIT_ERROR`` when neither leg
-    left a package to report on. The generated CI distinguishes the gate from
-    the error -- see the exit-code constants.
+    thresholds and every leg built, ``EXIT_GATE_FAILED`` for a threshold miss,
+    an unmeasured layer, or a build.py failure in either layer, and
+    ``EXIT_ERROR`` when neither leg left a package to report on. The
+    generated CI distinguishes the gate from the error -- see the exit-code
+    constants.
     """
     toml_file = Path(toml_file_path).resolve()
     output_dir = Path(output_dir).resolve()
@@ -898,8 +906,9 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     #
     # They share no binary shape and no output file -- separate conan package
     # ids, separate build folders, separate reports -- which is what lets them
-    # overlap. Only the report step below reads both. `[coverage].parallel =
-    # false` puts them back in sequence for a library where that is not safe.
+    # overlap. Only the report step below reads both. They run in sequence by
+    # default; `[coverage].parallel = true` overlaps them on a runner where
+    # the conan cache race and the CPU contention do not apply.
     legs = [
         _BuildLeg("C++", json.dumps({
             "build_type": "Debug",
@@ -978,7 +987,21 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     py_raw = _py_percent_from_summary(py_summary) if py_summary.exists() else 0.0
     cpp_threshold = coverage_cfg["cpp_threshold"]
     py_threshold = coverage_cfg["python_threshold"]
-    cpp_pass = cpp_raw >= cpp_threshold
+    # A missing testing leg does not zero the C++ number: gcovr merges
+    # whatever folders survived step 4, so the percent quietly narrows to the
+    # binding layer alone, and cpp_threshold defaults to 0 -- a mostly
+    # unmeasured layer would read as PASS. Same distinction as py_measured
+    # below: no measurement is not 0% coverage, and only a full measurement
+    # may satisfy the threshold.
+    cpp_measured = cpp_build_folder is not None
+    if not cpp_measured:
+        LOGGER.error(
+            "No C++ coverage measurement: the testing coverage build left no "
+            "build folder to read, so the C++ percent covers the binding "
+            "layer alone. Failing the gate rather than reporting a mostly "
+            "unmeasured layer as passing."
+        )
+    cpp_pass = cpp_measured and cpp_raw >= cpp_threshold
     # An absent summary is not 0% coverage, it is *no measurement*, and the two
     # have to be told apart: python_threshold defaults to 0, so 0.0 >= 0.0
     # reports "Python: 0.0% -> PASS" for a layer that never ran. Step 3 always
@@ -1006,13 +1029,16 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     py_pass = py_measured and py_raw >= py_threshold
 
     rows = [
-        ("C++", cpp_threshold, round(cpp_raw, 1), cpp_pass),
-        ("Python", py_threshold, round(py_raw, 1), py_pass),
+        ("C++", cpp_threshold,
+         round(cpp_raw, 1) if cpp_measured else None, cpp_pass),
+        ("Python", py_threshold,
+         round(py_raw, 1) if py_measured else None, py_pass),
     ]
     LOGGER.info("Coverage summary:")
     for layer, threshold, actual, passed in rows:
-        LOGGER.info("  %s: %.1f%% (threshold %.1f%%) -> %s",
-                    layer, actual, threshold, "PASS" if passed else "FAIL")
+        shown = f"{actual:.1f}%" if actual is not None else "n/a (unmeasured)"
+        LOGGER.info("  %s: %s (threshold %.1f%%) -> %s",
+                    layer, shown, threshold, "PASS" if passed else "FAIL")
     _append_github_summary(rows)
 
     if tests_failed:

@@ -188,6 +188,13 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
 
 def _coverage_context(coverage_config: dict, library_name: str) -> dict:
     """Build the coverage template context, applying sensible defaults."""
+    parallel = coverage_config.get("parallel", False)
+    if not isinstance(parallel, bool):
+        raise ValueError(
+            "[coverage].parallel must be a TOML boolean (true or false), got "
+            f"{parallel!r}. A quoted \"false\" is a string, and any non-empty "
+            "string would silently enable the parallel mode."
+        )
     default_filters = [f"{library_name}/"]
     # The binding directory is NOT excluded. It used to be, because only the
     # testing build was read and that build does not compile the bindings --
@@ -219,7 +226,7 @@ def _coverage_context(coverage_config: dict, library_name: str) -> dict:
         # Set true only where neither applies -- a runner with a private cache
         # and cores to spare. An xvfb library whose image tests do not tolerate
         # a second client on the same display must leave it off regardless.
-        "parallel": bool(coverage_config.get("parallel", False)),
+        "parallel": parallel,
     }
 
 
@@ -405,6 +412,13 @@ def generate_ci(
 
     from xmsconan import __version__ as xmsconan_version
 
+    # Deferred like the coverage import above: coverage_generator imports
+    # _coverage_context from this module, so a module-scope import here would
+    # close a cycle. The generated job must forgive exactly the code the tool
+    # exits with for a gate miss, so the template takes the constant rather
+    # than repeating the number.
+    from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
+
     # Build template context
     context = {
         "xmsconan_version": xmsconan_version,
@@ -442,6 +456,7 @@ def generate_ci(
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
         "coverage": _coverage_context(coverage_config, library_name),
+        "coverage_gate_exit_code": EXIT_GATE_FAILED,
         "coverage_python_version": _resolve_coverage_python_version(toml_data),
         "ci_build_types": filter_effects["build_types"],
         # Per platform: a filter can leave one platform building wheels and

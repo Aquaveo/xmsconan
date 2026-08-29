@@ -341,14 +341,14 @@ Coverage:
 <% if ci_split_tests %>
   # Under [ci].split_tests the tests gate the pipeline from "Run C++ Tests",
   # so this job exists for the report and a coverage *gate* miss is advisory
-  # here. Only that exit code is forgiven. The tool failing -- an exception, a
-  # build leg that left no package in the conan cache, gcovr falling over --
-  # still fails the job, because `allow_failure: true` forgave those too, and a
-  # Coverage stage reporting green while producing no report at all is how a
-  # broken coverage run survived an entire release unnoticed.
+  # here. Only that exit code is forgiven. The tool failing -- an exception,
+  # neither build leg leaving a package in the conan cache, gcovr falling
+  # over -- still fails the job, because `allow_failure: true` forgave those
+  # too, and a Coverage stage reporting green while producing no report at
+  # all is how a broken coverage run survived an entire release unnoticed.
   allow_failure:
     exit_codes:
-      - 3
+      - << coverage_gate_exit_code >>
 <% endif %>
   except:
     - tags
