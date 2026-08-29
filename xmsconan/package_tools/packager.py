@@ -44,17 +44,6 @@ def get_current_arch():
     return arch_map.get(machine, machine)
 
 
-# Build-environment keys allowed into a profile written into a repository.
-#
-# This is an ALLOW-list, not a deny-list, and deliberately so: buildenv is
-# assembled from the process environment, so a deny-list fails OPEN -- a
-# credential added later under a new name is written to disk until somebody
-# remembers to update the list. Anything not named here is dropped, so a new
-# variable has to be consciously admitted before it can be persisted.
-#
-# The ephemeral profile used by an actual build is unaffected: it keeps the
-# full environment (including AQUAPI_* credentials) because the build needs
-# them, and that file is discarded with its temporary directory.
 class ProfilePlan(NamedTuple):
     """One profile that :meth:`XmsConanPackager.write_profiles` will write.
 
@@ -69,6 +58,22 @@ class ProfilePlan(NamedTuple):
     variant: Optional[str]
 
 
+# Build-environment keys allowed into a profile written into a repository.
+#
+# This is an ALLOW-list, not a deny-list, and deliberately so: buildenv is
+# assembled from the process environment, so a deny-list fails OPEN -- a
+# credential added later under a new name is written to disk until somebody
+# remembers to update the list. Anything not named here is dropped, so a new
+# variable has to be consciously admitted before it can be persisted.
+#
+# This list is the second line of defense, not the first. A secret must never
+# reach `combination['buildenv']` at all, because the ephemeral build profile
+# is serialized unfiltered and conan echoes whatever profile it is given to
+# stdout under "Input profiles" at the start of every `conan create`. Deleting
+# the temporary file afterwards does nothing about that: the value is already
+# in the CI job log, which outlives it and is readable by anyone with project
+# access. See `generate_configurations`, which is where credentials are kept
+# out of buildenv in the first place.
 PUBLIC_BUILDENV_KEYS = frozenset({
     'XMS_VERSION',
     'PYTHON_TARGET_VERSION',
@@ -812,9 +817,6 @@ class XmsConanPackager(object):
         default_python_version = self._highest_python_version(self._python_versions)
         ci_commit_tag = os.environ.get('CI_COMMIT_TAG', 'False')  # Gitlab
         release_python = os.getenv('RELEASE_PYTHON', 'False')
-        aquapi_username = os.getenv('AQUAPI_USERNAME', None)
-        aquapi_password = os.getenv('AQUAPI_PASSWORD', None)
-        aquapi_url = os.getenv('AQUAPI_URL', None)
 
         if ci_commit_tag != 'False':
             release_python = 'True'
@@ -825,14 +827,24 @@ class XmsConanPackager(object):
                 'pybind': False,
                 'testing': False,
             }
+            # AQUAPI_USERNAME / AQUAPI_PASSWORD / AQUAPI_URL are deliberately
+            # absent. Conan prints the profile it is handed to stdout under
+            # "Input profiles" before every build, so anything placed here is
+            # published to the CI job log -- and the devpi password was, on
+            # every build, in cleartext.
+            #
+            # Nothing needed them here to begin with. The recipe never reads
+            # AQUAPI_*; neither does the generated CMake. The three real
+            # consumers -- `xmsconan wheel-deploy`, `xmsconan docker-run` and
+            # the credential resolver behind them -- read os.environ directly
+            # and run outside any conan build, so they are unaffected. A build
+            # step that genuinely needs one still inherits it from the process
+            # environment; buildenv is what puts it in the log.
             combination['buildenv'] = {
                 'XMS_VERSION': xms_version,
                 'PYTHON_TARGET_VERSION': default_python_version,
                 'CI_COMMIT_TAG': ci_commit_tag,
                 'RELEASE_PYTHON': release_python,
-                'AQUAPI_USERNAME': aquapi_username,
-                'AQUAPI_PASSWORD': aquapi_password,
-                'AQUAPI_URL': aquapi_url,
             }
             if self._artifacts_dir:
                 combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
