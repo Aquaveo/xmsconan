@@ -641,8 +641,9 @@ def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
     # Build and Test should be separate stages
     assert ci["Conan Build"]["stage"] == "Build"
     assert ci["Run C++ Tests"]["stage"] == "Test"
-    # Coverage should be informational-only when tests run in a separate job
-    assert ci["Coverage"].get("allow_failure") is True
+    # Coverage is informational-only when tests run in a separate job -- but
+    # only for the coverage gate itself. The tool failing still fails the job.
+    assert ci["Coverage"].get("allow_failure") == {"exit_codes": [3]}
 
 
 def test_gitlab_ci_no_split_tests_by_default(tmp_path):

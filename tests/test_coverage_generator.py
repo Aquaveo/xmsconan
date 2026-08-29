@@ -17,6 +17,8 @@ from xmsconan.coverage_tools.coverage_generator import (
     _conan_cache_path,
     _cpp_percent_from_summary,
     _find_coverage_package,
+    EXIT_ERROR,
+    EXIT_GATE_FAILED,
     _find_pytest_cov_artifact,
     _is_simple_relative_filter_pattern,
     _py_percent_from_summary,
@@ -1078,7 +1080,7 @@ class TestRunCoverageEndToEnd:
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-        assert exit_code == 1
+        assert exit_code == EXIT_GATE_FAILED
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1101,7 +1103,7 @@ class TestRunCoverageEndToEnd:
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-        assert exit_code == 1
+        assert exit_code == EXIT_GATE_FAILED
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1124,7 +1126,92 @@ class TestRunCoverageEndToEnd:
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-        assert exit_code == 1, "69.95% must not satisfy a 70.0 threshold"
+        assert exit_code == EXIT_GATE_FAILED, \
+            "69.95% must not satisfy a 70.0 threshold"
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_reports_partial_coverage_when_one_leg_left_no_package(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """A leg that built nothing degrades to partial coverage, not a crash.
+
+        `_run_coverage_builds` promises that a failed leg is "reported, not
+        raised" so "partial coverage remains available". The lookup that
+        followed was unguarded, so a failed leg raised RuntimeError out of
+        run_coverage and the surviving leg's report was lost with it -- the
+        fallback was unreachable in exactly the case it existed for.
+        """
+        toml_file, cpp_build_folder, _py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=95.0, py_percent=95.0,
+            )
+        )
+        mock_run.side_effect = fake_run
+
+        def find(library_name, *, kind, python_version=None):
+            if kind == "pybind":
+                raise RuntimeError(
+                    "No pybind=True, testing=False, Release package found for "
+                    "xmscore in the local Conan cache. Did the pybind coverage "
+                    "build complete?"
+                )
+            return ("xmscore/0.0.0", "pid-cpp")
+
+        mock_find.side_effect = find
+        mock_path.side_effect = lambda ref_with_pid, folder: cpp_build_folder
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        # The gate still fails -- an unmeasured Python layer is not a pass --
+        # but it fails as a gate, having produced the C++ half of the report.
+        assert exit_code == EXIT_GATE_FAILED
+
+        def is_tracefile_run(call):
+            cmd = call.args[0]
+            if not isinstance(cmd, list) or cmd[:1] != ["gcovr"]:
+                return False
+            return "--json" in cmd and "--json-summary" not in cmd
+
+        tracefiles = [call for call in mock_run.call_args_list
+                      if is_tracefile_run(call)]
+        assert len(tracefiles) == 1, (
+            "gcovr should have read the one surviving build folder, not the "
+            f"missing one as well; got {len(tracefiles)} tracefile runs"
+        )
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_errors_when_neither_leg_left_a_package(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """Both legs missing is a tool failure, not a coverage gate failure.
+
+        There is no .gcda to report on, so writing a report would publish 0%
+        for a run that never measured anything. It exits EXIT_ERROR rather
+        than EXIT_GATE_FAILED so the generated CI's allow_failure -- which
+        forgives only the gate -- still fails the job.
+        """
+        toml_file, _cpp, _py, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=95.0, py_percent=95.0,
+        )
+        mock_run.side_effect = fake_run
+
+        def find(library_name, *, kind, python_version=None):
+            raise RuntimeError(
+                f"No {kind} package found for xmscore in the local Conan "
+                f"cache. Did the {kind} coverage build complete?"
+            )
+
+        mock_find.side_effect = find
+        mock_path.side_effect = AssertionError(
+            "no package was found, so no cache path should be resolved"
+        )
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+        assert exit_code == EXIT_ERROR
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1777,9 +1864,15 @@ _LEGS = (
 class TestConcurrentCoverageBuilds:
     """The C++ and Python coverage builds run at the same time."""
 
-    def test_parallel_defaults_on(self):
-        """The two builds overlap unless the library opts out."""
-        assert _coverage_context({}, "xmscore")["parallel"] is True
+    def test_parallel_defaults_off(self):
+        """The two builds run in sequence unless the library opts in.
+
+        Overlapping them races conan 2's local cache, which is not safe for
+        concurrent writes, and costs more wall clock than it saves once the
+        legs contend for CPU. Opting in stays possible; it is no longer the
+        default anyone gets without asking.
+        """
+        assert _coverage_context({}, "xmscore")["parallel"] is False
 
     def test_parallel_can_be_disabled(self):
         """[coverage].parallel = false puts the builds back in sequence."""

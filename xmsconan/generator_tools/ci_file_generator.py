@@ -204,12 +204,22 @@ def _coverage_context(coverage_config: dict, library_name: str) -> dict:
         "filters": list(coverage_config.get("filters", default_filters)),
         "excludes": list(coverage_config.get("excludes", default_excludes)),
         # The C++ and Python halves of a coverage run are two independent
-        # `conan create`s that share only the report step, so they overlap by
-        # default -- the run costs about as long as its slower half instead of
-        # the sum. Set false where that is not safe: a shared Conan cache under
-        # heavy concurrent use, or an xvfb library whose image tests do not
-        # tolerate a second client on the same display.
-        "parallel": bool(coverage_config.get("parallel", True)),
+        # `conan create`s that share only the report step, so overlapping them
+        # looks free. It is not, and it defaults to off.
+        #
+        # Two independent reasons. Conan 2's local cache is not safe for
+        # concurrent writes -- two `conan create`s registering a recipe at the
+        # same time hit a uniqueness constraint, which is what broke xmsvtk's
+        # Coverage stage. And even with the cache serialized the legs contend
+        # for CPU: an identical shard, timed by gtest itself, went from 245s to
+        # 386s (1.57x) with a second leg running beside it, so the overlap
+        # spends more wall clock than it saves while holding twice the runner
+        # capacity for the duration.
+        #
+        # Set true only where neither applies -- a runner with a private cache
+        # and cores to spare. An xvfb library whose image tests do not tolerate
+        # a second client on the same display must leave it off regardless.
+        "parallel": bool(coverage_config.get("parallel", False)),
     }
 
 

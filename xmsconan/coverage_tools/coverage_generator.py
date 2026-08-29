@@ -53,6 +53,23 @@ from xmsconan.toml_utils import load_toml
 
 LOGGER = logging.getLogger(__name__)
 
+# Process exit codes.
+#
+# The coverage *gate* failing and the coverage *tool* failing are different
+# events and the generated CI needs to tell them apart: under [ci].split_tests
+# the tests already gate the pipeline from their own job, so a threshold miss
+# here is advisory -- but a crash, a build leg that left no package, or gcovr
+# falling over is not, and collapsing both onto exit 1 is what let a Coverage
+# stage report green while producing no report at all. GitLab's
+# `allow_failure: exit_codes:` keys off the number, so the gate gets one of its
+# own and everything else stays fatal.
+#
+# 3 rather than 2: argparse exits 2 on a usage error, and a mistyped invocation
+# must not read as an advisory coverage miss.
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_GATE_FAILED = 3
+
 _XVFB_REEXEC_FLAG = "XMSCONAN_COVERAGE_XVFB_REEXEC"
 
 
@@ -464,6 +481,40 @@ def _conan_cache_path(ref_with_pid: str, folder: str) -> Path:
 _REGEX_METACHARS = frozenset(r".*+?[]{}|\\$")
 
 
+def _locate_coverage_build(
+    library_name: str, *, kind: str, python_version: Optional[str] = None,
+) -> Optional[Path]:
+    """Return one leg's conan build folder, or None when the leg left none.
+
+    ``_run_coverage_builds`` deliberately reports a failed leg rather than
+    raising, "so gcovr and artifact collection still run and partial coverage
+    remains available". That promise is only real if the lookup which follows
+    tolerates a missing package: a leg that failed registers nothing in the
+    cache, so ``_find_coverage_package`` raises ``RuntimeError``, and calling it
+    unguarded turned every single-leg failure into a crashed job with no report
+    at all -- discarding the surviving leg's coverage in exactly the case the
+    fallback exists to cover.
+
+    A bad ``kind`` still raises: that is a programming error in the caller, not
+    a build that did not finish.
+    """
+    try:
+        exact_ref, package_id = _find_coverage_package(
+            library_name, kind=kind, python_version=python_version,
+        )
+    except RuntimeError as exc:
+        LOGGER.error("No %s coverage package to report on: %s", kind, exc)
+        return None
+    try:
+        return _conan_cache_path(f"{exact_ref}:{package_id}", "build")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        LOGGER.error(
+            "Found the %s coverage package (%s:%s) but could not resolve its "
+            "build folder: %s", kind, exact_ref, package_id, exc,
+        )
+        return None
+
+
 def _is_simple_relative_filter_pattern(pattern: str) -> bool:
     """True if ``pattern`` looks like a bare relative path segment.
 
@@ -784,8 +835,11 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     CxxTest reaches, the pybind build the binding layer and anything only a
     Python test exercises.
 
-    Returns the process exit code (0 = pass, non-zero = threshold failure
-    or a build.py failure in either layer).
+    Returns the process exit code: ``EXIT_OK`` when both layers clear their
+    thresholds and every leg built, ``EXIT_GATE_FAILED`` for a threshold miss
+    or a build.py failure in either layer, and ``EXIT_ERROR`` when neither leg
+    left a package to report on. The generated CI distinguishes the gate from
+    the error -- see the exit-code constants.
     """
     toml_file = Path(toml_file_path).resolve()
     output_dir = Path(output_dir).resolve()
@@ -865,46 +919,58 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     )
 
     # 4. Locate the two build folders. gcovr reads .gcda from both; pytest-cov
-    #    artifacts live under the pybind folder.
-    cpp_ref, cpp_pid = _find_coverage_package(library_name, kind="testing")
-    cpp_build_folder = _conan_cache_path(f"{cpp_ref}:{cpp_pid}", "build")
-    LOGGER.info("C++ coverage build folder:    %s", cpp_build_folder)
+    #    artifacts live under the pybind folder. Either may be absent when its
+    #    leg failed above, which is not fatal on its own -- the surviving leg
+    #    still has .gcda worth reporting, and step 7 fails the gate anyway.
+    cpp_build_folder = _locate_coverage_build(library_name, kind="testing")
+    LOGGER.info("C++ coverage build folder:    %s",
+                cpp_build_folder if cpp_build_folder else "<missing>")
 
-    py_ref, py_pid = _find_coverage_package(
+    py_build_folder = _locate_coverage_build(
         library_name, kind="pybind",
         python_version=coverage_python_version,
     )
-    py_build_folder = _conan_cache_path(f"{py_ref}:{py_pid}", "build")
-    LOGGER.info("Python coverage build folder: %s", py_build_folder)
+    LOGGER.info("Python coverage build folder: %s",
+                py_build_folder if py_build_folder else "<missing>")
+
+    gcovr_folders = [folder for folder in (cpp_build_folder, py_build_folder)
+                     if folder is not None]
+    if not gcovr_folders:
+        LOGGER.error(
+            "Neither coverage build left a package in the local Conan cache, "
+            "so there is no .gcda to report on. Failing the run rather than "
+            "writing an empty report that would look like 0%% coverage."
+        )
+        return EXIT_ERROR
 
     # 5. Generate the C++ coverage report from both instrumented builds. The
     #    testing build covers what CxxTest reaches; the pybind build covers the
     #    binding layer and anything only a Python test exercises.
-    cpp_summary = _run_gcovr(
-        [cpp_build_folder, py_build_folder], coverage_cfg, output_dir,
-    )
+    cpp_summary = _run_gcovr(gcovr_folders, coverage_cfg, output_dir)
 
     # 6. Locate Python coverage artifacts produced inside the pybind build
     #    folder by run_python_tests, and copy them up to the workspace root.
     py_summary = output_dir / "cov-py-summary.json"
-    py_summary_src = _find_pytest_cov_artifact(
-        py_build_folder, "cov-py-summary.json", kind="file",
-    )
-    if py_summary_src is not None:
-        shutil.copy2(py_summary_src, py_summary)
-    py_xml_src = _find_pytest_cov_artifact(
-        py_build_folder, "cov-py.xml", kind="file",
-    )
-    if py_xml_src is not None:
-        shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
-    py_html_src = _find_pytest_cov_artifact(
-        py_build_folder, "coverage-html-py", kind="dir",
-    )
-    py_html_dst = output_dir / "coverage-html-py"
-    if py_html_src is not None:
-        if py_html_dst.exists():
-            shutil.rmtree(py_html_dst)
-        shutil.copytree(py_html_src, py_html_dst)
+    py_summary_src = None
+    if py_build_folder is not None:
+        py_summary_src = _find_pytest_cov_artifact(
+            py_build_folder, "cov-py-summary.json", kind="file",
+        )
+        if py_summary_src is not None:
+            shutil.copy2(py_summary_src, py_summary)
+        py_xml_src = _find_pytest_cov_artifact(
+            py_build_folder, "cov-py.xml", kind="file",
+        )
+        if py_xml_src is not None:
+            shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
+        py_html_src = _find_pytest_cov_artifact(
+            py_build_folder, "coverage-html-py", kind="dir",
+        )
+        py_html_dst = output_dir / "coverage-html-py"
+        if py_html_src is not None:
+            if py_html_dst.exists():
+                shutil.rmtree(py_html_dst)
+            shutil.copytree(py_html_src, py_html_dst)
 
     # 7. Threshold gating. Compare raw percentages so a 69.95% build does
     #    not sneak past a 70.0 threshold via display rounding.
@@ -917,16 +983,26 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     # have to be told apart: python_threshold defaults to 0, so 0.0 >= 0.0
     # reports "Python: 0.0% -> PASS" for a layer that never ran. Step 3 always
     # builds pybind with XMS_COVERAGE=1 and the coverage job is Linux-only in
-    # both CI templates, so there is no configuration where the file is
-    # legitimately absent.
+    # both CI templates, so the only way the file is legitimately absent is the
+    # pybind leg failing outright -- which step 4 reports and which fails the
+    # gate here either way.
     py_measured = py_summary_src is not None
     if not py_measured:
-        LOGGER.error(
-            "No cov-py-summary.json under %s. The pybind coverage build ran, "
-            "so run_python_tests should have written one -- failing the gate "
-            "rather than reporting an unmeasured layer as passing.",
-            py_build_folder,
-        )
+        if py_build_folder is None:
+            LOGGER.error(
+                "No Python coverage measurement: the pybind coverage build "
+                "left no package in the cache, so its summary could not be "
+                "collected. Failing the gate rather than reporting an "
+                "unmeasured layer as passing."
+            )
+        else:
+            LOGGER.error(
+                "No cov-py-summary.json under %s. The pybind coverage build "
+                "ran, so run_python_tests should have written one -- failing "
+                "the gate rather than reporting an unmeasured layer as "
+                "passing.",
+                py_build_folder,
+            )
     py_pass = py_measured and py_raw >= py_threshold
 
     rows = [
@@ -942,7 +1018,9 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
     if tests_failed:
         LOGGER.error("Coverage gate FAIL: build.py exited non-zero earlier; "
                      "see the build log above for the failing test(s).")
-    return 0 if (cpp_pass and py_pass and not tests_failed) else 1
+    if cpp_pass and py_pass and not tests_failed:
+        return EXIT_OK
+    return EXIT_GATE_FAILED
 
 
 def main():
@@ -986,7 +1064,7 @@ def main():
                     stderr = stderr.decode("utf-8", errors="replace")
                 print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
         traceback.print_exc()
-        raise SystemExit(1) from exc
+        raise SystemExit(EXIT_ERROR) from exc
     raise SystemExit(exit_code)
 
 
