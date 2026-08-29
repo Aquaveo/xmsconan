@@ -17,8 +17,6 @@ from xmsconan.coverage_tools.coverage_generator import (
     _conan_cache_path,
     _cpp_percent_from_summary,
     _find_coverage_package,
-    EXIT_ERROR,
-    EXIT_GATE_FAILED,
     _find_pytest_cov_artifact,
     _is_simple_relative_filter_pattern,
     _py_percent_from_summary,
@@ -28,6 +26,8 @@ from xmsconan.coverage_tools.coverage_generator import (
     _run_coverage_builds,
     _warn_if_tracefile_empty,
     DEFAULT_LEG_TIMEOUT,
+    EXIT_ERROR,
+    EXIT_GATE_FAILED,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
@@ -1922,8 +1922,10 @@ _LEGS = (
 
 
 class TestConcurrentCoverageBuilds:
-    """How the two coverage builds are scheduled: sequential by default,
-    overlapped when a library opts in."""
+    """Scheduling of the two coverage builds.
+
+    Sequential by default, overlapped when a library opts in.
+    """
 
     def test_parallel_defaults_off(self):
         """The two builds run in sequence unless the library opts in.
