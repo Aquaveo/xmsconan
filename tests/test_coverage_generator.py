@@ -26,6 +26,8 @@ from xmsconan.coverage_tools.coverage_generator import (
     _run_coverage_builds,
     _warn_if_tracefile_empty,
     DEFAULT_LEG_TIMEOUT,
+    EXIT_ERROR,
+    EXIT_GATE_FAILED,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
@@ -155,6 +157,22 @@ class TestGithubStepSummary:
         assert "Coverage Summary" in contents
         assert "| C++ | 70.0% | 72.5% | PASS |" in contents
         assert "| Python | 70.0% | 65.2% | FAIL |" in contents
+
+    def test_renders_unmeasured_actual_as_na(self, tmp_path):
+        """A row whose actual is None renders as unmeasured, not as a percent.
+
+        run_coverage passes None when a layer's build folder went missing, so
+        the step summary must not show the narrowed percent as if it were a
+        real (merely low) score.
+        """
+        summary_path = tmp_path / "summary.md"
+        os.environ["GITHUB_STEP_SUMMARY"] = str(summary_path)
+        try:
+            _append_github_summary([("C++", 0.0, None, False)])
+        finally:
+            del os.environ["GITHUB_STEP_SUMMARY"]
+
+        assert "| C++ | 0.0% | n/a (unmeasured) | FAIL |" in summary_path.read_text()
 
 
 def _fake_conan_list_output(packages, *, library_ref="xmscore/1.0.0"):
@@ -871,6 +889,14 @@ class TestWarnIfTracefileEmpty:
         assert any("absent.json" in m for m in self._messages(caplog))
 
 
+def _is_tracefile_run(call):
+    """True when a mocked subprocess call is a gcovr per-folder tracefile run."""
+    cmd = call.args[0]
+    if not isinstance(cmd, list) or cmd[:1] != ["gcovr"]:
+        return False
+    return "--json" in cmd and "--json-summary" not in cmd
+
+
 class TestRunCoverageEndToEnd:
     """End-to-end ``run_coverage`` behavior with all subprocess calls mocked.
 
@@ -1063,7 +1089,7 @@ class TestRunCoverageEndToEnd:
     def test_fails_when_cpp_under_threshold(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """Exits 1 when C++ percentage is below cpp_threshold."""
+        """Fails the gate (exit 3) when C++ percentage is below cpp_threshold."""
         toml_file, cpp_build_folder, py_build_folder, fake_run = (
             self._setup_workspace(
                 tmp_path, cpp_percent=65.0, py_percent=85.0,
@@ -1078,7 +1104,7 @@ class TestRunCoverageEndToEnd:
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-        assert exit_code == 1
+        assert exit_code == EXIT_GATE_FAILED
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1086,7 +1112,7 @@ class TestRunCoverageEndToEnd:
     def test_fails_when_python_under_threshold(
         self, mock_run, mock_path, mock_find, tmp_path,
     ):
-        """Exits 1 when Python percentage is below python_threshold."""
+        """Fails the gate (exit 3) when Python percentage is below python_threshold."""
         toml_file, cpp_build_folder, py_build_folder, fake_run = (
             self._setup_workspace(
                 tmp_path, cpp_percent=85.0, py_percent=50.0,
@@ -1101,7 +1127,7 @@ class TestRunCoverageEndToEnd:
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-        assert exit_code == 1
+        assert exit_code == EXIT_GATE_FAILED
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1124,7 +1150,128 @@ class TestRunCoverageEndToEnd:
         )
 
         exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
-        assert exit_code == 1, "69.95% must not satisfy a 70.0 threshold"
+        assert exit_code == EXIT_GATE_FAILED, \
+            "69.95% must not satisfy a 70.0 threshold"
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_reports_partial_coverage_when_one_leg_left_no_package(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """A leg that built nothing degrades to partial coverage, not a crash.
+
+        `_run_coverage_builds` promises that a failed leg is "reported, not
+        raised" so "partial coverage remains available". The lookup that
+        followed was unguarded, so a failed leg raised RuntimeError out of
+        run_coverage and the surviving leg's report was lost with it -- the
+        fallback was unreachable in exactly the case it existed for.
+        """
+        toml_file, cpp_build_folder, _py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=95.0, py_percent=95.0,
+            )
+        )
+        mock_run.side_effect = fake_run
+
+        def find(library_name, *, kind, python_version=None):
+            if kind == "pybind":
+                raise RuntimeError("no pybind package in the local Conan cache")
+            return ("xmscore/0.0.0", "pid-cpp")
+
+        mock_find.side_effect = find
+        mock_path.side_effect = lambda ref_with_pid, folder: cpp_build_folder
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        # The gate still fails -- an unmeasured Python layer is not a pass --
+        # but it fails as a gate, having produced the C++ half of the report.
+        assert exit_code == EXIT_GATE_FAILED
+
+        tracefiles = [call for call in mock_run.call_args_list
+                      if _is_tracefile_run(call)]
+        assert len(tracefiles) == 1, (
+            "gcovr should have read the one surviving build folder, not the "
+            f"missing one as well; got {len(tracefiles)} tracefile runs"
+        )
+        cmd = tracefiles[0].args[0]
+        assert cmd[cmd.index("--root") + 1] == str(cpp_build_folder), \
+            "the tracefile run should target the surviving C++ build folder"
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_fails_gate_when_testing_leg_left_no_package(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """A missing testing leg cannot pass the C++ gate on the pybind leg alone.
+
+        gcovr merges whatever folders survived, so with the testing folder
+        missing the C++ percent silently narrows to the binding layer, and
+        cpp_threshold defaults to 0 -- without the measured-guard this
+        returned EXIT_OK with the C++ layer mostly unmeasured. Both
+        thresholds are met and the pybind leg is intact here, so only the
+        missing C++ measurement can be what fails the gate.
+        """
+        toml_file, _cpp_build_folder, py_build_folder, fake_run = (
+            self._setup_workspace(
+                tmp_path, cpp_percent=95.0, py_percent=95.0,
+            )
+        )
+        mock_run.side_effect = fake_run
+
+        def find(library_name, *, kind, python_version=None):
+            if kind == "testing":
+                raise RuntimeError("no testing package in the local Conan cache")
+            return ("xmscore/0.0.0", "pid-py")
+
+        mock_find.side_effect = find
+        mock_path.side_effect = lambda ref_with_pid, folder: py_build_folder
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+        assert exit_code == EXIT_GATE_FAILED
+
+        tracefiles = [call for call in mock_run.call_args_list
+                      if _is_tracefile_run(call)]
+        assert len(tracefiles) == 1, (
+            "gcovr should have read the one surviving build folder, not the "
+            f"missing one as well; got {len(tracefiles)} tracefile runs"
+        )
+        cmd = tracefiles[0].args[0]
+        assert cmd[cmd.index("--root") + 1] == str(py_build_folder), \
+            "the tracefile run should target the surviving pybind build folder"
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_errors_when_neither_leg_left_a_package(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """Both legs missing is a tool failure, not a coverage gate failure.
+
+        There is no .gcda to report on, so writing a report would publish 0%
+        for a run that never measured anything. It exits EXIT_ERROR rather
+        than EXIT_GATE_FAILED so the generated CI's allow_failure -- which
+        forgives only the gate -- still fails the job.
+        """
+        toml_file, _cpp, _py, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=95.0, py_percent=95.0,
+        )
+        mock_run.side_effect = fake_run
+
+        def find(library_name, *, kind, python_version=None):
+            raise RuntimeError(
+                f"No {kind} package found for xmscore in the local Conan "
+                f"cache. Did the {kind} coverage build complete?"
+            )
+
+        mock_find.side_effect = find
+        mock_path.side_effect = AssertionError(
+            "no package was found, so no cache path should be resolved"
+        )
+
+        exit_code = run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+        assert exit_code == EXIT_ERROR
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
@@ -1775,15 +1922,38 @@ _LEGS = (
 
 
 class TestConcurrentCoverageBuilds:
-    """The C++ and Python coverage builds run at the same time."""
+    """Scheduling of the two coverage builds.
 
-    def test_parallel_defaults_on(self):
-        """The two builds overlap unless the library opts out."""
-        assert _coverage_context({}, "xmscore")["parallel"] is True
+    Sequential by default, overlapped when a library opts in.
+    """
+
+    def test_parallel_defaults_off(self):
+        """The two builds run in sequence unless the library opts in.
+
+        Overlapping them races conan 2's local cache, which is not safe for
+        concurrent writes, and costs more wall clock than it saves once the
+        legs contend for CPU. Opting in stays possible; it is no longer the
+        default anyone gets without asking.
+        """
+        assert _coverage_context({}, "xmscore")["parallel"] is False
 
     def test_parallel_can_be_disabled(self):
         """[coverage].parallel = false puts the builds back in sequence."""
         assert _coverage_context({"parallel": False}, "xmscore")["parallel"] is False
+
+    def test_parallel_opt_in_survives(self):
+        """[coverage].parallel = true still opts a library in.
+
+        With the default flipped to off, only this pins that the toml key is
+        read at all -- a regression hard-coding False in _coverage_context
+        would pass every other test in this class.
+        """
+        assert _coverage_context({"parallel": True}, "xmscore")["parallel"] is True
+
+    def test_parallel_rejects_non_boolean(self):
+        """A quoted "false" is a string, and bool() would count it as true."""
+        with pytest.raises(ValueError, match=r"\[coverage\]\.parallel"):
+            _coverage_context({"parallel": "false"}, "xmscore")
 
     def test_builds_run_concurrently(self):
         """Both legs are in flight at once.
