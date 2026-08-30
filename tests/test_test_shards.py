@@ -3,7 +3,10 @@
 import json
 import os
 from pathlib import Path
+import socket
+import struct
 import subprocess
+import threading
 from unittest.mock import patch
 from xml.etree import ElementTree
 
@@ -262,29 +265,133 @@ def test_run_shards_gives_each_shard_its_own_gtest_index(tmp_path):
     assert all(r.passed for r in results)
 
 
+class _FakeXvfb:
+    """Stands in for a started Xvfb process."""
+
+    def __init__(self):
+        self.terminated = False
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
 def test_run_shards_gives_each_xvfb_shard_its_own_display(tmp_path):
     """Shards must not share an X display.
 
-    `xvfb-run -a` picks a free server number, but the gap between that check
-    and the bind is exactly what N simultaneous starts land in.
+    Two runners on one display contend for GLX currency. Each shard's server
+    is started on _XVFB_BASE_DISPLAY + index, and the runner's environment
+    must point at exactly that display.
     """
     _, artifact_dir = _staged(tmp_path)
     runner = test_shards.find_runner(artifact_dir)
-    commands = []
+    servers = []
+    runner_displays = []
+
+    def _fake_start(display_number, log_path):
+        servers.append(display_number)
+        return _FakeXvfb(), None
 
     def _record(command, env=None, timeout=None, **kwargs):
-        commands.append(command)
+        runner_displays.append(env.get("DISPLAY"))
         return subprocess.CompletedProcess(command, 0, stdout="")
 
-    with patch.object(test_shards.subprocess, "run", _record):
+    with patch.object(test_shards, "_start_xvfb", _fake_start), \
+            patch.object(test_shards.subprocess, "run", _record):
         test_shards.run_shards(runner, 3, artifact_dir, xvfb=True)
 
-    displays = sorted(
-        arg for command in commands for arg in command
-        if str(arg).startswith("--server-num=")
-    )
-    assert len(set(displays)) == 3
-    assert all(command[0] == "xvfb-run" for command in commands)
+    assert sorted(servers) == [99, 100, 101]
+    assert set(runner_displays) == {":99", ":100", ":101"}
+
+
+def test_xvfb_shards_wait_for_their_display_before_the_runner(tmp_path):
+    """The runner must not start until its shard's X server answers.
+
+    xvfb-run launched Xvfb and the client back to back with no readiness
+    handshake; under N simultaneous cold starts a runner could dial its
+    display first, limp past the failed connection, and die mid-suite with a
+    fatal GLX BadAccess. Owning the server means readiness is confirmed
+    before the runner exists.
+    """
+    _, artifact_dir = _staged(tmp_path)
+    runner = test_shards.find_runner(artifact_dir)
+    events = []
+
+    def _fake_start(display_number, log_path):
+        events.append(("server-ready", f":{display_number}"))
+        return _FakeXvfb(), None
+
+    def _record(command, env=None, timeout=None, **kwargs):
+        events.append(("runner", env.get("DISPLAY")))
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    with patch.object(test_shards, "_start_xvfb", _fake_start), \
+            patch.object(test_shards.subprocess, "run", _record):
+        test_shards.run_shards(runner, 2, artifact_dir, xvfb=True)
+
+    for display in (":99", ":100"):
+        server_ready = events.index(("server-ready", display))
+        assert server_ready < events.index(("runner", display))
+
+
+def test_run_shards_prepares_the_socket_dir_before_the_storm(tmp_path):
+    """The X socket directory must exist before any server races to make it.
+
+    Concurrent cold-starting Xvfbs in a fresh container race each other on
+    mkdir /tmp/.X11-unix; the loser never creates its unix listener and its
+    display never answers. One mkdir before the storm removes the race.
+    """
+    _, artifact_dir = _staged(tmp_path)
+    runner = test_shards.find_runner(artifact_dir)
+    events = []
+
+    with patch.object(test_shards, "_ensure_x_socket_dir",
+                      lambda: events.append("socket-dir")), \
+            patch.object(test_shards, "_start_xvfb",
+                         lambda d, p: (events.append("server"),
+                                       (_FakeXvfb(), None))[1]), \
+            patch.object(test_shards.subprocess, "run",
+                         lambda command, env=None, timeout=None, **kwargs:
+                         subprocess.CompletedProcess(command, 0, stdout="")):
+        test_shards.run_shards(runner, 2, artifact_dir, xvfb=True)
+
+    assert events[0] == "socket-dir"
+    assert events.count("socket-dir") == 1
+    assert events.count("server") == 2
+
+
+def test_ensure_x_socket_dir_creates_a_sticky_world_writable_dir(tmp_path):
+    """A fresh container has no /tmp/.X11-unix; make one the way X would."""
+    target = tmp_path / "x11-sockets"
+
+    with patch.object(test_shards, "_X_SOCKET_DIR", str(target)):
+        test_shards._ensure_x_socket_dir()
+        # A second call must be a no-op, not an error.
+        test_shards._ensure_x_socket_dir()
+
+    assert target.is_dir()
+    if os.name != "nt":
+        assert os.stat(target).st_mode & 0o1777 == 0o1777
+
+
+def test_xvfb_server_is_stopped_after_the_shard(tmp_path):
+    """A shard's Xvfb must not outlive the shard."""
+    _, artifact_dir = _staged(tmp_path)
+    runner = test_shards.find_runner(artifact_dir)
+    server = _FakeXvfb()
+
+    with patch.object(test_shards, "_start_xvfb", lambda d, p: (server, None)), \
+            patch.object(test_shards.subprocess, "run",
+                         lambda command, env=None, timeout=None, **kwargs:
+                         subprocess.CompletedProcess(command, 0, stdout="")):
+        test_shards.run_shards(runner, 1, artifact_dir, xvfb=True)
+
+    assert server.terminated
 
 
 def test_run_shards_clears_reports_from_a_previous_run(tmp_path):
@@ -480,27 +587,87 @@ def test_run_fails_on_a_failure_only_the_report_records(tmp_path, monkeypatch):
 
 # --- regressions found in review ---
 
-def test_single_xvfb_shard_lets_xvfb_run_choose_the_display(tmp_path):
-    """One shard has nobody to race, so it keeps the pre-sharding allocation.
+def test_a_dead_xvfb_fails_the_shard_without_running_it(tmp_path):
+    """A display that cannot serve must fail loudly, not host the runner.
 
-    A fixed --server-num fails outright on a stale /tmp/.X99-lock, which is
-    exactly what `xvfb-run -a` recovers from. Pinning the number is worth that
-    risk only when N starts would otherwise race each other.
+    xvfb-run renumbered around a stale lock silently; owning the server means
+    the shard instead reports the server's own log, and the runner is never
+    launched against a display that cannot answer.
     """
     _, artifact_dir = _staged(tmp_path)
     runner = test_shards.find_runner(artifact_dir)
-    commands = []
+    launched = []
+
+    def _fake_start(display_number, log_path):
+        return _FakeXvfb(), (
+            f"Xvfb :{display_number} exited with code 1 before serving: boom"
+        )
 
     def _record(command, env=None, timeout=None, **kwargs):
-        commands.append(command)
+        launched.append(command)
         return subprocess.CompletedProcess(command, 0, stdout="")
 
-    with patch.object(test_shards.subprocess, "run", _record):
-        test_shards.run_shards(runner, 1, artifact_dir, xvfb=True)
+    with patch.object(test_shards, "_start_xvfb", _fake_start), \
+            patch.object(test_shards.subprocess, "run", _record):
+        results = test_shards.run_shards(runner, 1, artifact_dir, xvfb=True)
 
-    assert commands[0][0] == "xvfb-run"
-    assert "-a" in commands[0]
-    assert not any(str(arg).startswith("--server-num=") for arg in commands[0])
+    assert launched == []
+    assert not results[0].passed
+    assert "Xvfb :99" in results[0].error
+
+
+def test_start_xvfb_reports_a_server_that_dies_early(tmp_path):
+    """An Xvfb that exits before serving surfaces its own log, not a hang."""
+    class _Dead:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    with patch.object(test_shards.subprocess, "Popen", lambda *a, **k: _Dead()):
+        _, error = test_shards._start_xvfb(99, tmp_path / "xvfb.log")
+
+    assert "exited with code 1" in error
+
+
+@pytest.mark.skipif(os.name == "nt", reason="AF_UNIX display sockets")
+def test_x_server_answers_requires_a_success_reply():
+    """Only the server's success byte proves the display can serve.
+
+    A failure byte means a server that is up but refusing; no listener means
+    no server at all. Neither may start the runner: the socket file existing
+    is exactly the false signal that let the GLX crash through.
+    """
+    os.makedirs("/tmp/.X11-unix", exist_ok=True)
+
+    def _serve(display_number, reply):
+        path = f"/tmp/.X11-unix/X{display_number}"
+        if os.path.exists(path):
+            os.unlink(path)
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(path)
+        server.listen(1)
+
+        def _answer():
+            connection, _ = server.accept()
+            connection.recv(64)
+            connection.sendall(reply)
+            connection.close()
+            server.close()
+
+        threading.Thread(target=_answer, daemon=True).start()
+        return path
+
+    accepting = _serve(47901, struct.pack("<B", 1))
+    refusing = _serve(47902, struct.pack("<B", 0))
+    try:
+        assert test_shards._x_server_answers(47901) is True
+        assert test_shards._x_server_answers(47902) is False
+        assert test_shards._x_server_answers(47903) is False
+    finally:
+        for path in (accepting, refusing):
+            if os.path.exists(path):
+                os.unlink(path)
 
 
 def test_run_fails_when_the_merged_report_holds_no_tests(tmp_path, monkeypatch):
