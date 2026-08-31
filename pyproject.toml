@@ -72,6 +72,11 @@ include = ["xmsconan*"]
 local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
+# Bare `pytest` collects tests/ and nothing else. Without this it also walks
+# the package, and every generated CI fixture or scratch tree left under the
+# working copy, so what a bare run means depends on what is lying around --
+# which is the one thing a gate command must not depend on.
+testpaths = ["tests"]
 markers = [
     "integration: end-to-end test that drives real conan + gcovr against a stub recipe. Opt-in via `pytest -m integration`; excluded from the default `pytest` run because it spins up a full coverage build (downloads boost/zlib/pybind11 from the Aquaveo remote when configured, compiles the stub library, runs pytest-cov + gcovr — multi-minute wall time).",
 ]

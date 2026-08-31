@@ -476,23 +476,24 @@ def test_explicit_coverage_false_overrides_env():
 
 
 @patch_env(clear=True)
-def test_coverage_true_propagates_xms_coverage_into_buildenv():
-    """coverage=True must export XMS_COVERAGE into every [buildenv].
+def test_coverage_instruments_only_the_legs_it_reads_data_from():
+    """coverage=True must set the recipe's coverage option, not [buildenv].
 
-    Without it the activation script never sets ``XMS_COVERAGE`` for the
-    CMake child process, so ``CMakeLists.txt.jinja``'s
-    ``if (DEFINED ENV{XMS_COVERAGE})`` guard is false, ``--coverage`` is
-    never added to the compile flags, no ``.gcno``/``.gcda`` files are
-    produced, and gcovr reports 0% with "All coverage data is filtered
-    out" (issue #69 — the 2.14.0/2.14.1/2.14.2 chain finally got the
-    pipeline to a green run, but the C++ report was empty for exactly
-    this reason).
+    The option is what makes instrumentation part of the package_id — an
+    instrumented and a production build must never satisfy --build=missing
+    for each other. It renders as ``&:coverage=True``, so it scopes to the
+    library being built and never reaches dependency recipes that do not
+    declare it. The old XMS_COVERAGE [buildenv] ride-along (issue #69) is
+    retired with the env fallback in the CMake template.
 
-    Pybind configurations included: the binding layer is C++ that only a
-    Python test can reach, so it needs its own .gcda to be counted at all.
-    A pybind configuration is Release, but the CMake block appends ``-O0``
-    after CMake's ``-O3``, so the instrumented build is unoptimized either
-    way and the line data is as usable as a Debug build's.
+    Instrumentation is selective. Pybind configurations get it because the
+    binding layer is C++ that only a Python test can reach, so it needs its
+    own .gcda to be counted at all; a pybind configuration is Release, but
+    the CMake block appends ``-O0`` after CMake's ``-O3``, so its line data
+    is as usable as a Debug build's. The Debug testing leg gets it because
+    that is what drives C++ coverage. The Release testing leg must not --
+    it exists to exercise the configuration the shipped wheel is built
+    from, and instrumenting it would leave nothing running optimized code.
     """
     p = XmsConanPackager("xmscore", coverage=True)
     p.generate_configurations(system_platform="linux")
@@ -500,27 +501,43 @@ def test_coverage_true_propagates_xms_coverage_into_buildenv():
     assert any(c["options"].get("pybind") for c in p.configurations), (
         "this test is vacuous without at least one pybind configuration"
     )
+    assert any(c["options"].get("coverage") for c in p.configurations), (
+        "coverage mode instrumented nothing at all"
+    )
     for cfg in p.configurations:
-        assert cfg["buildenv"].get("XMS_COVERAGE") == "1", (
-            f"every configuration must export XMS_COVERAGE=1 in buildenv "
-            f"when coverage=True; missing on {cfg.get('build_type')!r} / "
-            f"options={cfg.get('options')}"
+        options = cfg["options"]
+        expected = bool(options.get("pybind")) or (
+            bool(options.get("testing")) and cfg["build_type"] == "Debug"
+        )
+        assert bool(options.get("coverage")) is expected, (
+            f"instrumentation should be {expected} on "
+            f"{cfg.get('build_type')!r} / options={options}"
+        )
+        assert "XMS_COVERAGE" not in cfg["buildenv"], (
+            f"the [buildenv] ride-along is retired; leaked on "
+            f"{cfg.get('build_type')!r} / options={options}"
         )
 
 
 @patch_env(clear=True)
-def test_coverage_false_omits_xms_coverage_from_buildenv():
-    """coverage=False must not leak XMS_COVERAGE into the build profile.
+def test_coverage_false_omits_the_coverage_option():
+    """coverage=False must not leak instrumentation into the build profile.
 
     A non-coverage run reusing the same packager invocation must not
     pull instrumentation flags into the released binary — that would
     bloat object size, defeat optimization, and (more importantly)
-    cause ``--coverage`` to be linked into the production wheel.
+    cause ``--coverage`` to be linked into the production wheel. Leaving
+    the option out entirely (rather than writing coverage=False) keeps the
+    profiles byte-identical to what they were before the option existed.
     """
     p = XmsConanPackager("xmscore", coverage=False)
     p.generate_configurations(system_platform="linux")
 
     for cfg in p.configurations:
+        assert "coverage" not in cfg["options"], (
+            f"coverage=False must not write the option; leaked on "
+            f"{cfg.get('build_type')!r} / options={cfg.get('options')}"
+        )
         assert "XMS_COVERAGE" not in cfg["buildenv"], (
             f"coverage=False must not export XMS_COVERAGE; leaked on "
             f"{cfg.get('build_type')!r} / options={cfg.get('options')}"
@@ -744,8 +761,8 @@ def test_validate_filter_dict_accepts_settings_and_nested_tables():
     validate_filter_dict({
         "build_type": "Debug",
         "compiler.runtime": "static",
-        "options": {"pybind": True, "python_version": "3.13"},
-        "buildenv": {"XMS_COVERAGE": "1"},
+        "options": {"pybind": True, "python_version": "3.13", "coverage": True},
+        "buildenv": {"XMS_VERSION": "1.0"},
     })
 
 
@@ -770,7 +787,7 @@ def test_validate_filter_dict_rejects_unknown_option():
 
 def test_validate_filter_dict_accepts_emitted_buildenv_names():
     """The buildenv names the profiles actually set are filterable."""
-    validate_filter_dict({"buildenv": {"XMS_COVERAGE": "1", "PYTHON_TARGET_VERSION": "3.13"}})
+    validate_filter_dict({"buildenv": {"XMS_VERSION": "1.0", "PYTHON_TARGET_VERSION": "3.13"}})
 
 
 def test_validate_filter_dict_rejects_unknown_buildenv_name():
@@ -783,13 +800,36 @@ def test_validate_filter_dict_rejects_unknown_buildenv_name():
 def test_emitted_buildenv_keys_covers_conditional_names():
     """The derived set includes names only some configurations carry.
 
-    Derived from the matrix rather than hand-listed, so the macOS-only and
-    coverage-only names come along without a second edit.
+    Derived from the matrix rather than hand-listed, so the macOS-only
+    names come along without a second edit.
     """
     keys = emitted_buildenv_keys()
     assert {"XMS_VERSION", "PYTHON_TARGET_VERSION"} <= keys, "unconditional names"
-    assert {"XMS_COVERAGE", "MACOSX_DEPLOYMENT_TARGET", "_PYTHON_HOST_PLATFORM"} <= keys
+    assert {"MACOSX_DEPLOYMENT_TARGET", "_PYTHON_HOST_PLATFORM"} <= keys
     assert "XMS_TEST_ARTIFACTS_LABEL" in keys, "added by run(), not generate_configurations"
+    # Coverage mode contributes the `coverage` option now, not a buildenv
+    # name — a reappearance here means the [buildenv] ride-along came back.
+    assert "XMS_COVERAGE" not in keys
+
+
+def test_validate_filter_dict_accepts_a_coverage_option_pin():
+    """options.coverage is filterable now that coverage runs emit it."""
+    validate_filter_dict({"options": {"coverage": True}})
+
+
+def test_validate_filter_dict_rejects_non_bool_coverage():
+    """A quoted 'true' would never equal the emitted bool, so it raises."""
+    with pytest.raises(ValueError, match="coverage"):
+        validate_filter_dict({"options": {"coverage": "true"}})
+
+
+def test_validate_filter_dict_rejects_coverage_false():
+    """coverage=false can never match, so it raises rather than selecting nothing.
+
+    Coverage runs emit True and normal runs omit the option entirely.
+    """
+    with pytest.raises(ValueError, match="only be true"):
+        validate_filter_dict({"options": {"coverage": False}})
 
 
 @pytest.mark.parametrize("filter_dict,expected_message", [
@@ -882,6 +922,39 @@ def test_summarize_filter_matches_reports_zero_for_impossible_combination():
     summary = summarize_filter_matches({"options": {"testing": True, "pybind": True}})
 
     assert all(counts["total"] == 0 for counts in summary.values())
+
+
+@patch_env(clear=True)
+def test_summarize_filter_matches_labels_the_surviving_testing_configurations():
+    """The testing labels name the directories the build will stage.
+
+    They come from config_label, not from a second rendering of the same
+    naming: the CI generator turns them into ``--label`` arguments, and a copy
+    of the format would be free to drift from what run() writes into
+    XMS_TEST_ARTIFACTS_LABEL.
+    """
+    summary = summarize_filter_matches({})
+
+    assert summary["linux"]["testing_labels"] == ["Release-testing", "Debug-testing"]
+    # msvc fans out over the runtime, and the label has to keep them apart.
+    assert summary["windows"]["testing_labels"] == [
+        "Release-dynamic-testing", "Release-static-testing",
+        "Debug-dynamic-testing", "Debug-static-testing",
+    ]
+
+
+@patch_env(clear=True)
+def test_summarize_filter_matches_reports_no_testing_labels_for_a_pybind_pin():
+    """A build type can survive on pybind configurations that stage no runner.
+
+    This is the gap ``total`` leaves: it counts every survivor, so a pybind-only
+    filter reports configurations on a platform that will not produce a single
+    ``*-testing`` directory.
+    """
+    summary = summarize_filter_matches({"options": {"pybind": True}})
+
+    assert summary["linux"]["total"] > 0
+    assert summary["linux"]["testing_labels"] == []
 
 
 @patch_env(clear=True)
@@ -2221,6 +2294,64 @@ def test_preset_toolchain_lives_in_its_binary_dir():
 
     for preset in document["configurePresets"]:
         assert preset["toolchainFile"].startswith(preset["binaryDir"] + "/")
+
+
+def test_coverage_mode_bakes_xms_coverage_into_every_configure_preset():
+    """Coverage generation writes XMS_COVERAGE into the preset cache.
+
+    A raw `cmake --preset` build never runs the recipe's build(), so the
+    coverage *option* cannot reach it — and the generated CMakeLists.txt no
+    longer reads $ENV{XMS_COVERAGE}. The regenerated preset is the carrier
+    for that flow (xmsvtk's scripts/coverage.py regenerates with
+    XMS_COVERAGE=1 set, then configures through the preset).
+    """
+    document = _linux_packager(coverage=True).plan_cmake_presets()
+
+    assert document["configurePresets"], "no presets planned"
+    for preset in document["configurePresets"]:
+        assert preset["cacheVariables"].get("XMS_COVERAGE") == "1", (
+            f"preset {preset['name']!r} lost the coverage cache variable"
+        )
+
+
+def test_normal_generation_writes_an_explicit_zero_into_presets():
+    """Without coverage mode every preset pins XMS_COVERAGE to "0".
+
+    Merely omitting the key is not enough: a CMake cache variable persists
+    across reconfigures, so a build dir configured once in coverage mode
+    would stay instrumented after a normal regeneration. The explicit "0"
+    (falsey to CMake's `if (XMS_COVERAGE)`) overwrites the stale entry.
+    """
+    document = _linux_packager().plan_cmake_presets()
+
+    assert document["configurePresets"], "no presets planned"
+    for preset in document["configurePresets"]:
+        assert preset["cacheVariables"].get("XMS_COVERAGE") == "0"
+
+
+@patch_env(clear=True)
+def test_create_build_profile_renders_coverage_as_consumer_scoped():
+    """The coverage option serializes as `&:coverage=True` in the profile.
+
+    The `&:` prefix is the load-bearing half of the design: it scopes the
+    option to the library being built, so dependency recipes — which declare
+    no coverage option — are neither rebuilt instrumented nor fail on an
+    unknown option. And the retired XMS_COVERAGE ride-along must not come
+    back in [buildenv].
+    """
+    p = XmsConanPackager("xmscore", coverage=True)
+    p.generate_configurations(system_platform="linux")
+
+    # Not configurations[0] -- instrumentation is selective now, and the
+    # first configuration may well be a leg that is deliberately optimized.
+    instrumented = next(
+        c for c in p.configurations if c["options"].get("coverage"))
+    profile_path = p.create_build_profile(instrumented)
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    assert "&:coverage=True" in content
+    assert "XMS_COVERAGE" not in content
 
 
 def test_write_cmake_presets_skipped_without_generator(tmp_path):

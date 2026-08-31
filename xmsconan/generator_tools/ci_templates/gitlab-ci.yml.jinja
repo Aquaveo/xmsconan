@@ -34,6 +34,136 @@ variables:
 
 <% endif %>
 <% if ci_linux %>
+<% if ci_wheel_only %>
+<# One build job per surviving Linux configuration, not one job looping all of
+   them. The loop was sequential, so a pipeline's compiles were serialized
+   inside a single container even though the runner has the concurrency to
+   overlap them; and it was paired with a "Coverage Build" that recompiled two
+   of those same configurations instrumented, because instrumentation is part
+   of the package_id and so cannot be satisfied by a production binary. Five
+   compiles, three of them of source the pipeline had already compiled.
+
+   Emitting a job per configuration fixes both at once. `needs: []` is what
+   actually makes them concurrent -- it starts each job the moment the pipeline
+   does, rather than at its stage's turn -- and each job requests exactly the
+   shape its consumer needs, so nothing is compiled twice.
+
+   The instrumented jobs run `xmsconan_coverage --phase measure` rather than
+   build.py directly. That keeps the whole instrumented path (regenerating with
+   XMS_COVERAGE set, pinning the coverage ABI, running the suite, reading .gcda
+   beside the .gcno that were written next to it) inside the tool that already
+   owns it, and it is why no build folder has to travel: at 245 MiB of .gcno
+   against 5.5 MiB of .gcda, moving one would cost more than the compile it
+   saves. What leaves each job is a tracefile of a few hundred KB. #>
+<% for job in ci_linux_build_jobs %>
+"<< job.name >>":
+<% if ci_split_tests %>
+  stage: Build
+<% else %>
+  stage: Test
+<% endif %>
+<% if docker_image %>
+  image: << docker_image >>
+<% elif ci_xvfb %>
+  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-x11-gdal-py<< coverage_python_version if job.instrumented else (job.python_version or gitlab_linux_single_py) >>
+<% else %>
+  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py<< coverage_python_version if job.instrumented else (job.python_version or gitlab_linux_single_py) >>
+<% endif %>
+  needs: []
+<% if job.tag_policy == "except" %>
+  except:
+    - tags
+<% elif job.tag_policy == "only" %>
+  only:
+    - tags
+<% endif %>
+  variables:
+    PYTHON_TARGET_VERSION: '<< coverage_python_version if job.instrumented else (job.python_version or gitlab_linux_single_py) >>'
+<# What this job has to hand downstream, decided before the block is opened.
+   A library configuration -- no testing, no pybind, not the export job --
+   produces nothing any later job reads, and emitting `artifacts: paths:` with
+   an empty list under it is not a harmless no-op: GitLab parses the key as
+   null and rejects the file. #>
+<% set job_exports = ci_deploy and job.exports %>
+<% set job_wheels = ci_wheel_enabled_linux and job.kind == "pybind" %>
+<% if job_exports or job_wheels or job.instrumented or job.kind == "testing" %>
+  artifacts:
+    expire_in: '1d'
+    when: always
+    paths:
+<% if job_exports %>
+      - .export
+<% endif %>
+<% if job_wheels %>
+      - wheelhouse/
+<% endif %>
+<% if job.instrumented %>
+<# Small and portable: a tracefile whose paths are relative to the source tree,
+   and this leg's slice of the status file. The status file is per leg because
+   both instrumented jobs upload into one artifact space -- a single fixed name
+   would leave whichever finished last as the only surviving answer, discarding
+   the other layer's measurement while still looking like a complete status. #>
+      - cov-cpp-tracefile-<< job.coverage_leg >>.json
+      - coverage-status-<< job.coverage_leg >>.json
+<% if job.coverage_leg == "python" %>
+      - cov-py.xml
+      - cov-py-summary.json
+      - coverage-html-py/
+<% endif %>
+<% elif job.kind == "testing" %>
+<# This job's own runner only. `needs: artifacts: true` downloads the whole
+   staged tree, so staging under the configuration's label keeps one test job
+   from pulling every other configuration's runner too. #>
+      - test_artifacts/<< job.label >>/
+<% endif %>
+<% endif %>
+  script:
+<% if job.instrumented %>
+    - pip install "conan~=2.31.0" "gcovr>=7,<9" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_conan_setup
+<# Per-case ctest entries are registered for instrumented builds, so there is
+   something for -j8 to schedule: measured against xmsvtk's suite, per-case
+   ctest -j8 ran it in 303.5s where the single whole-binary entry took 1438s. #>
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - xmsconan_coverage --phase measure --leg << job.coverage_leg >> --version ${PACKAGE_VERSION} build.toml
+<% else %>
+    - gcc --version
+    - cmake --version
+    - python --version
+    - pip install "conan~=2.31.0" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_conan_setup
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
+<% if ci_split_tests and job.kind == "testing" %>
+    - export XMS_SKIP_CXX_TESTS=1
+<% endif %>
+    - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
+<% if ci_xvfb %>
+    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --version ${PACKAGE_VERSION} --filter '<< job.filter_json >>' <% if ci_wheel_enabled_linux and job.kind == "pybind" %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
+<% else %>
+    - python build.py --version ${PACKAGE_VERSION} --filter '<< job.filter_json >>' <% if ci_wheel_enabled_linux and job.kind == "pybind" %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
+<% endif %>
+<% if job_exports %>
+<# Named for the configuration rather than the ABI. The tarball used to be one
+   per Python version because one build job held every configuration and only
+   the ABI fan-out split it; now a job is a configuration, so the label is what
+   makes two tarballs distinct -- and a library job, which has no ABI, would
+   otherwise collide with the other build type's. #>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-linux-<< job.label >>-${PACKAGE_VERSION}.tar.gz
+<% endif %>
+<% endif %>
+
+<% endfor %>
+<% else %>
+<# The pre-restructure shape, kept for every repository that is not
+   wheel_only: one job looping every configuration, paired with the
+   separate "Coverage Build" below. The concurrent stage above was
+   designed against a matrix with no library configurations and has only
+   been exercised there, so a repository that publishes library packages
+   keeps this until that shape is proven too. #>
 Conan Build:
 <% if ci_split_tests %>
   stage: Build
@@ -90,6 +220,8 @@ Conan Build:
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-linux<< gitlab_linux_py_suffix >>-${PACKAGE_VERSION}.tar.gz
 <% endif %>
 
+<% endif %>
+<% if ci_wheel_only %>
 <% if ci_split_tests %>
 <# One job, N shards inside it -- not `parallel: N`, which is N jobs on N
    runners. Each of those paid for a container start, a pip install and a
@@ -101,10 +233,81 @@ Conan Build:
    to one log interleave line by line, so it buffers each shard's output and
    replays it whole, then merges the per-shard gtest XML into the single
    TEST-cxxtest.xml reported below. It also does the artifact spelunking that
-   used to be inline shell here -- finding the staged *-testing directory,
-   restoring the runner's executable bit, and linking test_files/ back to the
-   absolute path the binary was compiled with. #>
-"Run C++ Tests":
+   used to be inline shell here -- restoring the runner's executable bit and
+   linking test_files/ back to the absolute path the binary was compiled with.
+
+   One job per *uninstrumented* testing configuration, each naming its own
+   directory with --label and consuming its own build job's artifacts. An
+   instrumented testing configuration gets no job here: it runs its suite
+   inside its build, because gcovr has to read the .gcda it produces against
+   the .gcno written beside them at compile time, and splitting the run out
+   would mean shipping a 245 MiB build folder to reach 5.5 MiB of data.
+
+   The labels come from the same config_label() the build names its
+   directories with, so the two cannot drift. #>
+<% for job in ci_linux_test_jobs %>
+<% set test_label = job.label %>
+"Run C++ Tests - << test_label >>":
+  stage: Test
+<% if docker_image %>
+  image: << docker_image >>
+<% elif ci_xvfb %>
+  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-x11-gdal-py<< gitlab_linux_image_py >>
+<% else %>
+  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py<< gitlab_linux_image_py >>
+<% endif %>
+  except:
+    - tags
+  needs:
+    - job: "<< job.name >>"
+      artifacts: true
+  artifacts:
+    expire_in: '1d'
+    when: always
+<# The merged report, so a failing case is named in the MR widget rather than
+   only in the job log. A shard that died before gtest serialized anything is
+   merged in as an explicit error case, so a red job never shows an all-green
+   test tab. Every job writes the same filename; GitLab keys the pipeline test
+   report on the job name, so the configurations stay distinguishable. #>
+    reports:
+      junit: TEST-cxxtest.xml
+    paths:
+<# This job's own configuration only. `needs: artifacts: true` downloads the
+   whole staged tree, so uploading test_artifacts/ wholesale would have each
+   job re-upload every other configuration's runner too. #>
+      - test_artifacts/<< test_label >>/
+      - TEST-cxxtest.xml
+  script:
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_test_shards --artifacts-dir test_artifacts --label << test_label >> --shards << ci_test_shards if ci_test_shards > 1 else 1 >><% if ci_xvfb %> --xvfb<% endif %>
+
+<% endfor %>
+<% endif %>
+<% else %>
+<% if ci_split_tests %>
+<# One job, N shards inside it -- not `parallel: N`, which is N jobs on N
+   runners. Each of those paid for a container start, a pip install and a
+   download of the build artifacts to run one Nth of the suite; for a suite
+   measured in minutes that overhead was most of the wall clock, and it scaled
+   with the shard count instead of against it.
+
+   xmsconan_test_shards is what makes one container viable: N runners writing
+   to one log interleave line by line, so it buffers each shard's output and
+   replays it whole, then merges the per-shard gtest XML into the single
+   TEST-cxxtest.xml reported below. It also does the artifact spelunking that
+   used to be inline shell here -- restoring the runner's executable bit and
+   linking test_files/ back to the absolute path the binary was compiled with.
+
+   One job per staged testing configuration, each naming its own directory with
+   --label. The build stages a runner for every testing configuration it
+   compiles, but a single job could only ever run one of them: it fell back to
+   the first of Debug-testing, Release-testing that existed, so a matrix
+   building both compiled the Release runner on every pipeline and never
+   executed it. The labels come from ci_test_labels, which the generator
+   computes with the same config_label() the build names the directories with,
+   so the two cannot drift. #>
+<% for test_label in ci_test_labels %>
+"Run C++ Tests - << test_label >>":
   stage: Test
 <% if docker_image %>
   image: << docker_image >>
@@ -124,16 +327,22 @@ Conan Build:
 <# The merged report, so a failing case is named in the MR widget rather than
    only in the job log. A shard that died before gtest serialized anything is
    merged in as an explicit error case, so a red job never shows an all-green
-   test tab. #>
+   test tab. Every job writes the same filename; GitLab keys the pipeline test
+   report on the job name, so the configurations stay distinguishable. #>
     reports:
       junit: TEST-cxxtest.xml
     paths:
-      - test_artifacts/
+<# This job's own configuration only. `needs: artifacts: true` downloads the
+   whole staged tree, so uploading test_artifacts/ wholesale would have each
+   job re-upload every other configuration's runner too. #>
+      - test_artifacts/<< test_label >>/
       - TEST-cxxtest.xml
   script:
     - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_test_shards --artifacts-dir test_artifacts --shards << ci_test_shards if ci_test_shards > 1 else 1 >><% if ci_xvfb %> --xvfb<% endif %>
+    - xmsconan_test_shards --artifacts-dir test_artifacts --label << test_label >> --shards << ci_test_shards if ci_test_shards > 1 else 1 >><% if ci_xvfb %> --xvfb<% endif %>
 
+<% endfor %>
+<% endif %>
 <% endif %>
 <% endif %>
 <% if ci_windows %>
@@ -152,6 +361,28 @@ Conan Build:
 <% endfor %>
   variables:
     AQUAPI_URL: "https://aquapi.aquaveo.com/aquaveo/dev"
+<% if ci_wheel_only %>
+<# A branch builds the whole matrix; a tag builds only what it publishes. The
+   empty options dict is a filter that matches every configuration, so the
+   script can pass `--filter` unconditionally and quoted -- the alternative,
+   an interpolated flag that is empty on branches, relies on unquoted word
+   splitting to disappear, which is a subtle thing to leave in a release path.
+
+   `rules:` rather than the two mutually exclusive jobs Linux uses. The Linux
+   builds had to become separate jobs anyway, one per configuration; this is
+   still one job, and splitting it would mean either duplicating forty lines or
+   renaming it -- and "Conan Build - Windows" is named by the `needs:` of both
+   Windows deploy jobs. #>
+    BUILD_MATRIX_FILTER: '{"options":{}}'
+  rules:
+    - if: $CI_COMMIT_TAG
+      variables:
+<# Skip the testing configurations. Nothing installs a test runner and no tag
+   pipeline runs one -- the Windows job compiled them on every release, and for
+   a wheel_only repository the testing configurations are most of the matrix. #>
+        BUILD_MATRIX_FILTER: '{"options":{"testing":false}}'
+    - when: on_success
+<% endif %>
   artifacts:
     expire_in: '1d'
     when: always
@@ -173,7 +404,11 @@ Conan Build:
     - python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
+<% if ci_wheel_only %>
+    - python build.py --version ${PACKAGE_VERSION} --filter "${BUILD_MATRIX_FILTER}"<% if ci_wheel_enabled_windows %> --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts
+<% else %>
     - python build.py --version ${PACKAGE_VERSION}<% if ci_wheel_enabled_windows %> --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts
+<% endif %>
 <% if ci_windows_wheel_repair and ci_wheel_enabled_windows %>
 <# Windows repairs in place rather than in a separate Package-stage job the way
    Linux does: delvewheel resolves the DLL imports of a win_amd64 .pyd and can
@@ -215,8 +450,31 @@ Repair Wheel:
 <% else %>
   image: quay.io/pypa/manylinux_2_28_x86_64
 <% endif %>
+<% if ci_wheel_only %>
+<# Tag-gated to match its only producer. Before the restructure one ungated
+   "Conan Build" built every configuration, the wheel included, so an ungated
+   Repair Wheel always had something to repair. Now the clean pybind build is
+   the only job that emits a wheel and it is `only: tags`, while the branch
+   pipeline's instrumented pybind build measures coverage and writes no wheel
+   at all. Left ungated this job ran on every branch against an empty
+   wheelhouse and failed the pipeline: xmsvtk pipeline 63162,
+   "FileNotFoundError: No .whl files found in wheelhouse". #>
+  only:
+    - tags
+<# `needs: optional: true` rather than `dependencies:`: the instrumented pybind
+   build is `except: tags`, so it does not exist in the tag pipeline this job
+   now runs in. `optional` is the construct for a dependency that may not have
+   been created; naming a job that was filtered out is an error. #>
+  needs:
+<% for job in ci_linux_wheel_jobs %>
+    - job: "<< job.name >>"
+      artifacts: true
+      optional: true
+<% endfor %>
+<% else %>
   dependencies:
     - Conan Build
+<% endif %>
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - /opt/python/cp313-cp313/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
@@ -244,6 +502,29 @@ Repair Wheel:
 "Conan Deploy - Linux":
   stage: Deploy
   image: ubuntu:latest
+<% if ci_wheel_only %>
+<# No `parallel: matrix` any more. It existed to give each ABI's export tarball
+   a leg to restore, back when the ABI fan-out was the only thing that produced
+   more than one. Now every taggable configuration exports, and they are not
+   all ABIs -- a library build has none -- so the legs no longer line up with
+   the tarballs. One job restores the whole set and uploads once, which is also
+   one fewer way for two legs to race on the same Conan reference. #>
+<# Guarded for the same reason as `artifacts: paths:` above: an empty list
+   leaves the key with nothing under it, GitLab parses that as null, and the
+   whole file is rejected. Reachable without a deploy misconfiguration --
+   `_mark_export_jobs` marks only the jobs whose tag_policy is not "except",
+   and a [filter] narrowing the matrix to testing configurations makes every
+   Linux job branch-only, while this job stays gated on [ci].deploy alone.
+   Dropping the key beats emitting an empty one: with no `dependencies:` GitLab
+   hands the job every earlier stage's artifacts, which is the behavior this
+   block narrows rather than one it depends on. #>
+<% if ci_linux_export_jobs %>
+  dependencies:
+<% for job in ci_linux_export_jobs %>
+    - "<< job.name >>"
+<% endfor %>
+<% endif %>
+<% else %>
 <% if gitlab_linux_fanout %>
   parallel:
     matrix:
@@ -253,6 +534,7 @@ Repair Wheel:
 <% endif %>
   dependencies:
     - Conan Build
+<% endif %>
   script:
     - apt-get update
     - apt-get install -y python3-pip python3-venv
@@ -262,7 +544,18 @@ Repair Wheel:
     - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+<% if ci_wheel_only %>
+<# Restore every tarball into this job's cache first, then upload once.
+   `conan upload <ref>` publishes every package id under the reference, so the
+   single upload at the end covers the whole restored set -- and uploading per
+   tarball instead would push the same recipe repeatedly. #>
+<% for job in ci_linux_export_jobs %>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-linux-<< job.label >>-${PACKAGE_VERSION}.tar.gz
+<% endfor %>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --upload
+<% else %>
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-linux<< gitlab_linux_py_suffix >>-${PACKAGE_VERSION}.tar.gz --upload
+<% endif %>
   only:
     - tags
 
@@ -336,20 +629,138 @@ Repair Wheel:
 <% endif %>
 
 <% if ci_coverage %>
+<% if ci_wheel_only %>
+<# There is no "Coverage Build" any more. It used to compile both instrumented
+   configurations here, in a job of its own, because instrumentation is part of
+   the package_id and so no production binary can satisfy it -- which meant the
+   pipeline compiled the Debug testing and pybind configurations twice, once
+   clean in the build stage and once instrumented here. 503 of the 1334 objects
+   a pipeline compiled were that duplicate.
+
+   The instrumented builds are now build-stage jobs like any other (see the
+   fan-out at the top), each reading its own .gcda where it was compiled. What
+   is left here is the merge and the gate. #>
+<# Merge and gate: no conan and no compiler, just gcovr combining the
+   tracefiles the instrumented builds produced and the [coverage] thresholds
+   applied to the result.
+
+   The merge can run here, away from the build folders, because each tracefile
+   stores its source paths relative to its own build folder's copy of the
+   exported tree -- and the repository checkout this job already has is that
+   same tree, so it serves as gcovr's --root. That is what keeps a 245 MiB
+   build folder from having to travel between jobs to be read. #>
 Coverage:
   stage: Coverage
+<# Same null-key guard as `dependencies:` and `artifacts: paths:` above. An
+   empty `ci_instrumented_build_jobs` is what a [filter] excluding both
+   coverage builds produces -- `build_type = "Release"` cancels the Debug C++
+   leg and `options.pybind = false` the Python one. coverage_conflicts() warns
+   about exactly that and generation continues, so the file still has to
+   render: a warning followed by a pipeline GitLab will not parse reads as a
+   template bug rather than as the filter problem it is. #>
+<% if ci_instrumented_build_jobs %>
+  needs:
+<% for job in ci_instrumented_build_jobs %>
+    - job: "<< job.name >>"
+      artifacts: true
+<% endfor %>
+<% endif %>
 <% if ci_split_tests %>
-  # Under [ci].split_tests the tests gate the pipeline from "Run C++ Tests",
-  # so this job exists for the report and a coverage *gate* miss is advisory
-  # here. Only that exit code is forgiven. The tool failing -- an exception,
-  # neither build leg leaving a package in the conan cache, gcovr falling
-  # over -- still fails the job, because `allow_failure: true` forgave those
-  # too, and a Coverage stage reporting green while producing no report at
-  # all is how a broken coverage run survived an entire release unnoticed.
+  # Under [ci].split_tests the tests gate the pipeline from the "Run C++ Tests"
+  # jobs, so a coverage *gate* miss is advisory here. Only that exit code is
+  # forgiven. The tool failing -- an exception, the collect job leaving no
+  # summary to read -- still fails the job, because `allow_failure: true`
+  # forgave those too, and a Coverage stage reporting green while producing no
+  # report at all is how a broken coverage run survived an entire release
+  # unnoticed.
   allow_failure:
     exit_codes:
       - << coverage_gate_exit_code >>
 <% endif %>
+  except:
+    - tags
+  image: python:<< coverage_python_version >>
+  script:
+    - pip install "gcovr>=7,<9"
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_coverage --phase report build.toml
+  artifacts:
+<# `when: always` because a gate miss still has a report worth reading -- and
+   it is now rendered *here*, so without this the run you most want to look at
+   is the one that publishes nothing. #>
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: cov-cpp.xml
+    paths:
+      - cov-cpp.xml
+      - cov-cpp-summary.json
+      - cov-py.xml
+      - cov-py-summary.json
+      - coverage-html-cpp/
+      - coverage-html-py/
+<# Printed by the report phase, not gcovr: gcovr's own --txt TOTAL is written
+   in the collect job, whose log GitLab does not scrape for the pipeline
+   number. An unmeasured C++ layer prints "n/a" and matches nothing here, so it
+   cannot publish a percentage that looks like a real measurement. #>
+  coverage: '/Coverage total: (\d+\.?\d*%)/'
+
+pages:
+  stage: Pages
+<# The merged HTML is rendered in "Coverage", so take it from there. That job
+   uploads `when: always`, which means the report still publishes on a gate
+   miss -- the run you most want to read is the one that failed its threshold.
+   `pages` waits for the whole Coverage stage either way; stage ordering, not
+   this dependency, is what sequences them. #>
+  dependencies:
+    - "Coverage"
+  script:
+    - mkdir -p public
+    - cp -r coverage-html-cpp public/cpp
+    - HAS_PY=0
+    - if [ -d coverage-html-py ]; then cp -r coverage-html-py public/python; HAS_PY=1; fi
+    - |
+      {
+        echo '<!DOCTYPE html>'
+        echo '<html lang="en"><head><meta charset="utf-8">'
+        echo '<title><< library_name >> coverage</title></head><body>'
+        echo '<h1><< library_name >> coverage</h1>'
+        echo '<ul>'
+        echo '<li><a href="cpp/index.html">C++ coverage (gcovr)</a></li>'
+        [ "$HAS_PY" -eq 1 ] && echo '<li><a href="python/index.html">Python coverage (pytest-cov)</a></li>'
+        echo '</ul></body></html>'
+      } > public/index.html
+  artifacts:
+    paths:
+      - public
+  only:
+    - master
+    - main
+<% else %>
+<# The pre-restructure coverage stage: a "Coverage Build" that compiles
+   both instrumented configurations in a job of its own, and a report job
+   that reads what it produced. Kept for repositories that are not
+   wheel_only, whose build stage above is still the single looping
+   "Conan Build" and so has no instrumented jobs to take tracefiles
+   from. #>
+<# The instrumented builds, split off from the gate they used to share a job
+   with. They are a second full compile of the library -- coverage is part of
+   the package_id, so no production build can be reused for them -- and running
+   that inside the Coverage-stage job serialized it behind the entire pipeline.
+
+   `needs: []` is what actually schedules this: it starts the job the moment the
+   pipeline does, alongside "Conan Build", rather than at its stage's turn.
+   Declaring it in an earlier *stage* would not do -- every Test-stage job would
+   then wait for this compile, which is the opposite of the point.
+
+   Everything gcovr needs paths for happens here, beside the build folders that
+   produced the data: both instrumented builds, the .gcda read, and the HTML
+   render. Only rendered artifacts and small JSON cross to the gate below, so
+   nothing has to relocate the paths compiled into the .gcno. #>
+"Coverage Build":
+  stage: Coverage
+  needs: []
   except:
     - tags
 <% if docker_image %>
@@ -374,7 +785,49 @@ Coverage:
     - xmsconan_conan_setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
-    - xmsconan_coverage --version ${PACKAGE_VERSION} build.toml
+    - xmsconan_coverage --phase collect --version ${PACKAGE_VERSION} build.toml
+  artifacts:
+    expire_in: '1d'
+<# `when: always` because the gate below has to run even when collection came
+   up short -- reporting an unmeasured layer as a failure is the whole point of
+   coverage-status.json, and it can only do that if the file survives. #>
+    when: always
+    paths:
+      - cov-cpp.xml
+      - cov-cpp-summary.json
+      - cov-py.xml
+      - cov-py-summary.json
+      - coverage-status.json
+      - coverage-html-cpp/
+      - coverage-html-py/
+
+<# Report-only: no conan, no compiler, no gcovr -- it reads the JSON the job
+   above produced and applies the [coverage] thresholds. It re-declares the
+   artifacts so `pages` keeps taking them from this job, and so the cobertura
+   report is attached to the job whose result the MR widget shows. #>
+Coverage:
+  stage: Coverage
+  needs:
+    - job: "Coverage Build"
+      artifacts: true
+<% if ci_split_tests %>
+  # Under [ci].split_tests the tests gate the pipeline from the "Run C++ Tests"
+  # jobs, so a coverage *gate* miss is advisory here. Only that exit code is
+  # forgiven. The tool failing -- an exception, the collect job leaving no
+  # summary to read -- still fails the job, because `allow_failure: true`
+  # forgave those too, and a Coverage stage reporting green while producing no
+  # report at all is how a broken coverage run survived an entire release
+  # unnoticed.
+  allow_failure:
+    exit_codes:
+      - << coverage_gate_exit_code >>
+<% endif %>
+  except:
+    - tags
+  image: python:<< coverage_python_version >>
+  script:
+    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_coverage --phase report build.toml
   artifacts:
     reports:
       coverage_report:
@@ -383,14 +836,26 @@ Coverage:
     paths:
       - cov-cpp.xml
       - cov-py.xml
-      - coverage-html-cpp/
-      - coverage-html-py/
-  coverage: '/TOTAL.*\s+(\d+%)/'
+<# The rendered HTML deliberately stays on "Coverage Build" rather than being
+   re-uploaded here. `needs: artifacts: true` already hands this job the whole
+   tree, so listing it again would store a second copy of every gcovr detail
+   page and spend the upload in a job that otherwise runs for seconds. `pages`
+   takes it from where it was produced. #>
+<# Printed by the report phase, not gcovr: gcovr's own --txt TOTAL is written
+   in the collect job, whose log GitLab does not scrape for the pipeline
+   number. An unmeasured C++ layer prints "n/a" and matches nothing here, so it
+   cannot publish a percentage that looks like a real measurement. #>
+  coverage: '/Coverage total: (\d+\.?\d*%)/'
 
 pages:
   stage: Pages
+<# "Coverage Build" is where the HTML is rendered, so take it from there. It
+   also means the report publishes on a gate miss: the run you most want to
+   read is the one that failed its threshold. `pages` still waits for the whole
+   Coverage stage either way -- stage ordering, not this dependency, is what
+   sequences them. #>
   dependencies:
-    - Coverage
+    - "Coverage Build"
   script:
     - mkdir -p public
     - cp -r coverage-html-cpp public/cpp
@@ -413,4 +878,5 @@ pages:
   only:
     - master
     - main
+<% endif %>
 <% endif %>

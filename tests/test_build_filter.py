@@ -3,6 +3,8 @@ import pytest
 
 from xmsconan.build_toml import BuildToml, CiTable
 from xmsconan.generator_tools.build_filter import (
+    _name_build_jobs,
+    ci_build_jobs,
     ci_filter_effects,
     CI_JOB_SETTINGS,
     ci_python_versions,
@@ -11,7 +13,10 @@ from xmsconan.generator_tools.build_filter import (
     empty_ci_jobs,
     load_build_filter,
 )
-from xmsconan.package_tools.packager import configurations
+from xmsconan.package_tools.packager import (
+    configurations,
+    COVERAGE_PYBIND_BUILD_TYPE,
+)
 
 
 # --- load_build_filter ---
@@ -123,10 +128,25 @@ def test_load_build_filter_accepts_a_buildenv_pin():
     generation time they are None or absent. Checking them for emptiness
     rejected every buildenv pin, making a documented feature unusable.
     """
-    for name in ("XMS_VERSION", "XMS_COVERAGE", "XMS_TEST_ARTIFACTS_LABEL"):
+    for name in ("XMS_VERSION", "PYTHON_TARGET_VERSION", "XMS_TEST_ARTIFACTS_LABEL"):
         config = BuildToml(library_name="xmscore", filter={"buildenv": {name: "1"}})
 
         assert load_build_filter(config) == {"buildenv": {name: "1"}}
+
+
+def test_load_build_filter_rejects_a_coverage_pin():
+    """[filter.options] coverage in build.toml is rejected with a targeted message.
+
+    Normal builds omit the coverage option — only `xmsconan coverage` runs
+    emit it — so a permanent pin would exclude every normal configuration.
+    Without this check the generic emptiness error blames "options that
+    cannot hold at once" and points nowhere near the pin.
+    """
+    config = BuildToml(library_name="xmscore",
+                       filter={"options": {"coverage": True}})
+
+    with pytest.raises(ValueError, match="xmsconan coverage"):
+        load_build_filter(config)
 
 
 def test_load_build_filter_still_rejects_settings_beside_a_buildenv_pin():
@@ -272,6 +292,40 @@ def test_ci_build_types_returns_a_fresh_list():
 
 
 @pytest.mark.parametrize("build_filter,expected", [
+    pytest.param({}, ["Release-testing", "Debug-testing"], id="no-filter"),
+    pytest.param({"build_type": "Release"}, ["Release-testing"], id="pinned-release"),
+    pytest.param({"build_type": "Debug"}, ["Debug-testing"], id="pinned-debug"),
+    pytest.param({"options": {"testing": True}},
+                 ["Release-testing", "Debug-testing"], id="testing-required"),
+    # The axis build_types cannot answer: Release survives on its pybind
+    # configurations, but none of them stages a test runner.
+    pytest.param({"options": {"pybind": True}}, [], id="pybind-only-stages-no-runner"),
+    pytest.param({"options": {"testing": False}}, [], id="testing-excluded"),
+])
+def test_ci_test_labels_name_the_staged_testing_configurations(build_filter, expected):
+    """The generated test jobs come from the runners the build really stages.
+
+    Deriving them from ``build_types`` instead would emit a job for a build type
+    that survives on its pybind or plain-library configurations alone, and that
+    job would fail looking for a ``*-testing`` directory nothing wrote.
+    """
+    assert _effects(build_filter)["test_labels"] == expected
+
+
+def test_ci_test_labels_are_linux_only():
+    """Windows compiles and tests in one job, so its configurations add no labels.
+
+    Without the platform restriction the msvc matrix would contribute
+    ``Release-dynamic-testing`` and friends, and Linux test jobs would be
+    generated for artifact directories no Linux build stages.
+    """
+    labels = _effects({})["test_labels"]
+
+    assert labels == ["Release-testing", "Debug-testing"]
+    assert not [label for label in labels if "dynamic" in label or "static" in label]
+
+
+@pytest.mark.parametrize("build_filter,expected", [
     pytest.param({}, {"mac": True, "linux": True, "windows": True}, id="no-filter"),
     pytest.param({"options": {"pybind": True}},
                  {"mac": True, "linux": True, "windows": True}, id="pybind-required"),
@@ -403,3 +457,110 @@ def test_coverage_conflicts_accepts_matching_python_version():
 def test_coverage_conflicts_skips_python_version_when_unresolved():
     """Callers without a resolved coverage ABI don't get a bogus conflict."""
     assert coverage_conflicts({"options": {"python_version": "3.10"}}, None) == []
+
+
+# --- ci_build_jobs: names and instrumentation ---
+
+
+def _wheel_only_jobs(**matrix):
+    """The GitLab build jobs a wheel_only coverage pipeline would emit.
+
+    Coverage is on and the ABI pinned, because that is the shape the two axes
+    under test only exist in: without coverage nothing is instrumented, and
+    without a pinned ABI there is no "the build type the coverage run reads".
+    """
+    config = BuildToml(library_name="xmscore",
+                       matrix={"wheel_only": True, **matrix})
+    return ci_build_jobs({}, config, ["3.13"], coverage=True,
+                         coverage_python_version="3.13")
+
+
+def test_pybind_job_names_omit_the_build_type_when_the_matrix_has_one():
+    """One pybind build type needs no prefix, and must not grow one.
+
+    These names are `needs:` targets in the generated pipeline, so a prefix
+    added for an axis the matrix does not span is churn in every consumer of
+    the name in exchange for no disambiguation.
+    """
+    names = [job["name"] for job in _wheel_only_jobs()]
+    assert "Python Instrumented Build" in names
+    assert "Python Build" in names
+
+
+def test_pybind_job_names_carry_the_build_type_when_the_matrix_spans_two():
+    """[matrix].pybind_build_types = two build types puts both in the names."""
+    names = [job["name"] for job
+             in _wheel_only_jobs(pybind_build_types=["Release", "Debug"])]
+    assert "Release Python Instrumented Build - py3.13" in names
+    assert "Debug Python Build - py3.13" in names
+
+
+@pytest.mark.parametrize("matrix, versions", [
+    ({}, ["3.13"]),
+    ({"pybind_build_types": ["Release", "Debug"]}, ["3.13"]),
+    ({}, ["3.13", "3.14"]),
+    ({"pybind_build_types": ["Release", "Debug"]}, ["3.13", "3.14"]),
+    ({"compiler_runtime": ["dynamic", "static"]}, ["3.13"]),
+])
+def test_build_job_names_are_unique(matrix, versions):
+    """No two jobs share a name, across every axis the fan-out can span.
+
+    A GitLab job name is a YAML mapping key. Two jobs sharing one is not an
+    error the pipeline reports -- the later block replaces the earlier, that
+    configuration is never built, and the deploy then restores an export
+    tarball no job wrote, because the tarball is named for the config *label*
+    which does carry the build type.
+    """
+    config = BuildToml(library_name="xmscore",
+                       matrix={"wheel_only": True, **matrix})
+    jobs = ci_build_jobs({}, config, versions, coverage=True,
+                         coverage_python_version=versions[0])
+    names = [job["name"] for job in jobs]
+    assert len(names) == len(set(names)), sorted(names)
+
+
+def test_name_build_jobs_raises_when_two_jobs_would_share_a_name():
+    """A naming axis the function does not know about stops generation.
+
+    Two testing jobs at one build type stand in for whatever axis is added
+    next -- a compiler_runtime fan-out, a second toolchain. The point is that
+    it fails here rather than rendering a pipeline that quietly builds less
+    than the matrix asked for.
+    """
+    jobs = [
+        {"kind": "testing", "build_type": "Debug", "instrumented": False,
+         "python_version": "3.13", "tag_policy": "except"},
+        {"kind": "testing", "build_type": "Debug", "instrumented": False,
+         "python_version": "3.13", "tag_policy": "except"},
+    ]
+    with pytest.raises(ValueError, match=r"same name.*'Debug Build'"):
+        _name_build_jobs(jobs)
+
+
+def test_only_the_pybind_build_type_the_coverage_run_reads_is_instrumented():
+    """A second pybind build type builds clean, not instrumented.
+
+    The Python coverage leg's filter pins one build type, so a Debug pybind
+    job would compile an instrumented module `--leg python` never reads -- and
+    write coverage-status-python.json and cov-cpp-tracefile-python.json over
+    the leg that is read, since both files are named for the leg and neither
+    for the build type.
+    """
+    jobs = _wheel_only_jobs(pybind_build_types=["Release", "Debug"])
+    instrumented = {(job["kind"], job["build_type"])
+                    for job in jobs if job["instrumented"]}
+    assert ("pybind", "Release") in instrumented
+    assert ("pybind", "Debug") not in instrumented
+
+
+def test_the_instrumented_pybind_job_is_the_one_the_python_leg_builds():
+    """The CI planner and the coverage run agree on the measured build type.
+
+    Asserted against the constant the coverage leg's filter is built from
+    rather than a literal, so the two cannot be changed apart.
+    """
+    jobs = _wheel_only_jobs(pybind_build_types=["Release", "Debug"])
+    measured = [job for job in jobs
+                if job["kind"] == "pybind" and job["instrumented"]]
+    assert [job["build_type"] for job in measured] == [COVERAGE_PYBIND_BUILD_TYPE]
+    assert [job["coverage_leg"] for job in measured] == ["python"]

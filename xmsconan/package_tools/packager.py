@@ -81,7 +81,6 @@ PUBLIC_BUILDENV_KEYS = frozenset({
     'RELEASE_PYTHON',
     'MACOSX_DEPLOYMENT_TARGET',
     '_PYTHON_HOST_PLATFORM',
-    'XMS_COVERAGE',
     'XMS_TEST_ARTIFACTS_DIR',
 })
 
@@ -172,6 +171,7 @@ FILTER_OPTION_VALUES = {
     'pybind': None,          # bool
     'testing': None,         # bool
     'python_version': None,  # "X.Y" string
+    'coverage': None,        # bool; emitted only on coverage runs
 }
 FILTER_OPTION_KEYS = frozenset(FILTER_OPTION_VALUES)
 
@@ -214,10 +214,18 @@ def _validate_option(option_key, value):
             raise ValueError(
                 f"Filter option {option_key!r} must be one of {sorted(allowed)}, got {value!r}."
             )
-    elif option_key in ('pybind', 'testing'):
+    elif option_key in ('pybind', 'testing', 'coverage'):
         if not isinstance(value, bool):
             raise ValueError(
                 f"Filter option {option_key!r} must be true or false, got {value!r}."
+            )
+        if option_key == 'coverage' and value is False:
+            # Coverage runs emit coverage=True and normal runs omit the
+            # option entirely, so false can never match a configuration.
+            raise ValueError(
+                "Filter option 'coverage' can only be true: coverage runs "
+                "emit coverage=True and normal runs omit the option, so "
+                "false would match nothing. Drop the pin instead."
             )
     elif not isinstance(value, str) or not PYTHON_VERSION_RE.match(value):
         raise ValueError(
@@ -312,8 +320,10 @@ def _reference_matrix(platform_name, python_versions=None, coverage=False, matri
 
     Coverage defaults to off so the matrix a filter is checked against does not
     depend on whether ``XMS_COVERAGE`` happens to be set in the environment
-    doing the generating; ``emitted_buildenv_keys`` turns it on because that
-    mode contributes a ``[buildenv]`` name of its own.
+    doing the generating. (Coverage mode now contributes the ``coverage``
+    *option* rather than a ``[buildenv]`` name; ``emitted_buildenv_keys``
+    still passes ``coverage=True`` so the derived key set tracks whatever a
+    coverage run emits.)
 
     ``python_versions`` gets the same env-independence, and for the same reason:
     passing None reaches ``_resolve_python_versions``, which falls back to
@@ -360,6 +370,120 @@ def emitted_buildenv_keys():
     return frozenset(keys)
 
 
+def config_label(combination):
+    """Return a human-readable label for a build configuration.
+
+    The label has to be *unique across the generated matrix*: it names the
+    per-configuration log file (``run(log_dir=...)``) and the test-artifact
+    directory (``XMS_TEST_ARTIFACTS_LABEL``), both of which are overwritten
+    when two configurations share a label. ``compiler.runtime`` is therefore
+    part of the label — the msvc matrices fan out over ``dynamic``/``static``,
+    so without it 14 msvc configurations collapse onto 8 labels and each static
+    build destroys the dynamic build's log. Toolchains that don't set
+    ``compiler.runtime`` (gcc, apple-clang) are unaffected and keep their
+    shorter labels.
+
+    Module-level rather than a method because the CI generator has to name the
+    same directories the build will write: ``summarize_filter_matches`` reports
+    the testing labels a platform stages, and the generated GitLab test jobs
+    pass them to ``xmsconan_test_shards --label``. Any second implementation of
+    this naming — a template concatenating ``<build_type>-testing``, say —
+    would be a copy free to drift from the one the build actually uses.
+    """
+    parts = [combination.get('build_type', 'unknown')]
+    runtime = combination.get('compiler.runtime')
+    if runtime:
+        parts.append(str(runtime))
+    opts = combination.get('options', {})
+    if opts.get('testing'):
+        parts.append('testing')
+    elif opts.get('pybind'):
+        py_version = opts.get('python_version')
+        parts.append(f'pybind-py{py_version}' if py_version else 'pybind')
+    if opts.get('wchar_t') == 'typedef':
+        parts.append('wchar_typedef')
+    return '-'.join(parts)
+
+
+#: Build types whose testing configuration carries C++ instrumentation on a
+#: coverage run. Every other testing leg stays optimized so it exercises what
+#: ships rather than an instrumented copy of it.
+COVERAGE_TESTING_BUILD_TYPES = ('Debug',)
+
+#: The build type whose pybind configuration the Python coverage leg reads.
+#: ``[matrix].pybind_build_types`` may name more than one -- a library whose
+#: consumers link a Debug module names both -- but the coverage run builds and
+#: measures exactly one of them, so the others must not be instrumented: they
+#: would compile a second instrumented module nothing reads, and write their
+#: status and tracefile under the same per-leg names as the one that is read.
+#: Shared with :func:`xmsconan.coverage_tools.coverage_generator._coverage_legs`,
+#: which pins the leg's filter, so the CI planner and the coverage run cannot
+#: disagree about which pybind build type is the measured one.
+COVERAGE_PYBIND_BUILD_TYPE = 'Release'
+
+
+def is_instrumented_configuration(combination) -> bool:
+    """Whether a configuration is compiled with coverage instrumentation.
+
+    Only the configurations coverage actually reads data from are instrumented,
+    so a coverage run still produces one optimized testing leg. Pybind is
+    always instrumented: the binding layer is C++ that only a Python test can
+    reach, so without its own .gcda it is not counted at all. The Debug testing
+    leg is instrumented because that is what drives C++ coverage. The Release
+    testing leg is not -- it exists to exercise the configuration the shipped
+    wheel is built from, and instrumenting it would leave nothing running
+    optimized code.
+
+    Module-level rather than a method for the same reason as
+    :func:`config_label`: the CI generator has to decide which *build jobs* are
+    instrumented, and it must reach that verdict through the rule the packager
+    actually applies. A second implementation in a template -- "Debug means
+    instrumented", say -- would be a copy free to drift from this one, and the
+    drift would show up as a job that compiles without coverage and then
+    reports 0% for the layer it was supposed to measure.
+
+    Args:
+        combination: One configuration from the fan-out, before its options are
+            serialized into a profile.
+
+    Returns:
+        True when this configuration should carry ``coverage=True``.
+    """
+    options = combination['options']
+    if options.get('pybind'):
+        return True
+    return bool(options.get('testing')) and (
+        combination['build_type'] in COVERAGE_TESTING_BUILD_TYPES)
+
+
+def filter_matches(platform_name, filter_dict, python_versions=None, matrix=None):
+    """Return one platform's configurations that survive a filter.
+
+    The configurations themselves, not a count of them.
+    :func:`summarize_filter_matches` answers "how many, and of what kind",
+    which is all the GitHub matrix needs; the GitLab generator emits one build
+    *job* per surviving configuration and so needs each one's build type,
+    options and Python version to write its ``build.py --filter`` argument.
+
+    Args:
+        platform_name: A key of ``configurations`` -- ``linux``, ``darwin`` or
+            ``windows``.
+        filter_dict: A filter already through ``validate_filter_dict``.
+        python_versions: Python versions the pybind fan-out should assume.
+            Defaults to the packager's own resolution.
+        matrix: The ``[matrix]`` table, so the filter is checked against the
+            configurations this library actually produces.
+
+    Returns:
+        The surviving configurations, in matrix order.
+    """
+    return [
+        configuration
+        for configuration in _reference_matrix(platform_name, python_versions, matrix=matrix)
+        if _configuration_matches(configuration, filter_dict)
+    ]
+
+
 def summarize_filter_matches(filter_dict, python_versions=None, matrix=None):
     """Report what a filter would keep on each platform.
 
@@ -376,19 +500,26 @@ def summarize_filter_matches(filter_dict, python_versions=None, matrix=None):
             unnarrowed fan-out.
 
     Returns:
-        ``{platform: {'total': int, 'pybind': int}}`` — the number of surviving
-        configurations, and how many of those build the Python bindings.
+        ``{platform: {'total': int, 'pybind': int, 'testing_labels': [str]}}``
+        — the number of surviving configurations, how many of those build the
+        Python bindings, and the :func:`config_label` of each surviving
+        *testing* configuration, in matrix order.
+
+        ``testing_labels`` is what the generated CI needs and neither count can
+        supply: ``total`` includes the pybind and plain-library configurations,
+        so a filter can leave a build type with configurations but no test
+        runner to stage. The labels name the ``test_artifacts/<label>/``
+        directories the build will actually write.
     """
     summary = {}
     for platform_name in configurations:
-        kept = [
-            configuration
-            for configuration in _reference_matrix(platform_name, python_versions, matrix=matrix)
-            if _configuration_matches(configuration, filter_dict)
-        ]
+        kept = filter_matches(platform_name, filter_dict, python_versions, matrix)
         summary[platform_name] = {
             'total': len(kept),
             'pybind': sum(1 for c in kept if c['options'].get('pybind')),
+            'testing_labels': [
+                config_label(c) for c in kept if c['options'].get('testing')
+            ],
         }
     return summary
 
@@ -396,7 +527,14 @@ def summarize_filter_matches(filter_dict, python_versions=None, matrix=None):
 class XmsConanPackager(object):
     """The packager class."""
 
-    SHARD_TIMEOUT = 600  # seconds per shard (10 minutes)
+    #: Seconds a single shard may run before it is killed. 20 minutes, raised
+    #: from the original 10: xmsvtk's slowest shard takes 497s on an idle
+    #: runner, so the old ceiling left 21% headroom and a runner busy with a
+    #: second pipeline pushed every shard past it. A killed shard reports as
+    #: "0 failed, N errored", which reads like a test failure but is a
+    #: stopwatch, so the ceiling should be far enough away that crossing it
+    #: means a hang rather than a slow day.
+    SHARD_TIMEOUT = 1200
 
     def __init__(
         self,
@@ -443,9 +581,10 @@ class XmsConanPackager(object):
                 or to ``DEFAULT_PYTHON_VERSIONS``. Each pybind variant is
                 duplicated per version with the matching ``python_version``
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
-            coverage: If True, exports ``XMS_COVERAGE=1`` into every profile's
-                ``[buildenv]`` so CMake adds ``--coverage -O0 -g``. It does not
-                change which configurations are produced: the testing-only
+            coverage: If True, sets the recipe's ``coverage=True`` option on
+                every configuration, so CMake adds ``--coverage -O0 -g`` and
+                the instrumented builds carry their own package_id. It does
+                not change which configurations are produced: the testing-only
                 Debug variant that drives C++ coverage is always emitted, and
                 the Python half of coverage uses whatever pybind configuration
                 ``[matrix]`` already names. Pybind profiles are instrumented
@@ -893,17 +1032,6 @@ class XmsConanPackager(object):
             if self._artifacts_dir:
                 combination['buildenv']['XMS_TEST_ARTIFACTS_DIR'] = self._artifacts_dir
 
-            # XMS_COVERAGE has to ride into the profile's [buildenv] so the
-            # conan activation script exports it for the CMake child process.
-            # Without this, the recipe's Python-side `configure()` still sees
-            # XMS_COVERAGE (it inherits the parent env), but CMake's
-            # `if (DEFINED ENV{XMS_COVERAGE})` guard runs in an activated
-            # buildenv subshell that only sees [buildenv] vars — so
-            # `--coverage` is never added, no .gcno files are produced, and
-            # gcovr reports 0% (see issue #69).
-            if self._coverage:
-                combination['buildenv']['XMS_COVERAGE'] = '1'
-
             # Set macOS deployment target for consistent wheel builds
             if combination.get('os') == 'Macos':
                 combination['buildenv']['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
@@ -931,6 +1059,29 @@ class XmsConanPackager(object):
         else:
             wchar_t_updated_builds = self._wchar_t_variants(combinations)
             combinations = combinations + wchar_t_updated_builds + pybind_updated_builds + testing_updated_builds
+
+        # Coverage rides on the recipe's `coverage` *option*, not on
+        # [buildenv], so an instrumented build carries its own package_id and
+        # can never satisfy --build=missing for a production build (or vice
+        # versa). The recipe forwards the option to CMake as -DXMS_COVERAGE,
+        # which also retires the [buildenv] ride-along that issue #69 needed
+        # for env propagation.
+        #
+        # This runs here rather than in the loop above because the pybind and
+        # testing options that select a leg are only set by the variant
+        # helpers -- inside the loop every configuration still carries the
+        # reset defaults, so nothing would ever match.
+        #
+        # Instrumentation is per configuration, not blanket. The Debug testing
+        # leg and the pybind leg between them reach every line anyone
+        # measures -- the binding layer is only compiled in the latter --
+        # while the Release testing leg stays optimized on purpose: it exists
+        # to exercise the configuration the shipped wheel is built from, and
+        # an instrumented copy of it would prove nothing about what ships.
+        if self._coverage:
+            for combination in combinations:
+                if is_instrumented_configuration(combination):
+                    combination['options']['coverage'] = True
 
         self._configurations = combinations
         return combinations
@@ -1069,29 +1220,10 @@ class XmsConanPackager(object):
     def _config_label(self, combination):
         """Return a human-readable label for a build configuration.
 
-        The label has to be *unique across the generated matrix*: it names the
-        per-configuration log file (``run(log_dir=...)``) and the test-artifact
-        directory (``XMS_TEST_ARTIFACTS_LABEL``), both of which are overwritten
-        when two configurations share a label. ``compiler.runtime`` is
-        therefore part of the label — the msvc matrices fan out over
-        ``dynamic``/``static``, so without it 14 msvc configurations collapse
-        onto 8 labels and each static build destroys the dynamic build's log.
-        Toolchains that don't set ``compiler.runtime`` (gcc, apple-clang) are
-        unaffected and keep their shorter labels.
+        Thin delegate to the module-level :func:`config_label`; see there for
+        what the label has to guarantee.
         """
-        parts = [combination.get('build_type', 'unknown')]
-        runtime = combination.get('compiler.runtime')
-        if runtime:
-            parts.append(str(runtime))
-        opts = combination.get('options', {})
-        if opts.get('testing'):
-            parts.append('testing')
-        elif opts.get('pybind'):
-            py_version = opts.get('python_version')
-            parts.append(f'pybind-py{py_version}' if py_version else 'pybind')
-        if opts.get('wchar_t') == 'typedef':
-            parts.append('wchar_typedef')
-        return '-'.join(parts)
+        return config_label(combination)
 
     def run(self, log_dir=None):
         """Run the build process.
@@ -1845,6 +1977,15 @@ class XmsConanPackager(object):
                     # invoked from.
                     'CMAKE_INSTALL_PREFIX': '${sourceDir}/_install',
                 }
+                # Raw `cmake --preset` builds never run the recipe's build(),
+                # so the coverage option cannot reach them; the regenerated
+                # preset carries the flag instead of the retired
+                # $ENV{XMS_COVERAGE} fallback in CMakeLists.txt. Written in
+                # BOTH modes: a CMake cache variable persists across
+                # reconfigures, so omitting the key after a coverage run
+                # would leave a previously-instrumented build dir
+                # instrumented — the explicit "0" overwrites the stale entry.
+                cache_variables['XMS_COVERAGE'] = '1' if self._coverage else '0'
                 if not multi_config:
                     cache_variables['CMAKE_BUILD_TYPE'] = build_type
                 preset = {

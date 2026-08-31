@@ -32,8 +32,8 @@ def _toml_value(value):
 
 
 def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Snap",
-                     coverage_table=None, **ci_flags):
-    """Write a minimal build.toml with the given ci_type, [ci] and [coverage] tables."""
+                     coverage_table=None, matrix_table=None, **ci_flags):
+    """Write a minimal build.toml with the given ci_type, [ci], [coverage] and [matrix] tables."""
     lines = [
         f'library_name = "{library_name}"',
         f'description = "{description}"',
@@ -45,6 +45,10 @@ def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Sna
         lines += ["", "[coverage]"] + [
             f"{key} = {_toml_value(value)}" for key, value in coverage_table.items()
         ]
+    if matrix_table:
+        lines += ["", "[matrix]"] + [
+            f"{key} = {_toml_value(value)}" for key, value in matrix_table.items()
+        ]
     toml_file = tmp_path / "build.toml"
     toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return toml_file
@@ -53,6 +57,13 @@ def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Sna
 def write_gitlab_toml(tmp_path, **ci_flags):
     """Write a minimal GitLab build.toml."""
     return write_build_toml(tmp_path, "gitlab", **ci_flags)
+
+
+#: The [matrix] table that opts a repository into the concurrent build stage.
+#: Spelled out at each call site rather than defaulted, because whether a
+#: pipeline has one build job per configuration or one job looping all of them
+#: is exactly what these tests are about.
+WHEEL_ONLY = {"wheel_only": True}
 
 
 def write_github_toml(tmp_path, **ci_flags):
