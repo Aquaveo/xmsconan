@@ -223,7 +223,35 @@ if (BUILD_TESTING)
     # This adds a custom command that runs the tests, and CMake runs custom
     # commands in the order they're added, so this has to come *after* the
     # dependencies are copied or it will try to run the tests without them.
-    gtest_discover_tests(runner)
+    #
+    # One ctest entry running the whole binary in a single process, rather than
+    # gtest_discover_tests()'s entry per TEST_F. ctest launches a fresh process
+    # for every test it knows about, so discovery turned a suite of a few
+    # thousand cases into a few thousand process spawns -- each paying for
+    # loader work, static initialization and (on Windows) the runtime DLLs
+    # copied next to the runner, none of which the case itself needs. Handed
+    # the binary directly, gtest runs every case in one process.
+    #
+    # Parallelism is not lost, it moves: `build.py --test-shards N` and the
+    # generated CI's `xmsconan_test_shards` job run N shards, each one process
+    # covering many cases -- the same concurrency at 1/Nth the spawn count.
+    # That is also why CTEST_PARALLEL_LEVEL stops mattering here.
+    #
+    # -DXMS_GTEST_DISCOVER_TESTS=ON restores the per-case entries, for
+    # `ctest -R <case>`-style selection.
+    option(XMS_GTEST_DISCOVER_TESTS
+        "Register each gtest case as its own ctest test (one process per case)" OFF)
+    if (XMS_GTEST_DISCOVER_TESTS)
+        gtest_discover_tests(runner)
+    else ()
+        # WORKING_DIRECTORY pins where TEST-cxxtest.xml lands. The recipe's
+        # run_cxx_tests() reads that name from the build folder, which is where
+        # the cxxtest branch's --xunit-printer runner writes it as well, so
+        # both frameworks leave the report in the same place.
+        add_test(NAME runner
+            COMMAND runner --gtest_output=xml:TEST-cxxtest.xml
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    endif ()
 
     if (WIN32)
         set(RUNNERNAME "runner.exe")

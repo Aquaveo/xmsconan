@@ -480,6 +480,18 @@ class XmsConanPackager(object):
         self._build_missing = build_missing
         self._artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
         self._test_shards = test_shards
+        if test_shards > 1 and not self._artifacts_dir:
+            # Sharding needs somewhere to have staged the runner. Without it,
+            # the build still exports XMS_SKIP_CXX_TESTS=1 for every testing
+            # configuration but never reaches _run_sharded_tests, so the run
+            # skips the C++ suite, shards nothing, and exits 0 -- a green build
+            # in which no test executed. Refuse the combination instead.
+            raise ValueError(
+                f'test_shards={test_shards} needs an artifacts_dir: the runner is '
+                'sharded from the staged artifacts, and without them the recipe '
+                'would skip the C++ tests and nothing would run them. Pass '
+                '--artifacts-dir alongside --test-shards.'
+            )
         self._profile_options = profile_options or {}
         # Only consulted by write_profiles(); the ephemeral build profile has
         # never carried a [conf] section and still does not.
@@ -536,6 +548,16 @@ class XmsConanPackager(object):
         'pybind_build_types': ('Release', 'Debug'),
     }
 
+    #: Boolean ``[matrix]`` keys, mapped to their default. Separate from
+    #: :data:`_MATRIX_VALUES` because those validate membership in a vocabulary
+    #: and a flag has none, only a type. Both feed the unknown-key check below,
+    #: so a misspelled flag is rejected rather than quietly left at its default
+    #: -- which for a switch that *removes* builds means the builds keep
+    #: happening and the only symptom is a pipeline that is no faster.
+    _MATRIX_FLAGS = {
+        'wheel_only': False,
+    }
+
     #: Build types that get a pybind variant when ``[matrix]`` does not say.
     DEFAULT_PYBIND_BUILD_TYPES = ('Release',)
 
@@ -560,7 +582,8 @@ class XmsConanPackager(object):
 
         Returns:
             The table with every accepted key present: ``compiler_runtime`` is
-            None when unrestricted, ``pybind_build_types`` always a tuple.
+            None when unrestricted, ``pybind_build_types`` always a tuple, and
+            ``wheel_only`` always a bool.
 
         Raises:
             ValueError: When ``matrix`` is not a mapping, carries an unknown key,
@@ -572,14 +595,26 @@ class XmsConanPackager(object):
         if not isinstance(matrix, dict):
             raise ValueError(f'matrix must be a table, got {type(matrix).__name__}')
 
-        unknown = sorted(set(matrix) - set(cls._MATRIX_VALUES))
+        accepted_keys = set(cls._MATRIX_VALUES) | set(cls._MATRIX_FLAGS)
+        unknown = sorted(set(matrix) - accepted_keys)
         if unknown:
             raise ValueError(
                 f'matrix has unknown key(s) {", ".join(unknown)}. '
-                f'Accepted keys: {", ".join(sorted(cls._MATRIX_VALUES))}.'
+                f'Accepted keys: {", ".join(sorted(accepted_keys))}.'
             )
 
         resolved = {}
+        for key, default in cls._MATRIX_FLAGS.items():
+            value = matrix.get(key, default)
+            if not isinstance(value, bool):
+                # A string "true" is the likely typo, and it is truthy, so an
+                # unchecked value would turn the flag on for a repo that wrote
+                # it wrong -- silently dropping the library configurations.
+                raise ValueError(
+                    f'matrix.{key} must be a boolean, got '
+                    f'{type(value).__name__} ({value!r}).'
+                )
+            resolved[key] = value
         for key, accepted in cls._MATRIX_VALUES.items():
             values = matrix.get(key)
             if values is None:
@@ -768,6 +803,15 @@ class XmsConanPackager(object):
         # build.toml drives every platform, so a Windows-only statement has to
         # be inert elsewhere.
         runtimes = self._matrix['compiler_runtime']
+        wheel_only = self._matrix['wheel_only']
+        if wheel_only and runtimes is None:
+            # The wheel comes from the pybind configuration, and msvc only gets
+            # one on the dynamic runtime (see _pybind_variants). Keeping the
+            # static half would carry a Release/Debug testing pair that nothing
+            # consumes -- two of the very builds wheel_only exists to remove.
+            # An explicit [matrix].compiler_runtime still wins; it is already
+            # required to include "dynamic" by the check below.
+            runtimes = ('dynamic',)
         if runtimes and 'compiler.runtime' in system_platform_configuration:
             kept = [
                 runtime for runtime in system_platform_configuration['compiler.runtime']
@@ -856,10 +900,25 @@ class XmsConanPackager(object):
                 if combination.get('arch') == 'armv8':
                     combination['buildenv']['_PYTHON_HOST_PLATFORM'] = 'macosx-15.0-arm64'
 
-        wchar_t_updated_builds = self._wchar_t_variants(combinations)
         pybind_updated_builds = self._pybind_variants(combinations)
         testing_updated_builds = self._testing_variants(combinations)
-        combinations = combinations + wchar_t_updated_builds + pybind_updated_builds + testing_updated_builds
+        if wheel_only:
+            # What is dropped is the library-only shape (pybind=False,
+            # testing=False): the binary a C++ consumer links, which a
+            # wheel_only library by definition has none of. The wchar_t copies
+            # go with it -- they are a fan-out of that same shape, and the
+            # /Zc:wchar_t- toggle only matters to a C++ consumer linking it.
+            #
+            # What survives is the three configurations that each produce
+            # something: Release+testing and Debug+testing run the C++ suite,
+            # and the pybind build carries the wheel and runs the Python suite.
+            # They differ only in build_type and the pybind/testing options --
+            # every setting matches, because the base they are copied from is
+            # now a single runtime with no wchar_t variant.
+            combinations = pybind_updated_builds + testing_updated_builds
+        else:
+            wchar_t_updated_builds = self._wchar_t_variants(combinations)
+            combinations = combinations + wchar_t_updated_builds + pybind_updated_builds + testing_updated_builds
 
         self._configurations = combinations
         return combinations
