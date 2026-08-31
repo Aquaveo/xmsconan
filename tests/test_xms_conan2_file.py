@@ -345,19 +345,20 @@ class TestSkipCxxTests:
 
 
 class TestPackageId:
-    """Verify package_id drops python_version for non-pybind builds."""
+    """Verify package_id trims the option axes that do not identify the binary."""
 
     class _InfoOptions:
         """Plain stub so that ``del`` actually removes the attribute."""
 
-        def __init__(self, pybind):
+        def __init__(self, pybind, coverage=False):
             self.pybind = pybind
             self.python_version = "3.13"
+            self.coverage = coverage
 
-    def _make_obj(self, pybind):
+    def _make_obj(self, pybind, coverage=False):
         obj = object.__new__(XmsConan2File)
         obj.info = MagicMock()
-        obj.info.options = self._InfoOptions(pybind=pybind)
+        obj.info.options = self._InfoOptions(pybind=pybind, coverage=coverage)
         return obj
 
     def test_drops_python_version_when_not_pybind(self):
@@ -371,6 +372,26 @@ class TestPackageId:
         obj = self._make_obj(pybind=True)
         obj.package_id()
         assert obj.info.options.python_version == "3.13"
+
+    def test_drops_coverage_when_not_instrumented(self):
+        """coverage=False leaves the id byte-identical to the pre-option recipe.
+
+        Deleting the False value keeps every already-released binary valid;
+        only instrumented builds get a new id.
+        """
+        obj = self._make_obj(pybind=False)
+        obj.package_id()
+        assert not hasattr(obj.info.options, "coverage")
+
+    def test_keeps_coverage_for_instrumented_builds(self):
+        """coverage=True stays in the id.
+
+        --build=missing can never confuse an instrumented binary with a
+        production one.
+        """
+        obj = self._make_obj(pybind=False, coverage=True)
+        obj.package_id()
+        assert obj.info.options.coverage is True
 
 
 class TestXmsDependencyPythonVersionPropagation:
@@ -401,6 +422,7 @@ class TestXmsDependencyPythonVersionPropagation:
         obj.options.pybind = True
         obj.options.testing = False
         obj.options.python_version = "3.10"
+        obj.options.coverage = False
 
         # Dep options accessed via self.options[dep_name].  Mirror Conan 2's
         # empty proxy: ``in`` reports False for everything.  When the dep
@@ -457,7 +479,7 @@ class TestXmsDependencyPythonVersionPropagation:
 
 
 class TestCoverageWiring:
-    """Verify the conanfile cooperates with XMS_COVERAGE for combined builds."""
+    """Verify the conanfile keys instrumentation off the coverage option."""
 
     def test_configure_options_method_removed(self):
         """The configure_options() method that del'd pybind on non-Release is gone.
@@ -475,6 +497,7 @@ class TestCoverageWiring:
         obj.options.testing = False
         obj.options.python_version = "3.13"
         obj.options.wchar_t = "builtin"
+        obj.options.coverage = False
         obj.testing_framework = "cxxtest"
         obj.python_binding_type = "pybind11"
         obj.version = "0.0.0"
@@ -487,25 +510,18 @@ class TestCoverageWiring:
         return obj
 
     @patch("xmsconan.xms_conan2_file.CMake")
-    def test_build_passes_xms_coverage_as_cmake_variable_when_env_set(self, mock_cmake_cls):
-        """``XMS_COVERAGE`` from the parent env must reach CMake as a ``-D`` variable.
+    def test_build_passes_xms_coverage_as_cmake_variable_when_option_set(self, mock_cmake_cls):
+        """``coverage=True`` must reach CMake as a ``-DXMS_COVERAGE`` variable.
 
-        Conan 2's ``cmake.configure()`` runs CMake as a subprocess and
-        does *not* inherit the recipe's parent-process env unless a
-        ``VirtualBuildEnv`` generator is declared in ``generate()`` —
-        which this recipe doesn't have. The recipe's Python ``configure()``
-        sees XMS_COVERAGE fine (same process as conan-create), but CMake
-        did not, so ``CMakeLists.txt.jinja``'s
-        ``if (DEFINED ENV{XMS_COVERAGE})`` block was silently false even
-        with XMS_COVERAGE in the profile's [buildenv]. Passing it as a
-        ``-D`` variable bypasses that whole layer of uncertainty.
+        Conan 2's ``cmake.configure()`` runs CMake as a subprocess, so the
+        option cannot be observed there directly; the recipe forwards it as
+        a ``-D`` variable, which is also the only trigger left in the
+        generated CMakeLists (the env fallback is gone). Driving this from
+        the option is what makes instrumentation part of the package_id.
         """
         recipe = self._make_recipe_for_build()
-        os.environ["XMS_COVERAGE"] = "1"
-        try:
-            recipe.build()
-        finally:
-            del os.environ["XMS_COVERAGE"]
+        recipe.options.coverage = True
+        recipe.build()
 
         configure_mock = mock_cmake_cls.return_value.configure
         assert configure_mock.called, "cmake.configure must be invoked"
@@ -513,31 +529,78 @@ class TestCoverageWiring:
         variables = call_kwargs.get("variables") or {}
         assert variables.get("XMS_COVERAGE") == "1", (
             "build() must pass XMS_COVERAGE=1 as a CMake -D variable when the "
-            f"parent env has it; got variables={variables!r}"
+            f"coverage option is set; got variables={variables!r}"
         )
 
     @patch("xmsconan.xms_conan2_file.CMake")
-    def test_build_omits_xms_coverage_when_env_unset(self, mock_cmake_cls):
-        """Production builds (no ``XMS_COVERAGE`` in env) must not get ``--coverage``.
+    def test_build_registers_per_case_ctest_entries_when_instrumented(
+            self, mock_cmake_cls):
+        """An instrumented build is the one shape ctest still schedules.
 
-        A leaked ``-DXMS_COVERAGE=1`` would link gcov instrumentation
-        into the shipping wheel — bloated binary, slower runtime, and
-        a defeat of any optimization. The check on
-        ``os.environ.get("XMS_COVERAGE")`` must be the only gate.
+        Every other shape reaches the runner through xmsconan_test_shards,
+        which is why the generated CMakeLists registers the whole binary as a
+        single ctest entry. ctest cannot parallelize one entry, so the
+        coverage job's CTEST_PARALLEL_LEVEL had nothing to act on and ran the
+        instrumented suite in one process.
         """
         recipe = self._make_recipe_for_build()
-        os.environ.pop("XMS_COVERAGE", None)
+        recipe.options.coverage = True
+        recipe.build()
+
+        variables = (mock_cmake_cls.return_value.configure
+                     .call_args.kwargs.get("variables") or {})
+        assert variables.get("XMS_GTEST_DISCOVER_TESTS") == "ON", (
+            "an instrumented build must register per-case ctest entries so "
+            f"CTEST_PARALLEL_LEVEL has something to schedule; got "
+            f"variables={variables!r}"
+        )
+
+    @patch("xmsconan.xms_conan2_file.CMake")
+    def test_build_leaves_ctest_registration_alone_without_coverage(
+            self, mock_cmake_cls):
+        """A production build keeps the single whole-binary ctest entry.
+
+        Per-case entries pay a process spawn per test case. That is worth it
+        only where ctest is the scheduler; test_shards builds would pay it
+        for nothing, having already got their concurrency elsewhere.
+        """
+        recipe = self._make_recipe_for_build()
+        recipe.build()
+
+        variables = (mock_cmake_cls.return_value.configure
+                     .call_args.kwargs.get("variables") or {})
+        assert "XMS_GTEST_DISCOVER_TESTS" not in variables, (
+            "only instrumented builds should override the ctest registration; "
+            f"got variables={variables!r}"
+        )
+
+    @patch("xmsconan.xms_conan2_file.CMake")
+    def test_build_ignores_the_env_var_when_option_is_false(self, mock_cmake_cls,
+                                                            monkeypatch):
+        """``XMS_COVERAGE`` in the environment alone must not instrument.
+
+        The env-var era let a build instrument itself while its package_id
+        said otherwise — the exact silent mismatch the option exists to
+        close. A leaked ``-DXMS_COVERAGE=1`` would also link gcov
+        instrumentation into the shipping wheel.
+        """
+        recipe = self._make_recipe_for_build()
+        # monkeypatch, not a bare assignment with `finally: del`: the manual
+        # form deletes the variable on the way out rather than restoring it, so
+        # a developer running the suite with XMS_COVERAGE already exported has
+        # it silently unset for every test that follows.
+        monkeypatch.setenv("XMS_COVERAGE", "1")
         recipe.build()
 
         configure_mock = mock_cmake_cls.return_value.configure
         variables = configure_mock.call_args.kwargs.get("variables") or {}
         assert "XMS_COVERAGE" not in variables, (
-            f"build() must not leak XMS_COVERAGE into production builds; "
-            f"got variables={variables!r}"
+            f"build() must key instrumentation off the coverage option, not "
+            f"the environment; got variables={variables!r}"
         )
 
-    def test_run_python_tests_uses_pytest_cov_when_env_set(self, tmp_path):
-        """When XMS_COVERAGE=1, pytest is invoked with --cov flags."""
+    def test_run_python_tests_uses_pytest_cov_when_option_set(self, tmp_path):
+        """When coverage=True, pytest is invoked with --cov flags."""
         obj = object.__new__(XmsConan2File)
         obj.build_folder = str(tmp_path / "build")
         obj.source_folder = str(tmp_path / "source")
@@ -547,6 +610,7 @@ class TestCoverageWiring:
             f.write("[pytest]\n")
         obj.options = MagicMock()
         obj.options.python_version = "3.13"
+        obj.options.coverage = True
         obj.python_namespaced_dir = "core"
         obj.xms_dependencies = []
         obj.dependencies = MagicMock()
@@ -556,11 +620,7 @@ class TestCoverageWiring:
         # Stub _find_wheel so we don't need a real wheel.
         obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
 
-        os.environ["XMS_COVERAGE"] = "1"
-        try:
-            obj.run_python_tests()
-        finally:
-            del os.environ["XMS_COVERAGE"]
+        obj.run_python_tests()
 
         pytest_calls = [c for c in obj.run.call_args_list if "-m pytest" in str(c)]
         assert pytest_calls, "expected at least one pytest invocation"
@@ -581,6 +641,7 @@ class TestCoverageWiring:
             f.write("[pytest]\n")
         obj.options = MagicMock()
         obj.options.python_version = "3.13"
+        obj.options.coverage = False
         obj.python_namespaced_dir = "core"
         obj.xms_dependencies = []
         obj.dependencies = MagicMock()
@@ -717,8 +778,10 @@ class TestCoverageWiring:
 
         assert obj.output.warning.called
 
-    def test_run_python_tests_does_not_add_cov_when_env_unset(self, tmp_path):
-        """Without XMS_COVERAGE, no --cov flags are added."""
+    def test_run_python_tests_does_not_add_cov_when_option_unset(
+        self, tmp_path, monkeypatch,
+    ):
+        """coverage=False adds no --cov flags, even with XMS_COVERAGE in the env."""
         obj = object.__new__(XmsConan2File)
         obj.build_folder = str(tmp_path / "build")
         obj.source_folder = str(tmp_path / "source")
@@ -728,6 +791,7 @@ class TestCoverageWiring:
             f.write("[pytest]\n")
         obj.options = MagicMock()
         obj.options.python_version = "3.13"
+        obj.options.coverage = False
         obj.python_namespaced_dir = "core"
         obj.xms_dependencies = []
         obj.dependencies = MagicMock()
@@ -736,25 +800,71 @@ class TestCoverageWiring:
         obj.output = MagicMock()
         obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
 
-        os.environ.pop("XMS_COVERAGE", None)
+        # See the note in test_build_ignores_the_env_var_when_option_is_false:
+        # monkeypatch restores the prior value, `finally: del` does not.
+        monkeypatch.setenv("XMS_COVERAGE", "1")
         obj.run_python_tests()
 
         pytest_cmd = str(obj.run.call_args_list[-1])
         assert "--cov" not in pytest_cmd
 
     def test_configure_raises_when_coverage_set_without_namespaced_dir(self):
-        """XMS_COVERAGE=1 + missing python_namespaced_dir fails at configure time.
+        """coverage=True + pybind=True + missing python_namespaced_dir fails early.
 
         The deep run_python_tests check still exists as defense in depth, but
         catching this in configure() avoids wasting a full instrumented build
-        before the failure surfaces.
+        before the failure surfaces. Only the pybind leg is gated — it is the
+        one that runs pytest-cov.
+        """
+        obj = object.__new__(XmsConan2File)
+        obj.python_namespaced_dir = None
+        obj.options = MagicMock()
+        obj.options.pybind = True
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.options.coverage = True
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        obj.settings = MagicMock()
+        obj.settings.os = MagicMock(__str__=lambda s: "Linux")
+        obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
+        obj.settings.compiler.version = MagicMock(value="13.0")
+
+        with pytest.raises(ConanException, match="python_namespaced_dir"):
+            obj.configure()
+
+    def test_configure_permits_missing_namespaced_dir_without_coverage(self):
+        """With coverage=False, an unset python_namespaced_dir is allowed."""
+        obj = object.__new__(XmsConan2File)
+        obj.python_namespaced_dir = None
+        obj.options = MagicMock()
+        obj.options.pybind = False
+        obj.options.testing = False
+        obj.options.python_version = "3.13"
+        obj.options.coverage = False
+        obj.xms_dependencies = []
+        obj.xms_dependency_options = {}
+        obj.settings = MagicMock()
+        obj.settings.os = MagicMock(__str__=lambda s: "Linux")
+        obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
+        obj.settings.compiler.version = MagicMock(value="13.0")
+
+        obj.configure()  # must not raise
+
+    def test_configure_permits_cpp_only_coverage_without_namespaced_dir(self):
+        """coverage=True on a pybind=False leg needs no python_namespaced_dir.
+
+        The C++ legs never run pytest-cov, so a hand-written pure-C++ recipe
+        can collect C++ coverage without configuring a Python namespace it
+        does not have.
         """
         obj = object.__new__(XmsConan2File)
         obj.python_namespaced_dir = None
         obj.options = MagicMock()
         obj.options.pybind = False
-        obj.options.testing = False
+        obj.options.testing = True
         obj.options.python_version = "3.13"
+        obj.options.coverage = True
         obj.xms_dependencies = []
         obj.xms_dependency_options = {}
         obj.settings = MagicMock()
@@ -762,33 +872,10 @@ class TestCoverageWiring:
         obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
         obj.settings.compiler.version = MagicMock(value="13.0")
 
-        os.environ["XMS_COVERAGE"] = "1"
-        try:
-            with pytest.raises(ConanException, match="python_namespaced_dir"):
-                obj.configure()
-        finally:
-            del os.environ["XMS_COVERAGE"]
-
-    def test_configure_permits_missing_namespaced_dir_without_coverage(self):
-        """Without XMS_COVERAGE, an unset python_namespaced_dir is allowed."""
-        obj = object.__new__(XmsConan2File)
-        obj.python_namespaced_dir = None
-        obj.options = MagicMock()
-        obj.options.pybind = False
-        obj.options.testing = False
-        obj.options.python_version = "3.13"
-        obj.xms_dependencies = []
-        obj.xms_dependency_options = {}
-        obj.settings = MagicMock()
-        obj.settings.os = MagicMock(__str__=lambda s: "Linux")
-        obj.settings.compiler = MagicMock(__str__=lambda s: "gcc")
-        obj.settings.compiler.version = MagicMock(value="13.0")
-
-        os.environ.pop("XMS_COVERAGE", None)
         obj.configure()  # must not raise
 
     def test_run_python_tests_raises_when_cov_target_unknown(self, tmp_path):
-        """XMS_COVERAGE=1 without python_namespaced_dir must fail loudly.
+        """coverage=True without python_namespaced_dir must fail loudly.
 
         Falling back to ``--cov=xms`` would silently mix in coverage from
         xms_dependencies installed in the venv.
@@ -802,6 +889,7 @@ class TestCoverageWiring:
             f.write("[pytest]\n")
         obj.options = MagicMock()
         obj.options.python_version = "3.13"
+        obj.options.coverage = True
         obj.python_namespaced_dir = None
         obj.xms_dependencies = []
         obj.dependencies = MagicMock()
@@ -810,12 +898,8 @@ class TestCoverageWiring:
         obj.output = MagicMock()
         obj._find_wheel = MagicMock(return_value=str(tmp_path / "fake.whl"))
 
-        os.environ["XMS_COVERAGE"] = "1"
-        try:
-            with pytest.raises(ConanException, match="python_namespaced_dir"):
-                obj.run_python_tests()
-        finally:
-            del os.environ["XMS_COVERAGE"]
+        with pytest.raises(ConanException, match="python_namespaced_dir"):
+            obj.run_python_tests()
 
 
 class _Setting(str):
@@ -1432,6 +1516,7 @@ class TestCMakeVariables:
         obj.options.testing = False
         obj.options.python_version = "3.13"
         obj.options.wchar_t = wchar_t
+        obj.options.coverage = False
         obj.testing_framework = "cxxtest"
         obj.python_binding_type = "pybind11"
         obj.version = "0.0.0"
@@ -1451,11 +1536,10 @@ class TestCMakeVariables:
         variables = self._make_recipe(wchar_t=wchar_t)._cmake_variables()
         assert variables["USE_TYPEDEF_WCHAR_T"] is expected
 
-    # Cleared, not merely overridden: build() adds XMS_COVERAGE to the configure
-    # set when it is set in the parent env, so on a developer machine that has
-    # exported it this test compared a toolchain set against a configure set
-    # carrying one extra key, and failed for a reason having nothing to do with
-    # drift. Nothing else under these mocks reads the environment.
+    # Cleared as a guard: build() keys XMS_COVERAGE off the coverage option
+    # now, but this test is the drift detector, and clearing proves nothing
+    # under these mocks reads the environment — a regression back to env
+    # sensitivity would fail here on a developer machine that exports it.
     @patch_env(clear=True)
     @patch("xmsconan.xms_conan2_file.CMakeDeps")
     @patch("xmsconan.xms_conan2_file.CMakeToolchain")

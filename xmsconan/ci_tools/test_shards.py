@@ -49,8 +49,9 @@ from xml.etree import ElementTree
 LOGGER = logging.getLogger(__name__)
 
 #: Seconds a single shard may run before it is killed. Mirrors
-#: ``XmsConanPackager.SHARD_TIMEOUT`` -- a shard is the same kind of work there.
-DEFAULT_SHARD_TIMEOUT = 600
+#: ``XmsConanPackager.SHARD_TIMEOUT`` -- a shard is the same kind of work there,
+#: including the 10-to-20-minute raise and the headroom argument behind it.
+DEFAULT_SHARD_TIMEOUT = 1200
 
 #: Where the recipe's ``_save_test_artifacts`` stages each configuration, and
 #: what the generated CI passes to ``build.py --artifacts-dir``.
@@ -318,10 +319,17 @@ def find_artifact_dir(artifacts_dir, label: Optional[str] = None) -> Path:
         )
     if len(matches) > 1:
         # The default matrix stages a testing copy of every build type, so
-        # arriving here is normal rather than exceptional and must not fail the
-        # job. Fall back in a fixed, documented order and say which one won --
-        # the objection to `ls | head -1` was that it chose silently, not that
-        # it chose.
+        # arriving here is normal rather than exceptional. Fall back in a fixed,
+        # documented order and say which one won -- the objection to
+        # `ls | head -1` was that it chose silently, not that it chose.
+        #
+        # This is now an interactive convenience only: the generated GitLab
+        # pipeline emits one job per staged testing configuration and each names
+        # its own --label, so no CI run reaches this branch. It used to, and
+        # that is how a matrix building both build types tested only Debug for
+        # as long as it did -- the warning below went to a job log nobody read.
+        # Keep the fallback for a developer running the tool by hand after a
+        # local build.py; do not let CI depend on it again.
         by_name = {match.name: match for match in matches}
         for preferred in _LABEL_PREFERENCE:
             if preferred in by_name:

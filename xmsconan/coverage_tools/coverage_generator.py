@@ -49,6 +49,7 @@ from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
 )
+from xmsconan.package_tools.packager import COVERAGE_PYBIND_BUILD_TYPE
 
 
 LOGGER = logging.getLogger(__name__)
@@ -69,6 +70,42 @@ LOGGER = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_GATE_FAILED = 3
+
+#: The two halves of a coverage run, and the default that does both in one
+#: process.
+#:
+#: The split exists so the expensive half can move earlier in the pipeline. The
+#: instrumented builds are a second full compile of the library -- they carry
+#: their own package_id, so no production build can be reused for them -- and
+#: running that in a late Coverage stage serialized it behind the entire
+#: pipeline. ``collect`` is a Build-stage job that overlaps the production
+#: build; ``report`` is what remains, and it only reads JSON.
+#:
+#: Nothing but rendered artifacts and small JSON crosses between them, which is
+#: what makes the split viable at all: both instrumented builds stay inside the
+#: collect job, so gcovr reads its ``.gcda`` and renders its HTML beside the
+#: sources that produced them. A split placed anywhere later would have to move
+#: the conan build folder between containers and relocate the paths compiled
+#: into the ``.gcno``.
+PHASE_ALL = "all"
+PHASE_COLLECT = "collect"
+PHASE_MEASURE = "measure"
+PHASE_REPORT = "report"
+COVERAGE_PHASES = (PHASE_ALL, PHASE_COLLECT, PHASE_MEASURE, PHASE_REPORT)
+
+#: The two instrumented legs, as ``--leg`` selects them. ``collect`` runs both
+#: in one job; ``measure`` runs exactly one, which is what lets the generated
+#: GitLab pipeline compile them as two concurrent build jobs instead of one
+#: job doing both in sequence.
+LEG_CPP = "cpp"
+LEG_PYTHON = "python"
+COVERAGE_LEGS = (LEG_CPP, LEG_PYTHON)
+
+#: What ``collect`` leaves for ``report``: the facts the report phase cannot
+#: re-derive from the summary files alone. Thresholds are deliberately NOT in
+#: here -- the report phase reads them from build.toml, so a threshold edit
+#: takes effect without re-running the builds.
+COVERAGE_STATUS_FILE = "coverage-status.json"
 
 _XVFB_REEXEC_FLAG = "XMSCONAN_COVERAGE_XVFB_REEXEC"
 
@@ -375,6 +412,13 @@ def _find_coverage_package(
                     continue
                 if _opt_is_truthy(opts.get("testing")) != want_testing:
                     continue
+                # Instrumented and production builds coexist in the cache as
+                # sibling package_ids under one recipe revision (the recipe's
+                # coverage option). An uninstrumented sibling — whose
+                # package_id drops the option entirely, so the key is absent
+                # here — has no .gcda and must never be handed to gcovr.
+                if not _opt_is_truthy(opts.get("coverage")):
+                    continue
                 if settings.get("build_type") != want_build_type:
                     continue
                 if match_python_version is not None and \
@@ -383,8 +427,8 @@ def _find_coverage_package(
                 candidates.append((ts, exact_ref, pid))
     if not candidates:
         desc = (
-            "testing=True, pybind=False, Debug" if kind == "testing"
-            else f"pybind=True, testing=False, Release, "
+            "coverage=True, testing=True, pybind=False, Debug" if kind == "testing"
+            else f"coverage=True, pybind=True, testing=False, Release, "
                  f"python_version={match_python_version}"
         )
         raise RuntimeError(
@@ -585,10 +629,10 @@ def _assert_gcovr_collected_data(summary_path: Path, collections) -> None:
     :func:`_warn_if_tracefile_empty` instead. Three common causes, in
     descending likelihood:
 
-      1. The binary was compiled without ``--coverage``. ``XMS_COVERAGE``
-         needs to be propagated to CMake (see #69); if the recipe
-         skipped the ``add_compile_options(--coverage -O0 -g)`` block,
-         no ``.gcno`` files exist for gcovr to read.
+      1. The binary was compiled without ``--coverage``. The recipe's
+         ``coverage=True`` option drives ``-DXMS_COVERAGE`` into CMake;
+         if the ``add_compile_options(--coverage -O0 -g)`` block was
+         skipped, no ``.gcno`` files exist for gcovr to read.
       2. ``[coverage].filters`` / ``[coverage].excludes`` filtered out
          every source file. The defaults are conservative, but a custom
          filter that doesn't match the absolute paths in the ``.gcno``
@@ -621,8 +665,8 @@ def _assert_gcovr_collected_data(summary_path: Path, collections) -> None:
         "gcovr collected zero instrumented lines from any build folder. "
         "The C++ coverage report is empty. Common causes:\n"
         "  1. The binary was compiled without --coverage. Verify that "
-        "XMS_COVERAGE=1 reached the CMake configure step (see #69 — "
-        "this is the most common cause).\n"
+        "the coverage=True option reached the build (the recipe passes "
+        "it to CMake as -DXMS_COVERAGE; this is the most common cause).\n"
         "  2. The filter patterns excluded every source file. Compare each "
         "folder's filters against the absolute source paths embedded in the "
         ".gcno files under that same folder:" + per_folder + "\n"
@@ -702,11 +746,40 @@ def _warn_if_tracefile_empty(tracefile: Path, build_folder: Path,
         "gcovr collected no files from %s, so nothing from that build reaches "
         "the merged C++ report. A file compiled there would appear even with "
         "no test exercising it, so this points at compilation or "
-        "instrumentation rather than test coverage: check that XMS_COVERAGE=1 "
-        "reached the CMake configure step (#69). Filters used for this folder "
-        "were: %r",
+        "instrumentation rather than test coverage: check that the "
+        "coverage=True option reached this build's CMake configure step. "
+        "Filters used for this folder were: %r",
         build_folder, resolved_filters,
     )
+
+
+def _log_gcov_data_size(build_folders: list) -> None:
+    """Log how much gcov data each instrumented build folder holds.
+
+    ``.gcno`` is written at compile time and ``.gcda`` at run time, and gcovr
+    needs both side by side. That pairing is what makes the volume worth
+    knowing: splitting the compile and the test run into separate CI jobs
+    means staging every ``.gcno`` as an artifact for the job that runs the
+    binary, and a template-heavy translation unit's notes file is not small.
+    Measuring it here costs a directory walk beside data that already exists;
+    discovering it is too large costs a pipeline.
+
+    Args:
+        build_folders: Instrumented conan build folders, as located by
+            :func:`_locate_coverage_build`.
+    """
+    for folder in build_folders:
+        counts = {}
+        for suffix in (".gcno", ".gcda"):
+            files = list(Path(folder).rglob("*" + suffix))
+            total = sum(f.stat().st_size for f in files if f.is_file())
+            counts[suffix] = (len(files), total)
+        LOGGER.info(
+            "gcov data in %s: %d .gcno (%.1f MiB), %d .gcda (%.1f MiB)",
+            folder,
+            counts[".gcno"][0], counts[".gcno"][1] / (1024 * 1024),
+            counts[".gcda"][0], counts[".gcda"][1] / (1024 * 1024),
+        )
 
 
 def _run_gcovr(build_folders: list[Path], coverage_cfg: dict,
@@ -719,6 +792,20 @@ def _run_gcovr(build_folders: list[Path], coverage_cfg: dict,
     the CxxTest runner never reaches still counts as covered when a Python
     test reaches it through the bindings.
 
+    The combination has to happen at this level. ``.gcda`` counters carry a
+    checksum tied to the ``.gcno`` they were compiled against, so merging
+    them -- with ``gcov-tool merge`` or by letting libgcov accumulate into
+    one tree -- is only defined for runs of the *same* binary. These two
+    folders hold different binaries: one is Debug with the C++ suite linked
+    in, the other Release with the bindings. Merging their ``.gcda`` would
+    match no checksums and yield nothing usable. gcovr's JSON is already
+    resolved to source lines, which is what makes a union of the two
+    meaningful.
+
+    Within a single folder the same-binary condition does hold, which is why
+    the parallel ctest run underneath can let libgcov merge its processes'
+    counters in place.
+
     ``build_folders`` is ordered; the first is used as the merge ``--root``
     so ``--html-details`` can find sources to render. Both folders hold a
     copy of the same exported tree, so either serves.
@@ -727,27 +814,73 @@ def _run_gcovr(build_folders: list[Path], coverage_cfg: dict,
     """
     build_folders = [Path(f) for f in build_folders]
     output_dir.mkdir(parents=True, exist_ok=True)
-    html_index = output_dir / "coverage-html-cpp" / "index.html"
-    html_index.parent.mkdir(parents=True, exist_ok=True)
-    xml_path = output_dir / "cov-cpp.xml"
-    json_summary = output_dir / "cov-cpp-summary.json"
+    tracefiles, collections = _collect_tracefiles(
+        build_folders, coverage_cfg, output_dir,
+        names=[str(i) for i in range(len(build_folders))],
+    )
+    return _merge_tracefiles(
+        tracefiles, build_folders[0], output_dir, collections=collections,
+    )
 
+
+def _collect_tracefiles(build_folders: list[Path], coverage_cfg: dict,
+                        output_dir: Path, names: list) -> tuple:
+    """Read each build folder's .gcda into its own gcovr JSON tracefile.
+
+    Args:
+        build_folders: The instrumented conan build folders to read.
+        coverage_cfg: The resolved ``[coverage]`` context.
+        output_dir: Where the tracefiles are written.
+        names: One name per folder, spliced into
+            ``cov-cpp-tracefile-<name>.json``. The merge globs that pattern, so
+            the names only have to be distinct -- the collect phase numbers
+            them, and the split build jobs use their leg name so two jobs
+            writing into the same artifact space cannot land on one filename.
+
+    Returns:
+        ``(tracefiles, collections)``, where ``collections`` pairs each folder
+        with the filters resolved against it -- kept as pairs, not a flat list,
+        because the filters are anchored to one folder's absolute paths, so the
+        folder has to travel with them for any diagnostic built from them to be
+        actionable.
+    """
     tracefiles = []
-    # Kept as pairs, not a flat list: filters are anchored to one folder's
-    # absolute paths, so the folder they were resolved against has to travel
-    # with them for any diagnostic built from them to be actionable.
     collections = []
-    for i, build_folder in enumerate(build_folders):
-        tracefile = output_dir / f"cov-cpp-tracefile-{i}.json"
+    for name, build_folder in zip(names, build_folders):
+        tracefile = output_dir / f"cov-cpp-tracefile-{name}.json"
         resolved_filters = _collect_gcovr_tracefile(
             build_folder, coverage_cfg, tracefile,
         )
         tracefiles.append(tracefile)
         collections.append((build_folder, resolved_filters))
+    return tracefiles, collections
+
+
+def _merge_tracefiles(tracefiles: list[Path], root, output_dir: Path,
+                      collections=None) -> Path:
+    """Combine tracefiles into the rendered C++ report.
+
+    ``root`` only has to be a tree the tracefiles' *relative* paths resolve
+    against, which is what lets this run somewhere the build folders do not
+    exist. :func:`_collect_gcovr_tracefile` roots each tracefile at its own
+    build folder, so the paths it stores are relative to the copy of the
+    exported source tree ``cmake_layout()`` put there -- and the repository
+    checkout has that same layout. The split GitLab pipeline relies on this:
+    the two instrumented builds each emit a tracefile from a container holding
+    a conan cache, and the report job merges them from a plain python image
+    with nothing but the checkout.
+
+    Returns the path to the merged JSON summary.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    html_index = output_dir / "coverage-html-cpp" / "index.html"
+    html_index.parent.mkdir(parents=True, exist_ok=True)
+    xml_path = output_dir / "cov-cpp.xml"
+    json_summary = output_dir / "cov-cpp-summary.json"
 
     cmd = [
         "gcovr",
-        "--root", str(build_folders[0]),
+        "--root", str(root),
         "--txt",
         "--html-details", str(html_index),
         "--xml", str(xml_path),
@@ -759,7 +892,7 @@ def _run_gcovr(build_folders: list[Path], coverage_cfg: dict,
     # Only an empty *merged* report fails the run. A single folder contributing
     # nothing is legitimate -- a library whose bindings are a stub has little to
     # instrument there -- and is reported as a warning by the collection step.
-    _assert_gcovr_collected_data(json_summary, collections)
+    _assert_gcovr_collected_data(json_summary, collections or [])
     return json_summary
 
 
@@ -824,18 +957,24 @@ def _append_github_summary(rows: list[tuple[str, float, Optional[float], bool]])
         f.write("\n".join(lines))
 
 
-def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Path) -> int:
+def run_coverage(toml_file_path: str | Path, version: str,
+                 output_dir: str | Path, phase: str = PHASE_ALL,
+                 leg: Optional[str] = None) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
-    The packager emits a Debug+testing-only config and a Release+pybind-only
-    config independently; this function builds both -- sequentially unless
-    ``[coverage].parallel = true`` (§5.7) overlaps them -- then runs gcovr
-    against both build folders and merges the result, and copies pytest-cov
-    artifacts out of the pybind build folder. The two builds never share a
-    binary shape, so changes to CxxTest linkage or pybind options cannot break
-    the other layer. Both are instrumented: the testing build supplies what
-    CxxTest reaches, the pybind build the binding layer and anything only a
-    Python test exercises.
+    Args:
+        toml_file_path: Path to ``build.toml``.
+        version: The build version passed through to ``xmsconan_gen`` and
+            ``build.py``. Unused by :data:`PHASE_REPORT`, which builds nothing.
+        output_dir: Workspace the artifacts are written into and read back from.
+        phase: One of :data:`COVERAGE_PHASES`. The default runs everything in
+            one process, which is what a local run and the GitHub workflow do.
+            ``measure`` builds a single leg and reads its data where it was
+            compiled, which is what lets the generated GitLab pipeline run the
+            two instrumented builds concurrently; ``report`` then merges their
+            tracefiles and gates.
+        leg: Required by :data:`PHASE_MEASURE`, and meaningless to every other
+            phase. One of :data:`COVERAGE_LEGS`.
 
     Returns the process exit code: ``EXIT_OK`` when both layers clear their
     thresholds and every leg built, ``EXIT_GATE_FAILED`` for a threshold miss,
@@ -843,7 +982,121 @@ def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Pat
     ``EXIT_ERROR`` when neither leg left a package to report on. The
     generated CI distinguishes the gate from the error -- see the exit-code
     constants.
+
+    A failed collect short-circuits: there is nothing to gate on, and returning
+    the gate code for it would let ``allow_failure: exit_codes`` forgive a
+    coverage run that produced no report at all.
     """
+    if phase not in COVERAGE_PHASES:
+        raise ValueError(
+            f"Unknown coverage phase {phase!r}; expected one of "
+            f"{', '.join(COVERAGE_PHASES)}."
+        )
+    if phase == PHASE_REPORT:
+        return _report_coverage(toml_file_path, output_dir)
+    if phase == PHASE_MEASURE:
+        if leg is None:
+            raise ValueError(
+                f"The {PHASE_MEASURE!r} phase measures one leg, so it needs "
+                f"--leg (one of {', '.join(COVERAGE_LEGS)}). Without it there "
+                "is no way to tell which build to run, and guessing would "
+                "silently measure one layer while reporting for both."
+            )
+        return _measure_coverage(toml_file_path, version, output_dir, leg)
+
+    exit_code = _collect_coverage(toml_file_path, version, output_dir)
+    if phase == PHASE_COLLECT or exit_code != EXIT_OK:
+        return exit_code
+    return _report_coverage(toml_file_path, output_dir)
+
+
+def _copy_pytest_cov_artifacts(py_build_folder, output_dir: Path):
+    """Lift pytest-cov's output out of the pybind build folder.
+
+    ``run_python_tests`` writes them inside the conan build folder, which is
+    private to the job that compiled it. Copying them up to ``output_dir`` is
+    what lets them survive as CI artifacts.
+
+    Args:
+        py_build_folder: The instrumented pybind build folder, or None when
+            that leg left no package.
+        output_dir: Workspace the artifacts are copied into.
+
+    Returns:
+        The source path of ``cov-py-summary.json``, or None when it was not
+        produced -- which the caller records as *no measurement*, distinct
+        from a measured 0%.
+    """
+    if py_build_folder is None:
+        return None
+    py_summary_src = _find_pytest_cov_artifact(
+        py_build_folder, "cov-py-summary.json", kind="file",
+    )
+    if py_summary_src is not None:
+        shutil.copy2(py_summary_src, output_dir / "cov-py-summary.json")
+    py_xml_src = _find_pytest_cov_artifact(
+        py_build_folder, "cov-py.xml", kind="file",
+    )
+    if py_xml_src is not None:
+        shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
+    py_html_src = _find_pytest_cov_artifact(
+        py_build_folder, "coverage-html-py", kind="dir",
+    )
+    py_html_dst = output_dir / "coverage-html-py"
+    if py_html_src is not None:
+        if py_html_dst.exists():
+            shutil.rmtree(py_html_dst)
+        shutil.copytree(py_html_src, py_html_dst)
+    return py_summary_src
+
+
+def _coverage_legs(coverage_python_version: str) -> dict:
+    """The instrumented builds a coverage run drives, keyed by ``--leg`` name.
+
+    One definition, two callers: ``collect`` builds both in a single job,
+    ``measure`` builds exactly one so the generated GitLab pipeline can run
+    them as concurrent build jobs. A second copy of these filters would be a
+    copy free to drift, and the drift would be near-invisible -- a leg built
+    under a filter the reader does not use still produces a package, so the
+    run stays green and quietly measures nothing.
+    """
+    return {
+        LEG_CPP: _BuildLeg("C++", json.dumps({
+            "build_type": "Debug",
+            "options": {"testing": True, "pybind": False},
+        })),
+        LEG_PYTHON: _BuildLeg("Python", json.dumps({
+            "build_type": COVERAGE_PYBIND_BUILD_TYPE,
+            "options": {
+                "pybind": True,
+                "testing": False,
+                "python_version": coverage_python_version,
+            },
+        })),
+    }
+
+
+class _CoverageRun(NamedTuple):
+    """The setup every instrumented phase needs before it can build.
+
+    Shared so ``collect`` (both legs in one job) and ``measure`` (one leg per
+    job) cannot drift on the two things that must agree across them: the
+    ``XMS_COVERAGE`` environment that makes the generated profiles request the
+    ``coverage`` option, and the single Python ABI the filter, the package
+    lookup and the container image are all pinned to.
+    """
+
+    toml_file: Path
+    output_dir: Path
+    config: object
+    library_name: str
+    coverage_cfg: dict
+    coverage_python_version: str
+    env: dict
+
+
+def _prepare_coverage_run(toml_file_path, version, output_dir) -> _CoverageRun:
+    """Read build.toml, regenerate under coverage, and build the leg env."""
     toml_file = Path(toml_file_path).resolve()
     output_dir = Path(output_dir).resolve()
     if not toml_file.exists():
@@ -859,7 +1112,8 @@ def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Pat
     if config.ci.xvfb:
         _reexec_under_xvfb()
 
-    # 1. Generate build artifacts.
+    # Regenerate with XMS_COVERAGE set, so every profile this run builds
+    # from carries the coverage option rather than the production one.
     _run(
         ["xmsconan_gen", "--version", version, "--output_dir", str(output_dir),
          str(toml_file)],
@@ -885,6 +1139,41 @@ def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Pat
             ambient_python_version, coverage_python_version, ambient_python_version,
         )
     env["PYTHON_TARGET_VERSION"] = coverage_python_version
+    return _CoverageRun(
+        toml_file=toml_file, output_dir=output_dir, config=config,
+        library_name=library_name, coverage_cfg=coverage_cfg,
+        coverage_python_version=coverage_python_version, env=env,
+    )
+
+
+def _collect_coverage(toml_file_path: str | Path, version: str,
+                      output_dir: str | Path) -> int:
+    """Build both instrumented legs and render every coverage artifact.
+
+    The packager emits a Debug+testing-only config and a Release+pybind-only
+    config independently; this builds both -- sequentially unless
+    ``[coverage].parallel = true`` (§5.7) overlaps them -- then runs gcovr
+    against both build folders and merges the result, and copies pytest-cov
+    artifacts out of the pybind build folder. The two builds never share a
+    binary shape, so changes to CxxTest linkage or pybind options cannot break
+    the other layer. Both are instrumented: the testing build supplies what
+    CxxTest reaches, the pybind build the binding layer and anything only a
+    Python test exercises.
+
+    Everything gcovr needs paths for happens here, beside the build folders
+    that produced the data. What leaves is portable: rendered HTML, XML, the
+    two summary JSONs, and :data:`COVERAGE_STATUS_FILE`.
+
+    Returns ``EXIT_OK`` once the artifacts are written -- including when the
+    tests failed, which is recorded for the report phase to gate on -- and
+    ``EXIT_ERROR`` when neither leg left a package to report on.
+    """
+    run = _prepare_coverage_run(toml_file_path, version, output_dir)
+    output_dir = run.output_dir
+    library_name = run.library_name
+    coverage_cfg = run.coverage_cfg
+    coverage_python_version = run.coverage_python_version
+    env = run.env
 
     # 2/3. The two coverage builds.
     #
@@ -903,20 +1192,7 @@ def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Pat
     # overlap. Only the report step below reads both. They run in sequence by
     # default; `[coverage].parallel = true` overlaps them on a runner where
     # the conan cache race and the CPU contention do not apply.
-    legs = [
-        _BuildLeg("C++", json.dumps({
-            "build_type": "Debug",
-            "options": {"testing": True, "pybind": False},
-        })),
-        _BuildLeg("Python", json.dumps({
-            "build_type": "Release",
-            "options": {
-                "pybind": True,
-                "testing": False,
-                "python_version": coverage_python_version,
-            },
-        })),
-    ]
+    legs = list(_coverage_legs(coverage_python_version).values())
     tests_failed = _run_coverage_builds(
         legs, version, env, str(output_dir), coverage_cfg["parallel"],
     )
@@ -949,77 +1225,306 @@ def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Pat
     # 5. Generate the C++ coverage report from both instrumented builds. The
     #    testing build covers what CxxTest reaches; the pybind build covers the
     #    binding layer and anything only a Python test exercises.
-    cpp_summary = _run_gcovr(gcovr_folders, coverage_cfg, output_dir)
+    #    Its JSON summary lands in output_dir, which is where the report phase
+    #    reads it back from -- the return value is that path.
+    _log_gcov_data_size(gcovr_folders)
+    _run_gcovr(gcovr_folders, coverage_cfg, output_dir)
 
     # 6. Locate Python coverage artifacts produced inside the pybind build
     #    folder by run_python_tests, and copy them up to the workspace root.
-    py_summary = output_dir / "cov-py-summary.json"
-    py_summary_src = None
-    if py_build_folder is not None:
-        py_summary_src = _find_pytest_cov_artifact(
-            py_build_folder, "cov-py-summary.json", kind="file",
-        )
-        if py_summary_src is not None:
-            shutil.copy2(py_summary_src, py_summary)
-        py_xml_src = _find_pytest_cov_artifact(
-            py_build_folder, "cov-py.xml", kind="file",
-        )
-        if py_xml_src is not None:
-            shutil.copy2(py_xml_src, output_dir / "cov-py.xml")
-        py_html_src = _find_pytest_cov_artifact(
-            py_build_folder, "coverage-html-py", kind="dir",
-        )
-        py_html_dst = output_dir / "coverage-html-py"
-        if py_html_src is not None:
-            if py_html_dst.exists():
-                shutil.rmtree(py_html_dst)
-            shutil.copytree(py_html_src, py_html_dst)
+    py_summary_src = _copy_pytest_cov_artifacts(py_build_folder, output_dir)
 
-    # 7. Threshold gating. Compare raw percentages so a 69.95% build does
-    #    not sneak past a 70.0 threshold via display rounding.
-    cpp_raw = _cpp_percent_from_summary(cpp_summary)
-    py_raw = _py_percent_from_summary(py_summary) if py_summary.exists() else 0.0
-    cpp_threshold = coverage_cfg["cpp_threshold"]
-    py_threshold = coverage_cfg["python_threshold"]
-    # A missing testing leg does not zero the C++ number: gcovr merges
-    # whatever folders survived step 4, so the percent quietly narrows to the
-    # binding layer alone, and cpp_threshold defaults to 0 -- a mostly
-    # unmeasured layer would read as PASS. Same distinction as py_measured
-    # below: no measurement is not 0% coverage, and only a full measurement
-    # may satisfy the threshold.
+    # 7. Record what only this phase can know. A missing testing leg does not
+    #    zero the C++ number -- gcovr merges whatever folders survived step 4,
+    #    so the percent quietly narrows to the binding layer alone, and
+    #    cpp_threshold defaults to 0, which would read as PASS. The report
+    #    phase cannot tell that from the summary file, so it is recorded here.
     cpp_measured = cpp_build_folder is not None
     if not cpp_measured:
         LOGGER.error(
             "No C++ coverage measurement: the testing coverage build left no "
             "build folder to read, so the C++ percent covers the binding "
-            "layer alone. Failing the gate rather than reporting a mostly "
+            "layer alone. The gate will fail rather than report a mostly "
             "unmeasured layer as passing."
         )
-    cpp_pass = cpp_measured and cpp_raw >= cpp_threshold
     # An absent summary is not 0% coverage, it is *no measurement*, and the two
     # have to be told apart: python_threshold defaults to 0, so 0.0 >= 0.0
-    # reports "Python: 0.0% -> PASS" for a layer that never ran. Step 3 always
-    # builds pybind with XMS_COVERAGE=1 and the coverage job is Linux-only in
-    # both CI templates, so the only way the file is legitimately absent is the
-    # pybind leg failing outright -- which step 4 reports and which fails the
-    # gate here either way.
+    # would report "Python: 0.0% -> PASS" for a layer that never ran. Step 3
+    # always builds pybind with the coverage option and the coverage job is
+    # Linux-only in both CI templates, so the only way the file is legitimately
+    # absent is the pybind leg failing outright.
     py_measured = py_summary_src is not None
     if not py_measured:
         if py_build_folder is None:
             LOGGER.error(
                 "No Python coverage measurement: the pybind coverage build "
                 "left no package in the cache, so its summary could not be "
-                "collected. Failing the gate rather than reporting an "
+                "collected. The gate will fail rather than report an "
                 "unmeasured layer as passing."
             )
         else:
             LOGGER.error(
                 "No cov-py-summary.json under %s. The pybind coverage build "
-                "ran, so run_python_tests should have written one -- failing "
-                "the gate rather than reporting an unmeasured layer as "
-                "passing.",
+                "ran, so run_python_tests should have written one -- the gate "
+                "will fail rather than report an unmeasured layer as passing.",
                 py_build_folder,
             )
+    _write_coverage_status(
+        output_dir,
+        tests_failed=tests_failed,
+        cpp_measured=cpp_measured,
+        py_measured=py_measured,
+    )
+    return EXIT_OK
+
+
+def _measure_coverage(toml_file_path: str | Path, version: str,
+                      output_dir: str | Path, leg_name: str) -> int:
+    """Build one instrumented leg and read its coverage where it was compiled.
+
+    The single-leg counterpart to :func:`_collect_coverage`. It exists because
+    gcovr needs the ``.gcno`` written at compile time beside the ``.gcda``
+    written at run time, so whatever reads a leg's data has to be the job that
+    compiled it -- and a single job compiling both legs is a job doing two
+    compiles in sequence. Splitting them lets the generated pipeline run the
+    legs as concurrent build jobs and merge afterwards.
+
+    What leaves is small and portable: a gcovr tracefile whose paths are
+    relative to the source tree (see :func:`_merge_tracefiles`), this leg's
+    slice of the status file, and, for the Python leg, pytest-cov's own
+    output. The build folder itself never moves -- at 245 MiB of ``.gcno``
+    against 5.5 MiB of ``.gcda`` on xmsvtk's C++ leg, moving it would cost far
+    more than the compile it saves.
+
+    Returns ``EXIT_OK`` once this leg's artifacts are written -- including when
+    its tests failed, which is recorded for the report phase to gate on -- and
+    ``EXIT_ERROR`` when the leg left no package to read.
+    """
+    if leg_name not in COVERAGE_LEGS:
+        raise ValueError(
+            f"Unknown coverage leg {leg_name!r}; expected one of "
+            f"{', '.join(COVERAGE_LEGS)}."
+        )
+    run = _prepare_coverage_run(toml_file_path, version, output_dir)
+    output_dir = run.output_dir
+    leg = _coverage_legs(run.coverage_python_version)[leg_name]
+
+    tests_failed = _run_coverage_builds(
+        [leg], version, run.env, str(output_dir), parallel=False,
+    )
+
+    if leg_name == LEG_CPP:
+        build_folder = _locate_coverage_build(run.library_name, kind="testing")
+    else:
+        build_folder = _locate_coverage_build(
+            run.library_name, kind="pybind",
+            python_version=run.coverage_python_version,
+        )
+    LOGGER.info("%s coverage build folder: %s", leg.name,
+                build_folder if build_folder else "<missing>")
+
+    if build_folder is None:
+        LOGGER.error(
+            "The %s coverage build left no package in the local Conan cache, "
+            "so there is no .gcda to read. Recording the leg as unmeasured "
+            "rather than writing an empty tracefile, which the merge would "
+            "read as a layer that is genuinely 0%% covered.",
+            leg.name,
+        )
+        _write_coverage_status(
+            output_dir, tests_failed=tests_failed,
+            cpp_measured=False, py_measured=False, leg=leg_name,
+        )
+        return EXIT_ERROR
+
+    _log_gcov_data_size([build_folder])
+    _collect_tracefiles(
+        [build_folder], run.coverage_cfg, output_dir, names=[leg_name],
+    )
+
+    py_summary_src = None
+    if leg_name == LEG_PYTHON:
+        py_summary_src = _copy_pytest_cov_artifacts(build_folder, output_dir)
+        if py_summary_src is None:
+            LOGGER.error(
+                "The pybind coverage build produced no cov-py-summary.json in "
+                "%s. Its tests ran inside the build, so run_python_tests "
+                "should have written one -- the gate will fail rather than "
+                "report an unmeasured layer as passing.", build_folder,
+            )
+
+    _write_coverage_status(
+        output_dir,
+        tests_failed=tests_failed,
+        # Each leg reports only on itself. The report phase unions the files,
+        # so a leg that never ran leaves its layer unmeasured rather than
+        # being asserted measured by the other leg's status.
+        cpp_measured=(leg_name == LEG_CPP),
+        py_measured=(leg_name == LEG_PYTHON and py_summary_src is not None),
+        leg=leg_name,
+    )
+    return EXIT_OK
+
+
+def _write_coverage_status(output_dir: Path, *, tests_failed: bool,
+                           cpp_measured: bool, py_measured: bool,
+                           leg: Optional[str] = None) -> None:
+    """Hand the report phase the facts it cannot re-derive from the summaries.
+
+    Written even on a healthy run, so its absence in the report phase is
+    unambiguous: the measuring phase did not finish, rather than finishing
+    with nothing to say.
+
+    Args:
+        output_dir: Where the file is written.
+        tests_failed: Whether any test run this phase drove failed.
+        cpp_measured: Whether the C++ layer was actually measured.
+        py_measured: Whether the Python layer was actually measured.
+        leg: The leg this status covers, which suffixes the filename. None
+            writes the whole-run file ``collect`` produces. The suffix is what
+            keeps two concurrent build jobs from overwriting each other: they
+            upload into one artifact space, and a single fixed filename would
+            leave whichever job finished last as the only surviving answer --
+            silently discarding the other layer's measurement while still
+            looking like a complete status.
+    """
+    status = {
+        "tests_failed": bool(tests_failed),
+        "cpp_measured": bool(cpp_measured),
+        "py_measured": bool(py_measured),
+    }
+    name = COVERAGE_STATUS_FILE
+    if leg is not None:
+        name = f"{Path(COVERAGE_STATUS_FILE).stem}-{leg}.json"
+    path = Path(output_dir) / name
+    path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+    LOGGER.info("Wrote %s: %s", path, status)
+
+
+def _read_one_status(path: Path) -> Optional[dict]:
+    """Read a single status file, or None when it is absent or unreadable.
+
+    "Unreadable" includes well-formed JSON that is not an object. The caller
+    unions these with ``.get()``, so a file holding a list or a bare string
+    would reach it as a valid payload and raise ``AttributeError`` from inside
+    the gate -- a crash in the job whose whole purpose is to report a verdict.
+    Treating it as a missing file instead lets the union fall through to its
+    unmeasured-layer path, which fails the gate loudly and names the file.
+    """
+    try:
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.error("Could not read %s: %s", path, exc)
+        return None
+    if not isinstance(status, dict):
+        LOGGER.error("Ignoring %s: expected a JSON object, got %s",
+                     path, type(status).__name__)
+        return None
+    return status
+
+
+def _read_coverage_status(output_dir: Path) -> Optional[dict]:
+    """Read what the measuring phase recorded, or None when it left nothing.
+
+    A ``collect`` run writes one whole-run file; a split pipeline writes one
+    file per leg, and this unions them. The union is not symmetric across the
+    three fields, and each asymmetry is deliberate:
+
+    * ``tests_failed`` is an OR. Either leg's tests failing has to fail the
+      gate, and a leg that never ran cannot vouch for the other's tests.
+    * ``cpp_measured`` / ``py_measured`` are ORs over legs that each report
+      only on themselves. A missing leg therefore leaves its own layer
+      unmeasured rather than inheriting the surviving leg's answer -- which is
+      the case that matters, because an unmeasured layer whose threshold
+      defaults to 0 would otherwise read as a clean PASS.
+
+    The whole-run file is read too, so ``--phase all`` and ``--phase collect``
+    keep working unchanged.
+    """
+    output_dir = Path(output_dir)
+    paths = [output_dir / COVERAGE_STATUS_FILE]
+    stem = Path(COVERAGE_STATUS_FILE).stem
+    paths.extend(sorted(output_dir.glob(f"{stem}-*.json")))
+
+    found = [status for status in (_read_one_status(path) for path in paths)
+             if status is not None]
+    if not found:
+        return None
+    return {
+        "tests_failed": any(s.get("tests_failed") for s in found),
+        "cpp_measured": any(s.get("cpp_measured") for s in found),
+        "py_measured": any(s.get("py_measured") for s in found),
+    }
+
+
+def _report_coverage(toml_file_path: str | Path,
+                     output_dir: str | Path) -> int:
+    """Apply the ``[coverage]`` thresholds to what the collect phase produced.
+
+    Reads only JSON, so it needs neither a conan cache nor a compiler and can
+    run in a job of its own. Thresholds come from ``build.toml`` rather than
+    from the status file, so tightening one takes effect without re-running the
+    builds.
+
+    Returns ``EXIT_OK`` when both layers clear their thresholds,
+    ``EXIT_GATE_FAILED`` for a threshold miss, an unmeasured layer, or tests
+    that failed during collection, and ``EXIT_ERROR`` when the collect phase
+    left nothing to report on.
+    """
+    toml_file = Path(toml_file_path).resolve()
+    output_dir = Path(output_dir).resolve()
+    config = read_build_toml(toml_file)
+    coverage_cfg = _coverage_context(config.coverage, config.library_name)
+
+    status = _read_coverage_status(output_dir)
+    if status is None:
+        LOGGER.error(
+            "No readable %s (or per-leg %s-<leg>.json) in %s, so there is "
+            "nothing to gate on. The measuring phase writes one on every run "
+            "that gets as far as producing reports -- check that it ran and "
+            "that its artifacts reached this job.",
+            COVERAGE_STATUS_FILE, Path(COVERAGE_STATUS_FILE).stem, output_dir,
+        )
+        return EXIT_ERROR
+
+    cpp_summary = output_dir / "cov-cpp-summary.json"
+    py_summary = output_dir / "cov-py-summary.json"
+
+    # A split pipeline arrives here with per-leg tracefiles and no rendered
+    # report: each measuring job read its own build folder and stopped there,
+    # because merging needs both legs and no single build job has both. The
+    # merge happens here instead. It needs no conan cache -- the tracefiles
+    # store source paths relative to their build folder's copy of the exported
+    # tree, and the repository checkout has that same layout, so the checkout
+    # serves as --root. A `collect` run has already rendered the summary and
+    # skips this.
+    tracefiles = sorted(output_dir.glob("cov-cpp-tracefile-*.json"))
+    if tracefiles and not cpp_summary.exists():
+        LOGGER.info("Merging %d coverage tracefile(s) into the C++ report: %s",
+                    len(tracefiles), ", ".join(f.name for f in tracefiles))
+        _merge_tracefiles(tracefiles, Path.cwd(), output_dir)
+
+    if not cpp_summary.exists():
+        LOGGER.error(
+            "No %s, and no cov-cpp-tracefile-*.json to build one from. The "
+            "measuring phase writes one or the other on every run that gets "
+            "as far as reading a build folder -- check that it ran and that "
+            "its artifacts reached this job.", cpp_summary,
+        )
+        return EXIT_ERROR
+
+    # Compare raw percentages so a 69.95% build does not sneak past a 70.0
+    # threshold via display rounding.
+    cpp_raw = _cpp_percent_from_summary(cpp_summary)
+    py_raw = _py_percent_from_summary(py_summary) if py_summary.exists() else 0.0
+    cpp_threshold = coverage_cfg["cpp_threshold"]
+    py_threshold = coverage_cfg["python_threshold"]
+    cpp_measured = bool(status.get("cpp_measured"))
+    py_measured = bool(status.get("py_measured"))
+    tests_failed = bool(status.get("tests_failed"))
+    cpp_pass = cpp_measured and cpp_raw >= cpp_threshold
     py_pass = py_measured and py_raw >= py_threshold
 
     rows = [
@@ -1034,10 +1539,21 @@ def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Pat
         LOGGER.info("  %s: %s (threshold %.1f%%) -> %s",
                     layer, shown, threshold, "PASS" if passed else "FAIL")
     _append_github_summary(rows)
+    # The line GitLab's `coverage:` regex reads. Printed by this phase because
+    # this is the job that gates -- gcovr's own --txt TOTAL is written in the
+    # collect job, whose log GitLab does not scrape for the pipeline number.
+    # "n/a" when unmeasured, so an unmeasured layer cannot publish a percentage
+    # that looks like a real measurement.
+    LOGGER.info("Coverage total: %s",
+                f"{cpp_raw:.1f}%" if cpp_measured else "n/a")
 
+    if not cpp_measured:
+        LOGGER.error("Coverage gate FAIL: the C++ layer was not measured.")
+    if not py_measured:
+        LOGGER.error("Coverage gate FAIL: the Python layer was not measured.")
     if tests_failed:
-        LOGGER.error("Coverage gate FAIL: build.py exited non-zero earlier; "
-                     "see the build log above for the failing test(s).")
+        LOGGER.error("Coverage gate FAIL: build.py exited non-zero during "
+                     "collection; see that job's log for the failing test(s).")
     if cpp_pass and py_pass and not tests_failed:
         return EXIT_OK
     return EXIT_GATE_FAILED
@@ -1060,6 +1576,27 @@ def main():
         help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
     )
     parser.add_argument(
+        "--phase", choices=COVERAGE_PHASES, default=PHASE_ALL,
+        help=(
+            "Which part of the run to do. 'measure' builds ONE instrumented "
+            "leg (see --leg) and writes that leg's tracefile beside the build "
+            "folder that produced it; 'collect' does both legs in one process; "
+            "'report' merges whatever tracefiles it finds and applies the "
+            "[coverage] thresholds. The default does everything in one "
+            "process. The generated GitLab pipeline uses 'measure' so the two "
+            "instrumented builds are separate concurrent jobs, and 'report' "
+            "so the gate runs in a seconds-long job that needs no toolchain."
+        ),
+    )
+    parser.add_argument(
+        "--leg", choices=COVERAGE_LEGS, default=None,
+        help=(
+            "Which instrumented build to run, for --phase measure. 'cpp' is "
+            "the Debug testing configuration, 'python' the Release pybind one. "
+            "Ignored by every other phase."
+        ),
+    )
+    parser.add_argument(
         "toml_file", nargs="?", default="build.toml",
         help="Path to build.toml. Defaults to ./build.toml.",
     )
@@ -1071,7 +1608,10 @@ def main():
     version = resolve_version(args.version)
 
     try:
-        exit_code = run_coverage(args.toml_file, version, args.output_dir)
+        exit_code = run_coverage(
+            args.toml_file, version, args.output_dir, phase=args.phase,
+            leg=args.leg,
+        )
     except Exception as exc:
         # subprocess.run(..., capture_output=True, check=True) callers
         # (_find_coverage_package, _conan_cache_path) raise CalledProcessError

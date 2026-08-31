@@ -13,6 +13,7 @@ from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, read_build_to
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
+    ci_build_jobs,
     ci_filter_effects,
     coverage_conflicts,
     empty_ci_jobs,
@@ -139,6 +140,31 @@ def _unsupported_python_versions(versions) -> list:
 _DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
 
 
+def _mark_export_jobs(build_jobs: list) -> list:
+    """Mark the Linux build jobs that save a Conan cache tarball, and list them.
+
+    Every job that runs on a tag, because with one build job per configuration
+    each one has its own container and its own Conan cache: ``conan cache save``
+    in the pybind job sees the pybind package and nothing else. Naming a single
+    job the exporter -- which is what a pipeline with one build job could
+    afford to do -- would publish that job's package id and silently drop every
+    other one, so a release would ship a wheel and no library for the
+    downstream repositories that link against it.
+
+    Branch-only jobs are skipped because the deploy is ``only: tags``: their
+    tarball would never be restored, and the ``.export`` upload would be paid
+    on every branch pipeline for nothing.
+
+    Sets ``exports`` on each job in place and returns the marked ones, in build
+    order. Empty when there is no Linux build job at all, which the template
+    reads as "emit no export step".
+    """
+    exporters = [job for job in build_jobs if job["tag_policy"] != "except"]
+    for job in exporters:
+        job["exports"] = True
+    return exporters
+
+
 def _resolve_coverage_python_version(config: BuildToml) -> str:
     """Pick the single python_version the coverage build should pin to.
 
@@ -224,9 +250,24 @@ def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
             jobs.insert(2, "linux-arm")
         return jobs
     # [ci].linux is GitLab-only -- the GitHub linux job above is not gated on it
-    # -- and it takes "Conan Build" out with it, so a filter cannot empty a job
-    # that was never written.
-    jobs = ["Conan Build"] if context["ci_linux"] else []
+    # -- and it takes the Linux build jobs out with it, so a filter cannot empty
+    # a job that was never written.
+    jobs = []
+    if context["ci_linux"] and context["ci_wheel_only"]:
+        # Under [matrix].wheel_only there is no single "Conan Build": the
+        # template emits one job per surviving configuration, so naming the old
+        # job here would point the warning at a block the pipeline does not
+        # contain. One entry for the whole fan-out rather than one per job,
+        # for two reasons. The pins this check is about -- os, arch, compiler
+        # -- belong to the Linux runner every one of those jobs shares, so
+        # enumerating would emit N identical warnings or none. And the case
+        # worth warning about empties the fan-out to *zero* jobs, which is
+        # exactly when a list built from it would have nothing left to warn
+        # with. The settings still come from "Conan Build", which is where that
+        # shared runner is registered.
+        jobs = [("Linux build jobs", "Conan Build")]
+    elif context["ci_linux"]:
+        jobs = ["Conan Build"]
     if context["ci_windows"]:
         jobs.append("Conan Build - Windows")
     return jobs
@@ -241,9 +282,9 @@ def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, 
     """
     for job_name in empty_ci_jobs(build_filter, ci_type, _emitted_ci_jobs(ci_type, context)):
         LOGGER.warning(
-            "The [filter] table excludes everything the %r job builds — that job "
-            "will fail with an empty matrix. Drop the setting from [filter], or "
-            "stop generating the job.", job_name,
+            "The [filter] table excludes everything %r builds, leaving it with "
+            "an empty matrix. Drop the setting from [filter], or stop "
+            "generating it.", job_name,
         )
 
     if not context["ci_coverage"]:
@@ -371,9 +412,35 @@ def generate_ci(
         )
 
     build_filter = load_build_filter(config)
-    # One measurement of the filter against the real matrix, feeding both the
-    # build_type axis and the wheel-step gate below.
+    # One measurement of the filter against the real matrix, feeding the
+    # build_type axis, the wheel-step gate, and the test-job fan-out below.
     filter_effects = ci_filter_effects(build_filter, config)
+
+    # The GitLab build stage emits one job per surviving Linux configuration
+    # rather than one job looping all of them, so the legs compile in parallel
+    # and each is requested in exactly the shape its consumer needs. Coverage
+    # is passed through because it decides which of those jobs instrument --
+    # the answer comes from the packager's own predicate, not from the
+    # template guessing that "Debug means coverage".
+    linux_build_jobs = ci_build_jobs(
+        build_filter, config, ci_linux_python_versions,
+        coverage=config.ci.coverage,
+        coverage_python_version=_resolve_coverage_python_version(config),
+    )
+
+    # split_tests moves test execution out of the build job -- the build exports
+    # XMS_SKIP_CXX_TESTS=1 and the Test stage runs the staged runners instead. A
+    # filter that leaves no testing configuration therefore does not merely skip
+    # the test jobs, it removes the only place the suite would have run, and the
+    # pipeline stays green having compiled nothing to test. Fail generation
+    # rather than ship that.
+    if gitlab_split_tests and linux_enabled and not filter_effects["test_labels"]:
+        raise ValueError(
+            "build.toml sets [ci].split_tests, but its [filter] leaves no Linux "
+            "testing configuration to stage a runner from, so the generated "
+            "pipeline would skip the C++ suite entirely and still pass. Drop "
+            "split_tests or widen the filter to keep a testing configuration."
+        )
 
     from xmsconan import __version__ as xmsconan_version
 
@@ -396,6 +463,14 @@ def generate_ci(
         # default follows ci_type -- see repairs_windows_wheel.
         "ci_windows_wheel_repair": repairs_windows_wheel(config),
         "ci_linux": config.ci.linux_enabled,
+        # Whether this repository gets the concurrent build stage. `wheel_only`
+        # is the flag it is keyed to because that is the shape the restructure
+        # was designed and measured against: a matrix with no library
+        # configurations, where the build jobs and the coverage legs are the
+        # same small set. A repository that publishes library packages keeps
+        # the single looping "Conan Build" and its separate "Coverage Build"
+        # until the concurrent stage has been proven against that shape too.
+        "ci_wheel_only": bool(config.matrix.get("wheel_only")),
         "ci_deploy": config.ci.deploy,
         "ci_coverage": config.ci.coverage,
         "ci_xvfb": config.ci.xvfb,
@@ -423,6 +498,37 @@ def generate_ci(
         "coverage_gate_exit_code": EXIT_GATE_FAILED,
         "coverage_python_version": _resolve_coverage_python_version(config),
         "ci_build_types": filter_effects["build_types"],
+        # One GitLab test job per staged testing configuration, each naming its
+        # own artifact directory. Computed here rather than spelled
+        # "<build_type>-testing" in the template: the label format is
+        # config_label's, and a copy of it in Jinja is free to drift from what
+        # the build writes.
+        "ci_test_labels": filter_effects["test_labels"],
+        "ci_linux_build_jobs": linux_build_jobs,
+        "ci_instrumented_build_jobs": [
+            job for job in linux_build_jobs if job["instrumented"]
+        ],
+        # Only the uninstrumented testing configurations get a separate test
+        # job. An instrumented one runs its own suite inside the build, beside
+        # the .gcno it has to be read against, so splitting it out would mean
+        # moving the build folder to reach the data.
+        "ci_linux_test_jobs": [
+            job for job in linux_build_jobs
+            if job["kind"] == "testing" and not job["instrumented"]
+        ],
+        # Also sets `exports` on the job dicts themselves, which is what the
+        # build-job loop reads to decide whether to emit the save step. The two
+        # context entries hold the same dict objects, so the marking is visible
+        # through ci_linux_build_jobs no matter which entry is evaluated first.
+        "ci_linux_export_jobs": _mark_export_jobs(linux_build_jobs),
+        # Every job that can produce a wheel. There is more than one because
+        # the pybind configuration is emitted twice -- instrumented on a
+        # branch, clean on a tag. Only the clean one writes a wheel, which is
+        # why Repair Wheel is tag-gated; the list still names both so the
+        # `optional: true` need has a name to be optional about.
+        "ci_linux_wheel_jobs": [
+            job for job in linux_build_jobs if job["kind"] == "pybind"
+        ],
         # Per platform: a filter can leave one platform building wheels and
         # another not (see ci_filter_effects). linux-arm reads the Linux flag.
         "ci_wheel_enabled_mac": filter_effects["wheel_enabled"]["mac"],

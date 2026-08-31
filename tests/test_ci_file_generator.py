@@ -11,7 +11,12 @@ from xmsconan.generator_tools.ci_file_generator import (
     _display_name,
     generate_ci,
 )
-from .ci_helpers import NON_JOB_SHAPE_KEYS, write_github_toml, write_gitlab_toml
+from .ci_helpers import (
+    NON_JOB_SHAPE_KEYS,
+    WHEEL_ONLY,
+    write_github_toml,
+    write_gitlab_toml,
+)
 
 
 @pytest.mark.parametrize("input_name,expected", [
@@ -631,17 +636,35 @@ def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
 
 def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
     """When split_tests = true, generates separate Build and Test jobs."""
-    toml_file = write_gitlab_toml(tmp_path, split_tests=True, coverage=True, xvfb=True)
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, split_tests=True, coverage=True, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    assert '"Run C++ Tests":' in content
     assert "XMS_SKIP_CXX_TESTS" in content
     ci = yaml.safe_load(content)
-    # Build and Test should be separate stages
-    assert ci["Conan Build"]["stage"] == "Build"
-    assert ci["Run C++ Tests"]["stage"] == "Test"
+    # Build and Test are separate stages, and the build fans out into one job
+    # per configuration rather than one job looping them.
+    build_jobs = {}
+    for name, job in ci.items():
+        # The Windows build job shares the stage but not the shape: it is one
+        # matrix job over the ABIs, not a job per configuration.
+        if not isinstance(job, dict) or "Windows" in name:
+            continue
+        if job.get("stage") == "Build":
+            build_jobs[name] = job
+    assert build_jobs, "split_tests must emit Linux Build-stage jobs"
+    needs = {name: job.get("needs") for name, job in build_jobs.items()}
+    assert all(value == [] for value in needs.values()), (
+        "every Linux build job declares needs: [] so they start together "
+        f"rather than at their stage's turn: {needs}"
+    )
+    # The Release leg is uninstrumented, so its suite runs in a Test job. The
+    # Debug leg is instrumented under coverage = true and runs its own suite
+    # inside its build, beside the .gcno gcovr has to read the .gcda against.
+    assert '"Run C++ Tests - Release-testing":' in content
+    assert '"Run C++ Tests - Debug-testing":' not in content
+    assert ci["Run C++ Tests - Release-testing"]["stage"] == "Test"
     # Coverage is informational-only when tests run in a separate job -- but
     # only for the coverage gate itself. The tool failing still fails the job.
     # Asserted through the constant: the forgiven code must be the one the
@@ -664,7 +687,10 @@ def test_gitlab_ci_no_split_tests_by_default(tmp_path):
     assert "XMS_SKIP_CXX_TESTS" not in content
     # No Build stage — everything stays in Test
     ci = yaml.safe_load(content)
-    assert ci["Conan Build"]["stage"] == "Test"
+    build_jobs = {name: job for name, job in ci.items()
+                  if isinstance(job, dict) and "build.py" in str(job.get("script", ""))}
+    assert build_jobs, "the Linux build jobs must still be emitted"
+    assert all(job["stage"] == "Test" for job in build_jobs.values()), build_jobs
     assert "Build" not in ci.get("stages", [])
 
 
@@ -693,14 +719,15 @@ def test_gitlab_ci_test_shards_run_in_one_container(tmp_path):
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     ci = yaml.safe_load(content)
-    assert "parallel" not in ci["Run C++ Tests"]
+    assert "parallel" not in ci["Run C++ Tests - Debug-testing"]
     assert "--shards 4" in content
     # The GTEST_* variables are the shard runner's business now. Exporting them
     # from the job would pin every shard in the container to the same index.
     assert "GTEST_TOTAL_SHARDS" not in content
     assert "GTEST_SHARD_INDEX" not in content
     # The merged report is what makes a failing case visible in the MR widget.
-    assert ci["Run C++ Tests"]["artifacts"]["reports"]["junit"] == "TEST-cxxtest.xml"
+    junit = ci["Run C++ Tests - Debug-testing"]["artifacts"]["reports"]["junit"]
+    assert junit == "TEST-cxxtest.xml"
 
 
 def test_gitlab_ci_no_shards_without_config(tmp_path):
@@ -716,7 +743,7 @@ def test_gitlab_ci_no_shards_without_config(tmp_path):
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     ci = yaml.safe_load(content)
-    assert "parallel" not in ci["Run C++ Tests"]
+    assert "parallel" not in ci["Run C++ Tests - Debug-testing"]
     assert "GTEST_TOTAL_SHARDS" not in content
     assert "--shards 1" in content
 
@@ -747,10 +774,70 @@ def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    # Find the "Run C++ Tests:" section
-    test_section = re.search(r'"Run C\+\+ Tests":.*?(?=\n\S|\Z)', content, re.DOTALL)
-    assert test_section is not None
-    assert "--xvfb" in test_section.group()
+    # Every test job gets it, not just whichever one happens to render first.
+    sections = re.findall(r'"Run C\+\+ Tests - .*?(?=\n\S|\Z)', content, re.DOTALL)
+    assert len(sections) == 2, sections
+    assert all("--xvfb" in section for section in sections)
+
+
+def _cxx_test_jobs(ci):
+    """The generated C++ test jobs, keyed by job name."""
+    return {name: job for name, job in ci.items() if name.startswith("Run C++ Tests")}
+
+
+def test_gitlab_split_tests_runs_every_staged_testing_configuration(tmp_path):
+    """One test job per staged testing configuration, each naming its own label.
+
+    The regression this pins: a single job found its artifact directory by
+    falling back to the first of Debug-testing, Release-testing that existed, so
+    a matrix building both compiled the Release runner on every pipeline and
+    never ran it. Nothing was red -- the suite simply went unexecuted for one of
+    the two configurations.
+    """
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, split_tests=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    ci = yaml.safe_load(content)
+
+    jobs = _cxx_test_jobs(ci)
+    assert set(jobs) == {
+        "Run C++ Tests - Release-testing",
+        "Run C++ Tests - Debug-testing",
+    }
+    for label in ("Release-testing", "Debug-testing"):
+        script = "\n".join(jobs[f"Run C++ Tests - {label}"]["script"])
+        assert f"--label {label}" in script
+    # Peers in the Test stage, each off its own build job rather than off one
+    # shared build -- which is what lets the builds run concurrently.
+    assert all(job["stage"] == "Test" for job in jobs.values())
+    assert jobs["Run C++ Tests - Release-testing"]["needs"] == [
+        {"job": "Release Build", "artifacts": True},
+    ]
+    assert jobs["Run C++ Tests - Debug-testing"]["needs"] == [
+        {"job": "Debug Build", "artifacts": True},
+    ]
+    # No invocation may reach the label fallback: passing --label is the fix.
+    assert "xmsconan_test_shards --artifacts-dir test_artifacts --shards" not in content
+
+
+def test_gitlab_split_test_job_uploads_only_its_own_configuration(tmp_path):
+    """Each test job re-uploads its own artifacts, not every other job's too.
+
+    ``needs: artifacts: true`` downloads the whole staged tree, so an unscoped
+    ``test_artifacts/`` path would have each job upload a second copy of every
+    configuration it did not run.
+    """
+    toml_file = write_gitlab_toml(tmp_path, split_tests=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    ci = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    for name, job in _cxx_test_jobs(ci).items():
+        label = name.removeprefix("Run C++ Tests - ")
+        assert job["artifacts"]["paths"] == [
+            f"test_artifacts/{label}/", "TEST-cxxtest.xml",
+        ]
 
 
 def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
@@ -865,30 +952,57 @@ def test_gitlab_coverage_version_is_parameterized(tmp_path):
     assert "xmsconan_coverage --version 0.0.0" not in content
 
 
-def test_gitlab_coverage_job_declares_python_target_version(tmp_path):
-    """The Coverage job's ABI target and its container image come from one value.
+def _instrumented_build_jobs(parsed):
+    """The build jobs that compile with coverage instrumentation.
 
-    The job has always selected its image from the resolved coverage ABI but
-    declared no ``PYTHON_TARGET_VERSION``, so the packager generated a matrix
-    for the silent 3.13 default inside a 3.14 container and the tool's
+    Found by what they run rather than by name. The generator names them from
+    the configuration they build ("Debug Instrumented Build", "Python
+    Instrumented Build"), and a test that hard-coded those names would be
+    asserting the naming scheme rather than the invariant it cares about --
+    and would go green if a rename left a job uninstrumented.
+    """
+    jobs = {}
+    for name, job in parsed.items():
+        if not isinstance(job, dict):
+            continue
+        script = job.get("script") or []
+        if any("--phase measure" in str(line) for line in script):
+            jobs[name] = job
+    return jobs
+
+
+def test_gitlab_coverage_job_declares_python_target_version(tmp_path):
+    """Each instrumented build's ABI target and container image come from one value.
+
+    The old single Coverage Build selected its image from the resolved coverage
+    ABI but declared no ``PYTHON_TARGET_VERSION``, so the packager generated a
+    matrix for the silent 3.13 default inside a 3.14 container and the tool's
     ``--filter`` then matched nothing. Asserting the image and the variable
     *agree* is the point: a test on either one alone would still have passed
     while the two disagreed.
+
+    Now that the instrumented builds are separate concurrent jobs, the pair has
+    to agree on every one of them -- one job drifting is exactly the failure
+    the original bug was, reintroduced in a job the old assertion never saw.
     """
     toml_file = write_gitlab_toml(
-        tmp_path, coverage=True, linux_python_versions=["3.14"],
+        tmp_path,
+        matrix_table=WHEEL_ONLY, coverage=True, linux_python_versions=["3.14"],
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    job = parsed["Coverage"]
-    pinned = job["variables"]["PYTHON_TARGET_VERSION"]
-    assert pinned == "3.14"
-    assert job["image"].endswith(f"-py{pinned}"), (
-        f"Coverage image {job['image']!r} must match its pinned ABI {pinned!r}; "
-        "a mismatch fails find_package(Python3 ... EXACT REQUIRED) at configure."
-    )
+    jobs = _instrumented_build_jobs(parsed)
+    assert jobs, "coverage = true must emit at least one instrumented build job"
+    for name, job in jobs.items():
+        pinned = job["variables"]["PYTHON_TARGET_VERSION"]
+        assert pinned == "3.14", name
+        assert job["image"].endswith(f"-py{pinned}"), (
+            f"{name} image {job['image']!r} must match its pinned ABI "
+            f"{pinned!r}; a mismatch fails "
+            "find_package(Python3 ... EXACT REQUIRED) at configure."
+        )
 
 
 def test_gitlab_coverage_pins_python_target_version_under_an_explicit_image(tmp_path):
@@ -901,16 +1015,19 @@ def test_gitlab_coverage_pins_python_target_version_under_an_explicit_image(tmp_
     default inside somebody else's container.
     """
     toml_file = write_gitlab_toml(
-        tmp_path, coverage=True, linux_python_versions=["3.14"],
+        tmp_path,
+        matrix_table=WHEEL_ONLY, coverage=True, linux_python_versions=["3.14"],
         docker_image="registry.example.com/custom:latest",
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    job = parsed["Coverage"]
-    assert job["image"] == "registry.example.com/custom:latest"
-    assert job["variables"]["PYTHON_TARGET_VERSION"] == "3.14"
+    jobs = _instrumented_build_jobs(parsed)
+    assert jobs, "coverage = true must emit at least one instrumented build job"
+    for name, job in jobs.items():
+        assert job["image"] == "registry.example.com/custom:latest", name
+        assert job["variables"]["PYTHON_TARGET_VERSION"] == "3.14", name
 
 
 def test_gitlab_coverage_pins_python_target_version_under_xvfb(tmp_path):
@@ -922,22 +1039,27 @@ def test_gitlab_coverage_pins_python_target_version_under_xvfb(tmp_path):
     rather than for whichever branch happened to get a test.
     """
     toml_file = write_gitlab_toml(
-        tmp_path, coverage=True, xvfb=True, linux_python_versions=["3.14"],
+        tmp_path,
+        matrix_table=WHEEL_ONLY, coverage=True, xvfb=True, linux_python_versions=["3.14"],
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    job = parsed["Coverage"]
-    pinned = job["variables"]["PYTHON_TARGET_VERSION"]
-    assert pinned == "3.14"
-    assert "x11" in job["image"], (
-        f"Coverage image {job['image']!r} must be the xvfb variant under xvfb = true"
-    )
-    assert job["image"].endswith(f"-py{pinned}"), (
-        f"Coverage image {job['image']!r} must match its pinned ABI {pinned!r}; "
-        "a mismatch fails find_package(Python3 ... EXACT REQUIRED) at configure."
-    )
+    jobs = _instrumented_build_jobs(parsed)
+    assert jobs, "coverage = true must emit at least one instrumented build job"
+    for name, job in jobs.items():
+        pinned = job["variables"]["PYTHON_TARGET_VERSION"]
+        assert pinned == "3.14", name
+        assert "x11" in job["image"], (
+            f"{name} image {job['image']!r} must be the xvfb variant "
+            "under xvfb = true"
+        )
+        assert job["image"].endswith(f"-py{pinned}"), (
+            f"{name} image {job['image']!r} must match its pinned ABI "
+            f"{pinned!r}; a mismatch fails "
+            "find_package(Python3 ... EXACT REQUIRED) at configure."
+        )
 
 
 def test_gitlab_pages_landing_links_both_coverage_reports(tmp_path):
@@ -959,6 +1081,32 @@ def test_gitlab_pages_landing_links_both_coverage_reports(tmp_path):
     assert 'href="python/index.html"' in content
     # The old "C++ only" landing copy must be gone.
     assert "cp coverage-html-cpp/index.html public/index.html" not in content
+
+
+def test_gitlab_pages_takes_the_html_from_the_job_that_rendered_it(tmp_path):
+    """The HTML is published from the job that renders it.
+
+    That is now "Coverage": the instrumented builds each emit only a tracefile,
+    and the merge that turns those into HTML happens in the gate job. It
+    uploads ``when: always`` so the report still publishes on a gate miss --
+    the run you most want to read is the one that missed its threshold.
+    """
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, coverage=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    assert parsed["pages"]["dependencies"] == ["Coverage"]
+    report = parsed["Coverage"]["artifacts"]
+    assert "coverage-html-cpp/" in report["paths"]
+    assert "coverage-html-py/" in report["paths"]
+    assert report["when"] == "always", (
+        "a gate miss must still publish its report; without when: always the "
+        "failing run is the one that publishes nothing"
+    )
+    # cov-cpp.xml stays: GitLab reads the cobertura report off the job that
+    # declares it, which has to be the one carrying the coverage: regex.
+    assert "cov-cpp.xml" in report["paths"]
 
 
 def test_github_coverage_pins_gcovr(tmp_path):
@@ -1033,6 +1181,8 @@ def test_gitlab_linux_defaults_on(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    # "Conan Build", not the per-configuration jobs: without [matrix].wheel_only
+    # a repository keeps the single looping build job.
     assert "\nConan Build:" in content
     assert "Repair Wheel:" in content
     assert '"Wheel Deploy":' in content
@@ -1159,21 +1309,49 @@ def test_gitlab_project_gets_no_such_warning(tmp_path, caplog):
 
 def test_gitlab_linux_image_tracks_the_implicit_linux_default(tmp_path):
     """With no explicit Linux list the image follows the highest CI entry."""
-    toml_file = write_gitlab_toml(tmp_path, python_versions=["3.10", "3.14"])
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, python_versions=["3.10", "3.14"])
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
     # Linux falls back to the highest CI entry, rendered literally because there
     # is no matrix to interpolate from.
     parsed = yaml.safe_load(content)
-    assert parsed["Conan Build"]["image"].endswith("conan-gcc13-py3.14")
-    assert parsed["Conan Build"]["variables"]["PYTHON_TARGET_VERSION"] == "3.14"
+    build_jobs = {name: job for name, job in parsed.items()
+                  if isinstance(job, dict) and job.get("needs") == []}
+    assert build_jobs, "the Linux build jobs must be emitted"
+    for name, job in build_jobs.items():
+        assert job["image"].endswith("conan-gcc13-py3.14"), name
+        assert job["variables"]["PYTHON_TARGET_VERSION"] == "3.14", name
 
 
-def test_gitlab_linux_fanout_adds_matching_build_and_deploy_matrices(tmp_path):
-    """Multi-entry linux_python_versions fans out the build and its deploy."""
+def _linux_export_names(content):
+    """The Conan cache tarballs the Linux build jobs save, in job order.
+
+    Windows saves one too, from its own job and under a name of its own shape
+    (``-windows-py${PYTHON_TARGET_VERSION}-``). It is matched by a bare
+    ``--save .export/`` search and would be counted as a Linux export, which is
+    how a count assertion goes green for the wrong reason.
+    """
+    return [line.split("--save ")[1].strip()
+            for line in content.splitlines()
+            if "--save .export/" in line and "-linux-" in line]
+
+
+def test_gitlab_linux_fanout_builds_each_abi_and_deploys_them_together(tmp_path):
+    """Multi-entry linux_python_versions fans the build out and the deploy in.
+
+    The build fans out: one job per surviving configuration, so a pybind
+    configuration becomes a job per Python version and they compile
+    concurrently instead of in one job's loop.
+
+    The deploy does the opposite. It used to carry a ``parallel: matrix`` over
+    the ABIs. One job restores every tarball and uploads once instead, which is
+    one fewer way for two legs to race on the same Conan reference -- and it
+    stays correct if the exporting set ever stops being one-per-ABI.
+    """
     toml_file = write_gitlab_toml(
         tmp_path,
+        matrix_table=WHEEL_ONLY,
         python_versions=["3.10", "3.13", "3.14"],
         linux_python_versions=["3.13", "3.14"],
     )
@@ -1181,35 +1359,79 @@ def test_gitlab_linux_fanout_adds_matching_build_and_deploy_matrices(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    legs = [{"PYTHON_TARGET_VERSION": "3.13"}, {"PYTHON_TARGET_VERSION": "3.14"}]
-    assert parsed["Conan Build"]["parallel"]["matrix"] == legs
-    assert parsed["Conan Deploy - Linux"]["parallel"]["matrix"] == legs
-    # The image interpolates the leg rather than naming a version.
-    assert parsed["Conan Build"]["image"].endswith("conan-gcc13-py${PYTHON_TARGET_VERSION}")
-    # A fanned-out build must not also carry a fixed PYTHON_TARGET_VERSION
-    # variable competing with the one the matrix supplies.
-    assert "PYTHON_TARGET_VERSION" not in parsed["Conan Build"].get("variables", {})
+    for version in ("3.13", "3.14"):
+        job = parsed[f"Python Build - py{version}"]
+        assert job["variables"]["PYTHON_TARGET_VERSION"] == version
+        assert job["image"].endswith(f"conan-gcc13-py{version}")
+        assert "parallel" not in job, (
+            "the ABI fan-out is the job list now; a matrix on top of it would "
+            "build every ABI in every job"
+        )
+
+    deploy = parsed["Conan Deploy - Linux"]
+    assert "parallel" not in deploy, (
+        "one job restores every tarball; legs would race on the same Conan "
+        "reference and no longer line up with the exports anyway"
+    )
+    # Every configuration a tag builds hands the deploy a package. Under
+    # wheel_only that is the clean pybind build of each ABI, and nothing else:
+    # the testing configurations are branch-only and there are no library
+    # configurations to publish.
+    assert set(deploy["dependencies"]) == {
+        "Python Build - py3.13", "Python Build - py3.14",
+    }
+    # ...and each one is restored before the single upload at the end.
+    restores = [line for line in deploy["script"] if "--restore" in line]
+    assert len(restores) == 2, restores
+    assert deploy["script"][-1].endswith("--upload"), (
+        "one upload after the whole set is restored: `conan upload <ref>` "
+        "publishes every package id, so uploading per tarball would push the "
+        "same recipe once per tarball"
+    )
 
 
-def test_gitlab_linux_fanout_gives_each_leg_its_own_export_tarball(tmp_path):
-    """Without a per-ABI name the parallel legs overwrite one another's export."""
-    toml_file = write_gitlab_toml(tmp_path, linux_python_versions=["3.13", "3.14"])
+def test_gitlab_linux_export_tarballs_are_named_per_configuration(tmp_path):
+    """Two build jobs sharing an export name would overwrite each other.
+
+    They upload into one artifact space, so a shared name leaves whichever
+    finished last as the only tarball the deploy can restore -- and the deploy
+    would still look like it succeeded, having restored *a* package and
+    uploaded it. The name is the configuration's whole label, not just its ABI,
+    so it stays unique if a build type or an option ever splits the exporting
+    set along an axis that is not the interpreter.
+    """
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_python_versions=["3.13", "3.14"])
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert ".export/xmssnap-linux-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz" in content
-    assert ".export/xmssnap-linux-${PACKAGE_VERSION}.tar.gz" not in content
+    names = _linux_export_names(content)
+    assert len(names) == len(set(names)) == 2, names
+    for label in ("Release-pybind-py3.13", "Release-pybind-py3.14"):
+        expected = f".export/xmssnap-linux-{label}-${{PACKAGE_VERSION}}.tar.gz"
+        assert expected in names, (expected, names)
 
 
-def test_gitlab_single_linux_version_keeps_unsuffixed_export_tarball(tmp_path):
-    """The export name only grows the ABI suffix once there is a fan-out."""
-    toml_file = write_gitlab_toml(tmp_path, linux_python_versions=["3.13"])
+def test_gitlab_single_linux_version_still_qualifies_its_export_tarballs(tmp_path):
+    """The save and the restore have to spell the same name, fan-out or not.
+
+    With one ABI there is one exporting job, so nothing would collide on a bare
+    name -- but the deploy restores by name, and a build that saved a
+    label-qualified tarball while the deploy asked for a bare one would fail
+    only on a tag, in the job that publishes. The label is unconditional so the
+    two ends cannot disagree.
+    """
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY,
+                                  linux_python_versions=["3.13"])
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert ".export/xmssnap-linux-${PACKAGE_VERSION}.tar.gz" in content
-    # Windows legitimately carries the suffix; only the Linux name must be bare.
-    assert "xmssnap-linux-py${PYTHON_TARGET_VERSION}" not in content
+    names = _linux_export_names(content)
+    assert names == [".export/xmssnap-linux-Release-pybind-py3.13-${PACKAGE_VERSION}.tar.gz"]
+
+    parsed = yaml.safe_load(content)
+    restores = [line for line in parsed["Conan Deploy - Linux"]["script"]
+                if "--restore" in line]
+    assert len(restores) == 1 and names[0] in restores[0], (restores, names)
 
 
 def test_gitlab_split_tests_with_multiple_linux_versions_is_rejected(tmp_path):
@@ -1224,26 +1446,31 @@ def test_gitlab_split_tests_with_multiple_linux_versions_is_rejected(tmp_path):
 def test_gitlab_split_tests_with_one_linux_version_is_allowed(tmp_path):
     """The guard is about fan-out, not about split_tests itself."""
     toml_file = write_gitlab_toml(
-        tmp_path, split_tests=True, linux_python_versions=["3.14"],
+        tmp_path,
+        matrix_table=WHEEL_ONLY, split_tests=True, linux_python_versions=["3.14"],
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
     # split_tests still splits, and the single-version build stays a plain job.
-    assert "Run C++ Tests" in parsed
-    assert "parallel" not in parsed["Conan Build"]
+    assert "Run C++ Tests - Debug-testing" in parsed
+    assert "parallel" not in parsed["Debug Build"]
 
 
 def test_gitlab_coverage_image_uses_the_coverage_python_version(tmp_path):
     """Coverage pins one ABI, so it tracks the coverage version, not the fan-out."""
     toml_file = write_gitlab_toml(
-        tmp_path, coverage=True, linux_python_versions=["3.13", "3.14"],
+        tmp_path,
+        matrix_table=WHEEL_ONLY, coverage=True, linux_python_versions=["3.13", "3.14"],
         coverage_table={"python_version": "3.13"},
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
-    assert parsed["Coverage"]["image"].endswith("conan-gcc13-py3.13")
+    jobs = _instrumented_build_jobs(parsed)
+    assert jobs, "coverage = true must emit at least one instrumented build job"
+    for name, job in jobs.items():
+        assert job["image"].endswith("conan-gcc13-py3.13"), name
 
 
 def test_github_coverage_workflow_sets_up_the_pinned_python(tmp_path):
@@ -1435,10 +1662,27 @@ def github_arm_jobs(tmp_path):
     return _github_jobs(write_github_toml(tmp_path, linux_arm=True), tmp_path)
 
 
+def _is_build_step(step):
+    """Whether a step compiles the library, rather than consuming what it built.
+
+    Matched on the prefix because a job may have more than one: the Windows job
+    emits a branch step and a tag step under mutually exclusive ``if:``
+    conditions, the tag one narrowing the filter to the configurations a
+    release publishes. It runs under ``shell: cmd``, where ``%VAR%`` expands
+    before the argument is parsed, so a filter held in a variable would break
+    its own quoting -- the other three legs carry one step and select the
+    filter with a ``env:`` expression instead.
+    """
+    return str(step.get("name", "")).startswith(BUILD_STEP_NAME)
+
+
 def _build_step_run(job, job_name):
-    """Return the ``run:`` text of one job's build step."""
+    """Return the ``run:`` text of one job's build step.
+
+    The first, which is the branch-pipeline one wherever a job has two.
+    """
     for step in job["steps"]:
-        if step.get("name") == BUILD_STEP_NAME:
+        if _is_build_step(step):
             return str(step["run"])
     raise AssertionError(f"no {BUILD_STEP_NAME!r} step in the {job_name} job")
 
@@ -1459,7 +1703,7 @@ def test_github_every_platform_job_builds(github_arm_jobs):
     """The build step exists on each platform job, and only on those."""
     building = [
         name for name, job in github_arm_jobs.items()
-        if any(step.get("name") == BUILD_STEP_NAME for step in job.get("steps", []))
+        if any(_is_build_step(step) for step in job.get("steps", []))
     ]
     assert sorted(building) == sorted(BUILDING_JOBS)
 
@@ -1493,7 +1737,7 @@ def test_github_wheel_steps_stay_release_only(github_arm_jobs):
         (name, step.get("name"), str(step.get("if", "")))
         for name, job in github_arm_jobs.items()
         for step in job.get("steps", [])
-        if step.get("name") != BUILD_STEP_NAME and _touches_the_wheelhouse(step)
+        if not _is_build_step(step) and _touches_the_wheelhouse(step)
     ]
 
     assert sorted((name, step) for name, step, _ in wheel_steps) == WHEEL_CONSUMING_STEPS
@@ -1849,6 +2093,45 @@ def test_gitlab_drops_wheel_jobs_when_pybind_filtered_off(tmp_path):
     assert "Conan Build" in parsed, "the rest of the pipeline survives"
 
 
+_SPLIT_TESTS_CI_TABLE = """
+[ci]
+split_tests = true
+"""
+
+
+def test_gitlab_test_jobs_follow_a_build_type_pin(tmp_path):
+    """A pinned build_type leaves one testing configuration, so one test job."""
+    toml_file = _write_filtered_toml(
+        tmp_path,
+        ci_type="gitlab",
+        ci_table=_SPLIT_TESTS_CI_TABLE,
+        filter_table=_RELEASE_ONLY_FILTER,
+    )
+    generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+    parsed = yaml.safe_load((tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert _cxx_test_jobs(parsed).keys() == {"Run C++ Tests - Release-testing"}
+
+
+def test_gitlab_test_jobs_survive_a_pybind_pin_that_keeps_no_runner(tmp_path):
+    """split_tests with nothing to test is rejected, not silently green.
+
+    A pybind-only filter still leaves ``ci_build_types`` non-empty -- Release
+    keeps configurations -- so deriving the test jobs from that axis would emit
+    a job looking for a runner the build never staged. The build job has already
+    exported XMS_SKIP_CXX_TESTS=1 by then, so the suite would not have run
+    anywhere.
+    """
+    toml_file = _write_filtered_toml(
+        tmp_path,
+        ci_type="gitlab",
+        ci_table=_SPLIT_TESTS_CI_TABLE,
+        filter_table="\n[filter.options]\npybind = true\n",
+    )
+    with pytest.raises(ValueError, match="no Linux testing configuration"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path))
+
+
 def test_gitlab_drops_windows_wheel_work_when_pybind_filtered_off(tmp_path):
     """The Windows leg's wheel work goes too, and the Conan deploys stay.
 
@@ -2119,3 +2402,486 @@ def test_github_ci_shard_flag_needs_more_than_one_shard(tmp_path):
     content = workflow.read_text(encoding="utf-8")
 
     assert "--test-shards" not in content
+
+
+#: A single backslash, named so the escaping assertions below do not have
+#: to contain one -- an escape sequence in a test about escape sequences is
+#: exactly where an off-by-one level of quoting hides.
+BACKSLASH = chr(92)
+
+
+def _gate(job):
+    """How a GitLab job is gated: "always", "only:<refs>" or "except:<refs>"."""
+    if "only" in job:
+        return "only:" + ",".join(job["only"])
+    if "except" in job:
+        return "except:" + ",".join(job["except"])
+    return "always"
+
+
+def _linux_build_gates(parsed):
+    """Each Linux build job's name mapped to its gate, in pipeline order."""
+    return {name: _gate(job) for name, job in parsed.items()
+            if isinstance(job, dict) and job.get("needs") == []}
+
+
+def test_gitlab_tag_pipeline_skips_the_testing_configurations(tmp_path):
+    """A tag builds what it publishes, and nothing installs a test runner.
+
+    The pipeline used to compile the testing configurations on a tag as well,
+    because one build job looped the whole matrix and had no way to build part
+    of it. A job per configuration can be gated per configuration, and the test
+    binaries are the part a release has no use for.
+    """
+    gates = _linux_build_gates(_gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, coverage=True))
+
+    assert gates["Release Build"] == "except:tags", (
+        "the Release testing configuration is branch-only: its consumer, the "
+        "C++ test job, is branch-only too"
+    )
+    assert gates["Debug Instrumented Build"] == "except:tags", (
+        "and so is the Debug testing configuration, which is additionally "
+        "instrumented for a Coverage stage that does not run on a tag"
+    )
+
+
+def test_gitlab_tag_pipeline_keeps_the_configurations_it_publishes(tmp_path):
+    """What a release ships still runs on the tag that ships it.
+
+    The narrowing drops the testing configurations, which nothing installs. It
+    must not drop the binary the wheel wraps -- a tag that built none of the
+    matrix would publish an empty release and still go green. Under wheel_only
+    the pybind build is the whole of what a tag publishes, and it reaches the
+    tag as the clean twin of the instrumented branch build.
+    """
+    gates = _linux_build_gates(_gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, coverage=True))
+
+    assert gates["Python Build"] == "only:tags"
+    assert any(gate != "except:tags" for gate in gates.values()), (
+        "a tag pipeline with every build job gated off would publish nothing"
+    )
+
+
+def test_gitlab_instrumented_pybind_never_reaches_a_tag(tmp_path):
+    """Instrumentation is in the package_id, so it must not be published.
+
+    The pybind configuration is emitted twice under mutually exclusive gates
+    rather than once with a runtime conditional, so exactly one of them exists
+    in any given pipeline and no shell branch decides which binary ships.
+    """
+    parsed = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, coverage=True)
+    instrumented = parsed["Python Instrumented Build"]
+    clean = parsed["Python Build"]
+
+    assert _gate(instrumented) == "except:tags"
+    assert _gate(clean) == "only:tags"
+    assert any("--phase measure" in step for step in instrumented["script"])
+    assert not any("--phase measure" in step for step in clean["script"]), (
+        "the published wheel is built by build.py directly, with no coverage "
+        "option in its package_id"
+    )
+
+
+def test_gitlab_only_taggable_jobs_save_an_export_tarball(tmp_path):
+    """A branch-only job's tarball would never be restored.
+
+    The deploy that restores them is ``only: tags``, so exporting from a
+    branch-only job would pay the artifact upload on every branch pipeline for
+    a file nothing ever reads.
+    """
+    parsed = _gitlab_jobs(tmp_path, coverage=True)
+    for name, job in parsed.items():
+        if not isinstance(job, dict) or job.get("needs") != []:
+            continue
+        saves = any("--save .export/" in step for step in job.get("script", []))
+        assert saves == (_gate(job) != "except:tags"), (name, _gate(job), saves)
+
+
+def test_gitlab_windows_tag_pipeline_narrows_its_filter(tmp_path):
+    """Windows narrows the same way, through a rules-selected variable.
+
+    Not through two jobs the way Linux does: this is still one job, and
+    splitting it would mean either duplicating forty lines or renaming it --
+    and "Conan Build - Windows" is the name both Windows deploy jobs point at.
+    """
+    job = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, windows=True)["Conan Build - Windows"]
+
+    # The branch default matches every configuration, so the build line can
+    # pass --filter unconditionally and quoted rather than relying on an empty
+    # variable disappearing through unquoted word splitting.
+    assert job["variables"]["BUILD_MATRIX_FILTER"] == '{"options":{}}'
+    assert job["rules"][0]["if"] == "$CI_COMMIT_TAG"
+    assert job["rules"][0]["variables"]["BUILD_MATRIX_FILTER"] == (
+        '{"options":{"testing":false}}'
+    )
+    assert job["rules"][-1] == {"when": "on_success"}, (
+        "without a catch-all rule a non-tag pipeline would drop the job"
+    )
+    build = [step for step in job["script"] if "build.py" in step]
+    assert build == [step for step in build if '--filter "${BUILD_MATRIX_FILTER}"' in step]
+
+
+def test_github_build_legs_narrow_their_filter_on_a_tag(tmp_path):
+    """The three bash legs select the filter with a step-level expression."""
+    jobs = _github_jobs(write_github_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_arm=True), tmp_path)
+
+    for job_name in ("mac", "linux", "linux-arm"):
+        steps = [step for step in jobs[job_name]["steps"]
+                 if _is_build_step(step)]
+        assert len(steps) == 1, (job_name, steps)
+        step = steps[0]
+        assert '--filter=\"${BUILD_MATRIX_FILTER}\"' in str(step["run"]), job_name
+        expression = step["env"]["BUILD_MATRIX_FILTER"]
+        assert "startsWith(github.ref, 'refs/tags/')" in expression, job_name
+        assert '"options":{{"testing":false}}' in expression, job_name
+        assert BACKSLASH not in expression, (
+            "the JSON is written plainly inside the expression. An env "
+            "var is expanded by bash after both the YAML and the shell "
+            "have finished with the line, so it needs none of the escaping "
+            "the inline form carried -- that one spelled every quote it "
+            "contained as a backslash pyramid to survive all three layers."
+        )
+
+
+def test_github_windows_leg_narrows_with_two_gated_steps(tmp_path):
+    """The Windows leg gates two steps rather than selecting a variable.
+
+    ``%VAR%`` is substituted before the argument is parsed, so a filter held in
+    a variable would break its own quoting the moment it reached the command
+    line. The Windows leg keeps the filter inline and picks between two steps.
+    """
+    jobs = _github_jobs(write_github_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_arm=True), tmp_path)
+    steps = [step for step in jobs["windows"]["steps"] if _is_build_step(step)]
+
+    assert len(steps) == 2, steps
+    branch, release = steps
+    assert branch["if"] == "!startsWith(github.ref, 'refs/tags/')"
+    assert release["if"] == "startsWith(github.ref, 'refs/tags/')"
+    assert all(step["shell"] == "cmd" for step in steps)
+    assert "BUILD_MATRIX_FILTER" not in str(steps), (
+        "cmd would substitute it before the argument is parsed"
+    )
+    assert "testing" not in str(branch["run"]), (
+        "a branch build takes the whole matrix for its build type"
+    )
+    assert "testing" in str(release["run"]), (
+        "and a tag build excludes the testing configurations"
+    )
+
+
+# --- [matrix].wheel_only gates the concurrent build stage -------------------
+#
+# The per-configuration build stage, the tag narrowing and the export fan-out
+# are one change, and it is wheel_only's alone. Every repository without the
+# flag has to keep generating exactly the pipeline it generated before, so
+# these tests assert the *old* shape is what comes out -- the gate is the
+# subject, not the pipeline.
+
+
+def test_gitlab_without_wheel_only_keeps_the_single_looping_build(tmp_path):
+    """No flag, no fan-out: one "Conan Build" that loops the whole matrix.
+
+    The concurrent stage was designed and measured against a wheel_only matrix,
+    which has no library configurations. A repository that publishes library
+    packages keeps what it had until that shape is proven too, so the flag is
+    what selects between them and not, say, the presence of coverage.
+    """
+    parsed = _gitlab_jobs(tmp_path, coverage=True, deploy=True)
+
+    assert "Conan Build" in parsed
+    # "Coverage Build" declares `needs: []` in this shape too, and always has:
+    # it is what starts the instrumented compile alongside "Conan Build"
+    # rather than at its stage's turn. The per-configuration build jobs are
+    # the ones that must not be here.
+    assert set(_linux_build_gates(parsed)) == {"Coverage Build"}, (
+        "`needs: []` is what makes the per-configuration jobs concurrent; "
+        "without wheel_only there are no such jobs to make concurrent"
+    )
+    for name in ("Release Build", "Debug Instrumented Build", "Python Build"):
+        assert name not in parsed, f"{name} belongs to the wheel_only stage"
+
+
+def test_gitlab_wheel_only_is_what_turns_the_concurrent_stage_on(tmp_path):
+    """The same build.toml plus the flag renders the other shape.
+
+    Paired with the test above so the two are read together: nothing but
+    [matrix].wheel_only differs between them.
+    """
+    parsed = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, coverage=True, deploy=True)
+
+    assert "Conan Build" not in parsed
+    gates = _linux_build_gates(parsed)
+    assert gates, "the per-configuration jobs all declare needs: []"
+    assert "Debug Instrumented Build" in gates
+
+
+def test_gitlab_without_wheel_only_keeps_the_separate_coverage_build(tmp_path):
+    """Coverage still compiles in a job of its own, and pages reads it there.
+
+    Without the fan-out there are no instrumented build-stage jobs to take
+    tracefiles from, so removing "Coverage Build" here would leave the report
+    job merging nothing and the pipeline green with no coverage measured.
+    """
+    parsed = _gitlab_jobs(tmp_path, coverage=True)
+
+    assert "Coverage Build" in parsed
+    assert parsed["Coverage"]["needs"] == [{"job": "Coverage Build", "artifacts": True}]
+    assert parsed["pages"]["dependencies"] == ["Coverage Build"]
+
+
+def test_gitlab_without_wheel_only_split_tests_need_the_build_that_exists(tmp_path):
+    """A `needs:` naming an undefined job fails the pipeline at config time.
+
+    The wheel_only test jobs each need their own per-configuration build. Those
+    jobs do not exist here, so the test jobs have to name "Conan Build" -- and
+    this is the failure the gate is most likely to reintroduce, because it
+    breaks the whole pipeline rather than one job.
+    """
+    parsed = _gitlab_jobs(tmp_path, split_tests=True, coverage=True)
+
+    defined = set(parsed)
+    for name, job in parsed.items():
+        if not isinstance(job, dict):
+            continue
+        for need in job.get("needs", []):
+            named = need["job"] if isinstance(need, dict) else need
+            assert named in defined, f"{name} needs undefined job {named!r}"
+    test_jobs = [job for name, job in parsed.items()
+                 if isinstance(name, str) and name.startswith("Run C++ Tests")]
+    assert test_jobs, "split_tests must still emit the C++ test jobs"
+    for job in test_jobs:
+        assert job["needs"] == [{"job": "Conan Build", "artifacts": True}]
+
+
+def test_gitlab_without_wheel_only_leaves_the_windows_build_unfiltered(tmp_path):
+    """The Windows tag narrowing is part of the same change, so it waits too."""
+    parsed = _gitlab_jobs(tmp_path, windows=True, deploy=True)
+    windows = parsed["Conan Build - Windows"]
+
+    assert "BUILD_MATRIX_FILTER" not in windows.get("variables", {})
+    assert "rules" not in windows
+    build = [step for step in windows["script"] if "build.py" in step]
+    assert len(build) == 1 and "--filter" not in build[0], build
+
+
+def test_gitlab_without_wheel_only_deploys_from_the_one_tarball(tmp_path):
+    """One build job means one export, restored and uploaded in one step."""
+    parsed = _gitlab_jobs(tmp_path, deploy=True)
+
+    assert parsed["Conan Deploy - Linux"]["dependencies"] == ["Conan Build"]
+    restores = [line for line in parsed["Conan Deploy - Linux"]["script"]
+                if "--restore" in line]
+    assert len(restores) == 1 and restores[0].endswith("--upload"), restores
+
+
+def test_github_without_wheel_only_builds_the_same_on_a_tag(tmp_path):
+    """Every GitHub leg keeps its unconditional build step.
+
+    The bash legs took the filter from a step `env:` and the cmd leg split into
+    two `if:`-gated steps. Both are the tag narrowing, so both wait for the
+    flag -- checked on every leg because they are four separate blocks in the
+    template and gating three of them would be a silent asymmetry.
+    """
+    jobs = _github_jobs(write_github_toml(tmp_path, linux_arm=True), tmp_path)
+
+    for name, job in jobs.items():
+        build = [step for step in job.get("steps", [])
+                 if _is_build_step(step)]
+        if not build:
+            continue
+        assert len(build) == 1, (name, [step.get("name") for step in build])
+        step = build[0]
+        assert "env" not in step or "BUILD_MATRIX_FILTER" not in step["env"], name
+        assert "if" not in step, name
+        assert "BUILD_MATRIX_FILTER" not in step["run"], name
+
+
+# --- the wheel a branch never builds ----------------------------------------
+#
+# The restructure made the clean pybind build `only: tags`, because a branch
+# has no use for the configuration a release publishes. Repair Wheel stayed
+# ungated and so kept running on branches, where the only surviving pybind job
+# is the instrumented one -- which measures coverage and writes no wheel. The
+# job then failed every branch pipeline on an empty wheelhouse.
+
+
+def _jobs_reaching(parsed, *, tags):
+    """The jobs GitLab would put in a tag pipeline, or in a branch pipeline."""
+    reaching = {}
+    for name, job in parsed.items():
+        if not isinstance(job, dict) or "script" not in job:
+            continue
+        gate = _gate(job)
+        if gate == "always":
+            reaching[name] = job
+        elif gate.startswith("only:"):
+            if tags and gate == "only:tags":
+                reaching[name] = job
+        elif gate.startswith("except:"):
+            if not (tags and gate == "except:tags"):
+                reaching[name] = job
+    return reaching
+
+
+def _upstreams(job):
+    """The jobs a job takes artifacts from, however it spells the dependency."""
+    for need in job.get("needs", []):
+        yield need["job"] if isinstance(need, dict) else need
+    for name in job.get("dependencies", []):
+        yield name
+
+
+def _script(job):
+    return "\n".join(job.get("script", []))
+
+
+def _supplies_a_wheel(name, reaching, seen=None):
+    """Whether `name` can hand a wheel downstream in this pipeline.
+
+    Either it builds one, or it inherits one from an upstream job that is in
+    this pipeline too. Following the dependency edges is the whole point: a
+    wheel only reaches a job the artifacts flow to, so a producer running on
+    some other platform's leg is not an answer.
+    """
+    seen = seen or set()
+    if name in seen or name not in reaching:
+        return False
+    seen.add(name)
+    script = _script(reaching[name])
+    if "build.py" in script and "--wheel-dir" in script:
+        return True
+    return any(_supplies_a_wheel(up, reaching, seen)
+               for up in _upstreams(reaching[name]))
+
+
+@pytest.mark.parametrize("tags", [False, True], ids=["branch", "tag"])
+@pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY], ids=["plain", "wheel_only"])
+def test_gitlab_wheel_consumers_have_a_producer_in_their_own_pipeline(
+        tmp_path, matrix_table, tags):
+    """No pipeline reaches a wheel-consuming job the wheel cannot reach.
+
+    The general form of the bug, asserted per pipeline flavor: repairing and
+    deploying both read `wheelhouse`, and a gate that leaves a consumer with no
+    producer upstream is what failed xmsvtk pipeline 63162. Windows keeps its
+    own ungated producer, so this has to follow the dependency edges rather
+    than ask whether the pipeline builds any wheel at all -- that weaker
+    question passes while Linux is broken.
+    """
+    parsed = _gitlab_jobs(
+        tmp_path, matrix_table=matrix_table, coverage=True, deploy=True)
+    reaching = _jobs_reaching(parsed, tags=tags)
+
+    for name, job in reaching.items():
+        script = _script(job)
+        if "xmsconan_wheel_repair" not in script and "xmsconan_wheel_deploy" not in script:
+            continue
+        assert _supplies_a_wheel(name, reaching), (
+            f"{name!r} reads wheelhouse, but no job it depends on builds a "
+            f"wheel in this pipeline; its upstreams were "
+            f"{sorted(_upstreams(job))}"
+        )
+
+
+def test_gitlab_wheel_only_repairs_the_wheel_only_on_a_tag(tmp_path):
+    """Repair Wheel is gated to match the one job that builds a wheel."""
+    parsed = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, coverage=True, deploy=True)
+
+    assert _gate(parsed["Repair Wheel"]) == "only:tags"
+    assert _gate(parsed["Python Build"]) == "only:tags", (
+        "the gate is only correct while the clean pybind build is the producer"
+    )
+
+
+def test_gitlab_without_wheel_only_repairs_the_wheel_on_every_pipeline(tmp_path):
+    """No flag, no gate: one ungated build still makes a wheel on a branch.
+
+    Paired with the test above. The gate belongs to the restructure, so a
+    repository without the flag has to keep repairing on branches the way it
+    always did -- adding `only: tags` there would silently drop a check.
+    """
+    parsed = _gitlab_jobs(tmp_path, coverage=True, deploy=True)
+
+    assert _gate(parsed["Repair Wheel"]) == "always"
+    assert _gate(parsed["Conan Build"]) == "always"
+
+
+# --- wheel_only: filter warnings and the keys a narrowed matrix can empty ---
+
+
+def _wheel_only_with_filter(tmp_path, filter_table, **ci_flags):
+    """Render a wheel_only GitLab pipeline whose build.toml carries a [filter].
+
+    ``write_gitlab_toml`` has no [filter] parameter -- the table is appended
+    here rather than added to the shared helper, because these are the only
+    tests that need one and the helper's callers all read better without it.
+    """
+    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, **ci_flags)
+    toml_file.write_text(toml_file.read_text(encoding="utf-8") + filter_table,
+                         encoding="utf-8")
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    return yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+
+def test_wheel_only_empty_job_warning_does_not_name_a_job_it_never_emits(
+    tmp_path, caplog,
+):
+    """The warning has to name the fan-out, not the job wheel_only replaced.
+
+    An os pin excludes every Linux configuration, so the concurrent build stage
+    renders empty. Naming "Conan Build" there would point the reader at a block
+    this pipeline does not contain -- and looking the name up in the emitted
+    jobs, finding none, would drop the warning entirely in exactly the case it
+    exists for.
+    """
+    with caplog.at_level(logging.WARNING):
+        _wheel_only_with_filter(tmp_path, '\n[filter]\nos = "Windows"\n',
+                                coverage=True, deploy=True)
+
+    warned = [r.getMessage() for r in caplog.records
+              if "empty matrix" in r.getMessage()]
+    assert warned, "an os pin empties the whole Linux fan-out and must warn"
+    assert any("Linux build jobs" in message for message in warned), warned
+    assert not any("Conan Build'" in message for message in warned), warned
+
+
+def test_deploy_omits_dependencies_when_the_filter_leaves_nothing_exporting(
+    tmp_path,
+):
+    """An empty `dependencies:` is a null key, and GitLab rejects the file.
+
+    Only jobs that run on a tag export a cache tarball, and a testing-only
+    filter makes every Linux job branch-only -- while the deploy job stays
+    gated on [ci].deploy alone. The key has to be dropped rather than emitted
+    empty; without `dependencies:` GitLab falls back to taking every earlier
+    stage's artifacts, which is what this block narrows rather than depends on.
+    """
+    parsed = _wheel_only_with_filter(
+        tmp_path, "\n[filter.options]\ntesting = true\n", deploy=True,
+    )
+
+    deploy = parsed["Conan Deploy - Linux"]
+    assert "dependencies" not in deploy, (
+        f"dependencies: rendered with nothing under it -> "
+        f"{deploy.get('dependencies')!r}"
+    )
+
+
+def test_coverage_omits_needs_when_the_filter_instruments_nothing(tmp_path):
+    """Same null-key guard on the Coverage job's `needs:`.
+
+    A Release pin cancels the Debug C++ leg and `pybind = false` the Python
+    one, which generation warns about and then renders anyway. The warning must
+    not be followed by a pipeline GitLab refuses to parse, or it reads as a
+    template bug instead of the filter problem it is.
+    """
+    parsed = _wheel_only_with_filter(
+        tmp_path,
+        '\n[filter]\nbuild_type = "Release"\n\n[filter.options]\npybind = false\n',
+        coverage=True,
+    )
+
+    coverage = parsed["Coverage"]
+    assert "needs" not in coverage, (
+        f"needs: rendered with nothing under it -> {coverage.get('needs')!r}"
+    )

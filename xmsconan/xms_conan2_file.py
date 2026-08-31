@@ -38,6 +38,10 @@ class XmsConan2File(ConanFile):
         "pybind": [True, False],
         "testing": [True, False],
         "python_version": ["3.10", "3.13", "3.14"],
+        # Coverage instrumentation is part of package identity: an instrumented
+        # (-O0 -g --coverage) binary must never satisfy --build=missing for a
+        # production build, or vice versa. See package_id().
+        "coverage": [True, False],
     }
     xms_dependencies = []
     # Non-XMS Conan deps, "name/version". Deduplicated by package name against
@@ -53,7 +57,7 @@ class XmsConan2File(ConanFile):
     testing_framework = "cxxtest"  # One of TESTING_FRAMEWORKS
     python_binding_type = "pybind11"  # One of PYTHON_BINDING_TYPES
     # Submodule under xms.<...> (e.g. "core"). Set by the generated subclass; required
-    # when XMS_COVERAGE=1 so pytest-cov scopes to xms.<python_namespaced_dir>.
+    # when coverage=True so pytest-cov scopes to xms.<python_namespaced_dir>.
     python_namespaced_dir = None
     # Opt in to advertising the pybind module's import library (_<name>) to C++
     # consumers instead of the static library. Windows-only by construction: a
@@ -130,6 +134,7 @@ class XmsConan2File(ConanFile):
         'pybind': False,
         'testing': False,
         'python_version': '3.13',
+        'coverage': False,
     }
 
     def _is_vs2019(self):
@@ -287,14 +292,18 @@ class XmsConan2File(ConanFile):
 
     def configure(self):
         """The configure method."""
-        # Fail fast at configure time when XMS_COVERAGE is requested but the
-        # recipe does not name a python_namespaced_dir for pytest-cov to
+        # Fail fast at configure time when Python coverage is requested but
+        # the recipe does not name a python_namespaced_dir for pytest-cov to
         # target. Surfacing this before the build avoids burning a full
-        # instrumented build only to abort deep in run_python_tests.
-        if os.environ.get("XMS_COVERAGE") and not self.python_namespaced_dir:
+        # instrumented build only to abort deep in run_python_tests. The
+        # C++-only legs (pybind=False) never run pytest-cov, so a
+        # hand-written pure-C++ recipe can still collect C++ coverage.
+        if self.options.coverage and self.options.pybind \
+                and not self.python_namespaced_dir:
             raise ConanException(
-                "XMS_COVERAGE=1 requires python_namespaced_dir to be set on the "
-                "recipe so pytest-cov measures only this library's namespace."
+                "coverage=True with pybind=True requires python_namespaced_dir "
+                "to be set on the recipe so pytest-cov measures only this "
+                "library's namespace."
             )
 
         self._validate_recipe_attributes()
@@ -407,9 +416,17 @@ class XmsConan2File(ConanFile):
                 pass
 
     def package_id(self):
-        """Drop python_version from the package_id when not building Python bindings."""
+        """Trim option axes that do not affect the binary being identified.
+
+        python_version only matters when Python bindings are built. coverage
+        is dropped when False so uninstrumented ids stay byte-identical to
+        the ids this recipe produced before the option existed — no released
+        binary is invalidated — while coverage=True builds get their own id.
+        """
         if not self.info.options.pybind:
             del self.info.options.python_version
+        if not self.info.options.coverage:
+            del self.info.options.coverage
 
     # CMake refuses to reuse a binary directory configured by a different
     # generator ("Does not match the generator used previously"), so a Ninja
@@ -583,22 +600,36 @@ class XmsConan2File(ConanFile):
 
         variables = self._cmake_variables()
 
-        # Propagate XMS_COVERAGE as an explicit CMake -D variable when the
-        # operator set it in the parent env (e.g., xmsconan_coverage). The
-        # recipe's `configure()` already sees XMS_COVERAGE via os.environ
-        # because it runs in the same process as conan-create, but CMake
-        # is a child subprocess. Conan 2's `cmake.configure()` only
-        # exports vars from the profile's [buildenv] when a
-        # `VirtualBuildEnv` generator was declared in `generate()`, which
-        # this recipe does not — so the env-based check in
-        # CMakeLists.txt.jinja was silently false even when XMS_COVERAGE
-        # was set in [buildenv]. Passing it as a -D var bypasses every
-        # layer of env-propagation uncertainty.
-        # Deliberately not in _cmake_variables(): this one belongs to the
-        # configure step alone. Adding it to the toolchain as well would bake
-        # an instrumented build into a cached toolchain file.
-        if os.environ.get("XMS_COVERAGE"):
+        # Instrumentation is driven by the coverage *option* so it is part of
+        # the package_id — the env-var era let an instrumented and a
+        # production build share one id, and --build=missing could hand back
+        # the wrong binary (gcovr then reported near-zero coverage with no
+        # error). CMake is a child subprocess, so pass the option as an
+        # explicit -D variable; env propagation through [buildenv] was
+        # unreliable here (see issue #69) and is no longer used.
+        # Deliberately not in _cmake_variables(): generate() writes the
+        # toolchain file, and this belongs to the configure step alone. The
+        # -D value persists in CMakeCache.txt just as a toolchain entry
+        # would; what keeps that safe is that the option is part of the
+        # package_id, so conan gives the instrumented build its own build
+        # folder and the cached value can never leak into a production one.
+        if self.options.coverage:
             variables["XMS_COVERAGE"] = "1"
+            # An instrumented build is the one shape that still runs its suite
+            # through ctest. Everything else reaches the runner through
+            # xmsconan_test_shards, which supplies its own concurrency and is
+            # why the default registration is a single whole-binary entry --
+            # but ctest cannot parallelize one entry, so the coverage job's
+            # CTEST_PARALLEL_LEVEL had nothing to act on and the suite ran
+            # serially. Per-case entries hand it something to schedule.
+            #
+            # The spawn cost the single entry exists to avoid is real, and
+            # paid here on purpose: measured against this suite, per-case
+            # ctest -j8 ran the instrumented suite in 303.5s where the single
+            # serial entry took 1438s. The concurrent .gcda merging that
+            # implies is libgcov's own, and that run recorded no merge or
+            # overwrite warnings.
+            variables["XMS_GTEST_DISCOVER_TESTS"] = "ON"
 
         cmake.configure(variables=variables)
         cmake.build()
@@ -918,7 +949,7 @@ class XmsConan2File(ConanFile):
         build_venv_dir = os.path.join(self.build_folder, "venv")
         tests_dest_dir = os.path.join(self.build_folder, "tests")
         python_target_version = str(self.options.python_version)
-        coverage_enabled = bool(os.environ.get("XMS_COVERAGE"))
+        coverage_enabled = bool(self.options.coverage)
 
         if sys.platform == "win32":
             python_executable = os.path.join(build_venv_dir, "Scripts", "python.exe")
@@ -983,7 +1014,7 @@ class XmsConan2File(ConanFile):
         if coverage_enabled:
             if not self.python_namespaced_dir:
                 raise ConanException(
-                    "XMS_COVERAGE=1 requires python_namespaced_dir to be set on the "
+                    "coverage=True requires python_namespaced_dir to be set on the "
                     "recipe so pytest-cov measures only this library's namespace."
                 )
             cov_target = f"xms.{self.python_namespaced_dir}"

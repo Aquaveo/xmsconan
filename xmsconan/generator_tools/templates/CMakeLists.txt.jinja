@@ -40,7 +40,9 @@ else ()
     set(CMAKE_POSITION_INDEPENDENT_CODE True)
 endif ()
 
-if (XMS_COVERAGE OR (DEFINED ENV{XMS_COVERAGE} AND NOT "$ENV{XMS_COVERAGE}" STREQUAL ""))
+# Set by the conan recipe when its `coverage` option is True — the option is
+# the only driver, so instrumentation always travels with the package_id.
+if (XMS_COVERAGE)
     if (MSVC)
         message(FATAL_ERROR "XMS_COVERAGE is GCC/Clang only")
     endif ()

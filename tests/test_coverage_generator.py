@@ -20,15 +20,25 @@ from xmsconan.coverage_tools.coverage_generator import (
     _find_coverage_package,
     _find_pytest_cov_artifact,
     _is_simple_relative_filter_pattern,
+    _log_gcov_data_size,
+    _measure_coverage,
     _py_percent_from_summary,
+    _read_coverage_status,
     _reexec_under_xvfb,
     _resolve_coverage_python_version,
     _resolve_gcovr_filters,
     _run_coverage_builds,
     _warn_if_tracefile_empty,
+    COVERAGE_STATUS_FILE,
     DEFAULT_LEG_TIMEOUT,
     EXIT_ERROR,
     EXIT_GATE_FAILED,
+    EXIT_OK,
+    LEG_CPP,
+    LEG_PYTHON,
+    PHASE_COLLECT,
+    PHASE_MEASURE,
+    PHASE_REPORT,
     run_coverage,
 )
 from xmsconan.generator_tools.ci_file_generator import _coverage_context
@@ -218,11 +228,11 @@ class TestFindCoveragePackage:
     def test_picks_newest_matching_package(self, mock_run):
         """When multiple revisions match, the highest timestamp wins."""
         mock_run.return_value = _fake_conan_list_output([
-            {"options": {"pybind": "True", "testing": "False",
+            {"options": {"coverage": "True", "pybind": "True", "testing": "False",
                          "python_version": "3.13"},
              "settings": {"build_type": "Release"},
              "ts": 100, "pid": "old_pid"},
-            {"options": {"pybind": "True", "testing": "False",
+            {"options": {"coverage": "True", "pybind": "True", "testing": "False",
                          "python_version": "3.13"},
              "settings": {"build_type": "Release"},
              "ts": 200, "pid": "new_pid"},
@@ -249,7 +259,7 @@ class TestFindCoveragePackage:
         """Conan's option repr is not contractually 'True' — accept bool/case variants."""
         mock_run.return_value = _fake_conan_list_output([
             # bool True/False (not the strings "True"/"False")
-            {"options": {"pybind": True, "testing": False,
+            {"options": {"coverage": True, "pybind": True, "testing": False,
                          "python_version": "3.13"},
              "settings": {"build_type": "Release"},
              "ts": 100, "pid": "pid"},
@@ -270,7 +280,7 @@ class TestFindCoveragePackage:
         asked for.
         """
         mock_run.return_value = _fake_conan_list_output([
-            {"options": {"pybind": "True", "testing": "False",
+            {"options": {"coverage": "True", "pybind": "True", "testing": "False",
                          "python_version": "3.13"},
              "settings": {"build_type": "Debug"},
              "ts": 100, "pid": "debug_pid"},
@@ -284,7 +294,7 @@ class TestFindCoveragePackage:
     def test_testing_kind_skips_release_builds(self, mock_run):
         """kind='testing' wants Debug; gcov instruments an unoptimized build."""
         mock_run.return_value = _fake_conan_list_output([
-            {"options": {"testing": "True", "pybind": "False"},
+            {"options": {"coverage": "True", "testing": "True", "pybind": "False"},
              "settings": {"build_type": "Release"},
              "ts": 100, "pid": "release_pid"},
         ])
@@ -304,7 +314,7 @@ class TestFindCoveragePackage:
         non-determinism between the CxxTest and pytest-cov sources).
         """
         mock_run.return_value = _fake_conan_list_output([
-            {"options": {"pybind": "True", "testing": "True",
+            {"options": {"coverage": "True", "pybind": "True", "testing": "True",
                          "python_version": "3.13"},
              "settings": {"build_type": "Debug"},
              "ts": 100, "pid": "combined_pid"},
@@ -323,11 +333,11 @@ class TestFindCoveragePackage:
         the Python coverage report (non-determinism).
         """
         mock_run.return_value = _fake_conan_list_output([
-            {"options": {"pybind": "True", "testing": "False",
+            {"options": {"coverage": "True", "pybind": "True", "testing": "False",
                          "python_version": "3.10"},
              "settings": {"build_type": "Release"},
              "ts": 999, "pid": "pid_310"},  # newer
-            {"options": {"pybind": "True", "testing": "False",
+            {"options": {"coverage": "True", "pybind": "True", "testing": "False",
                          "python_version": "3.13"},
              "settings": {"build_type": "Release"},
              "ts": 100, "pid": "pid_313"},  # older
@@ -344,9 +354,9 @@ class TestFindCoveragePackage:
         monkeypatch.setattr(
             "xmsconan.coverage_tools.coverage_generator.subprocess.run",
             lambda *a, **kw: _fake_conan_list_output([
-                {"options": {"testing": "True", "pybind": "False"},
+                {"options": {"coverage": "True", "testing": "True", "pybind": "False"},
                  "settings": {"build_type": "Debug"}, "ts": 1},
-                {"options": {"testing": "False", "pybind": "True",
+                {"options": {"coverage": "True", "testing": "False", "pybind": "True",
                              "python_version": "3.13"},
                  "settings": {"build_type": "Release"}, "ts": 2},
             ]),
@@ -361,12 +371,12 @@ class TestFindCoveragePackage:
         monkeypatch.setattr(
             "xmsconan.coverage_tools.coverage_generator.subprocess.run",
             lambda *a, **kw: _fake_conan_list_output([
-                {"options": {"testing": "True", "pybind": "False"},
+                {"options": {"coverage": "True", "testing": "True", "pybind": "False"},
                  "settings": {"build_type": "Debug"}, "ts": 1},
-                {"options": {"testing": "False", "pybind": "True",
+                {"options": {"coverage": "True", "testing": "False", "pybind": "True",
                              "python_version": "3.10"},
                  "settings": {"build_type": "Release"}, "ts": 2},
-                {"options": {"testing": "False", "pybind": "True",
+                {"options": {"coverage": "True", "testing": "False", "pybind": "True",
                              "python_version": "3.13"},
                  "settings": {"build_type": "Release"}, "ts": 3},
             ]),
@@ -385,6 +395,34 @@ class TestFindCoveragePackage:
         """Unknown kind values raise rather than silently mis-matching."""
         with pytest.raises(ValueError, match="kind"):
             _find_coverage_package("xmscore", kind="both")
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_skips_uninstrumented_sibling_package(self, mock_run):
+        """An uninstrumented sibling in the cache must never win.
+
+        Coverage becoming a recipe option means instrumented and production
+        builds coexist as sibling package_ids under one recipe revision — on
+        any machine that has run both build.py and xmsconan coverage. The
+        production sibling's package_id drops the option entirely, so its
+        options carry no coverage key at all; matching it would hand gcovr a
+        build folder with no .gcda and report near-zero coverage without an
+        error. The uninstrumented sibling here is NEWER, so a
+        timestamp-ordered pick without the option check would choose it.
+        """
+        mock_run.return_value = _fake_conan_list_output([
+            {"options": {"pybind": "True", "testing": "False",
+                         "python_version": "3.13"},
+             "settings": {"build_type": "Release"},
+             "ts": 999, "pid": "production_pid"},  # newer, no coverage key
+            {"options": {"coverage": "True", "pybind": "True",
+                         "testing": "False", "python_version": "3.13"},
+             "settings": {"build_type": "Release"},
+             "ts": 100, "pid": "instrumented_pid"},
+        ])
+        ref, pid = _find_coverage_package(
+            "xmscore", kind="pybind", python_version="3.13",
+        )
+        assert pid == "instrumented_pid"
 
 
 class TestResolveCoveragePythonVersion:
@@ -781,8 +819,9 @@ class TestAssertGcovrCollectedData:
             )
         msg = str(exc_info.value)
         assert str(build_folder) in msg
-        # Diagnostic must name the most likely cause (XMS_COVERAGE / #69):
-        assert "XMS_COVERAGE" in msg or "#69" in msg
+        # Diagnostic must name the most likely cause (coverage=True option
+        # not reaching the build):
+        assert "coverage=True" in msg
         # And echo the filters we actually used, so the operator can
         # compare them against the real source paths:
         assert "xmscore/" in msg
@@ -840,6 +879,68 @@ class TestAssertGcovrCollectedData:
         _assert_gcovr_collected_data(summary, [(tmp_path, ["xmscore/"])])
 
 
+class TestLogGcovDataSize:
+    """The .gcno/.gcda volume log.
+
+    The number it reports decides whether an instrumented build folder can be
+    split across two CI jobs: gcovr needs .gcno beside .gcda, so a test run in
+    a different job than the compile has to carry every notes file with it.
+    """
+
+    _messages = staticmethod(logged_messages)
+
+    @staticmethod
+    def _make_folder(root: Path, gcno: int, gcda: int, size: int) -> Path:
+        """Build a folder holding the requested gcov files, nested one deep."""
+        nested = root / "CMakeFiles" / "runner.dir"
+        nested.mkdir(parents=True)
+        for index in range(gcno):
+            (nested / f"src{index}.cpp.gcno").write_bytes(b"x" * size)
+        for index in range(gcda):
+            (nested / f"src{index}.cpp.gcda").write_bytes(b"y" * size)
+        return root
+
+    def test_reports_counts_and_megabytes_per_folder(self, tmp_path, caplog):
+        """Each folder gets a line naming it and both file populations."""
+        cpp = self._make_folder(tmp_path / "cpp", gcno=3, gcda=2,
+                                size=512 * 1024)
+        py = self._make_folder(tmp_path / "py", gcno=1, gcda=1,
+                               size=256 * 1024)
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            _log_gcov_data_size([cpp, py])
+        text = "\n".join(self._messages(caplog))
+
+        assert str(cpp) in text and str(py) in text
+        # Counted and summed, not merely listed: 3 x 0.5 MiB of notes.
+        assert "3 .gcno (1.5 MiB)" in text
+        assert "2 .gcda (1.0 MiB)" in text
+        assert "1 .gcno (0.2 MiB)" in text
+
+    def test_finds_files_at_any_depth(self, tmp_path, caplog):
+        """Coverage data sits under CMakeFiles/<target>.dir, not at the root."""
+        folder = tmp_path / "build"
+        deep = folder / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        (deep / "buried.cpp.gcno").write_bytes(b"z" * (1024 * 1024))
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            _log_gcov_data_size([folder])
+        assert "1 .gcno (1.0 MiB)" in "\n".join(self._messages(caplog))
+
+    def test_reports_zero_rather_than_staying_silent(self, tmp_path, caplog):
+        """An uninstrumented folder is a finding, so it still gets a line.
+
+        Silence would read the same as the log statement never running, and
+        the whole point is to notice a folder that produced nothing.
+        """
+        folder = tmp_path / "empty"
+        folder.mkdir()
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            _log_gcov_data_size([folder])
+        text = "\n".join(self._messages(caplog))
+        assert str(folder) in text
+        assert "0 .gcno (0.0 MiB)" in text
+
+
 class TestWarnIfTracefileEmpty:
     """A build folder that contributes nothing must say so in the log.
 
@@ -863,7 +964,7 @@ class TestWarnIfTracefileEmpty:
         assert "FILTER-SENTINEL" in text
         # Points at instrumentation, the actual cause, rather than at tests
         # not covering the code -- a compiled file appears here regardless.
-        assert "XMS_COVERAGE" in text or "#69" in text
+        assert "coverage=True" in text
 
     def test_silent_when_files_present(self, tmp_path, caplog):
         """A folder that contributed files is not worth mentioning.
@@ -2101,3 +2202,401 @@ class TestConcurrentCoverageBuilds:
             _run_coverage_builds(_LEGS, "1.0.0", None, ".", parallel=True)
 
         assert seen["timeout"] == DEFAULT_LEG_TIMEOUT
+
+
+def _report_workspace(tmp_path, *, cpp=80.0, py=90.0, cpp_threshold=70.0,
+                      py_threshold=70.0, status=None, omit=()):
+    """Write what a finished collect phase leaves behind.
+
+    The report phase reads nothing but these files, which is the property that
+    makes the gate testable at all: it needs no conan cache, no compiler and no
+    gcovr. Before the split the same logic could only be reached by driving two
+    real builds.
+    """
+    (tmp_path / "build.toml").write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        "\n[coverage]\n"
+        f"cpp_threshold = {cpp_threshold}\n"
+        f"python_threshold = {py_threshold}\n",
+        encoding="utf-8",
+    )
+    files = {
+        "cov-cpp-summary.json": {"line_percent": cpp},
+        "cov-py-summary.json": {"totals": {"percent_covered": py}},
+        COVERAGE_STATUS_FILE: status if status is not None else {
+            "tests_failed": False, "cpp_measured": True, "py_measured": True,
+        },
+    }
+    for name, payload in files.items():
+        if name in omit:
+            continue
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    return str(tmp_path / "build.toml"), str(tmp_path)
+
+
+class TestReportPhase:
+    """The gate, split off from the builds it used to share a job with."""
+
+    def test_passes_when_both_layers_clear_their_thresholds(self, tmp_path):
+        """The happy path, reached without building anything."""
+        toml_file, output_dir = _report_workspace(tmp_path)
+
+        assert run_coverage(toml_file, "1.0.0", output_dir,
+                            phase=PHASE_REPORT) == EXIT_OK
+
+    def test_fails_the_gate_on_a_threshold_miss(self, tmp_path):
+        """A miss is the advisory exit code, not a hard error."""
+        toml_file, output_dir = _report_workspace(tmp_path, cpp=50.0)
+
+        assert run_coverage(toml_file, "1.0.0", output_dir,
+                            phase=PHASE_REPORT) == EXIT_GATE_FAILED
+
+    def test_thresholds_come_from_build_toml_not_the_status_file(self, tmp_path):
+        """Tightening a threshold takes effect without re-running the builds.
+
+        The percentages are whatever the collect phase measured; the bar they
+        are held to is read fresh, so a threshold edit can be re-gated against
+        artifacts that already exist.
+        """
+        toml_file, output_dir = _report_workspace(tmp_path, cpp=80.0,
+                                                  cpp_threshold=95.0)
+
+        assert run_coverage(toml_file, "1.0.0", output_dir,
+                            phase=PHASE_REPORT) == EXIT_GATE_FAILED
+
+    @pytest.mark.parametrize("unmeasured", ["cpp_measured", "py_measured"])
+    def test_an_unmeasured_layer_fails_even_at_a_zero_threshold(self, tmp_path,
+                                                                unmeasured):
+        """No measurement is not 0% coverage, and the default threshold is 0.
+
+        Without the status file the report phase could not tell the two apart:
+        a merged gcovr summary covering the binding layer alone still carries a
+        healthy line_percent, and 0.0 >= 0.0 would report PASS for a layer that
+        never ran.
+        """
+        status = {"tests_failed": False, "cpp_measured": True, "py_measured": True}
+        status[unmeasured] = False
+        toml_file, output_dir = _report_workspace(
+            tmp_path, cpp_threshold=0.0, py_threshold=0.0, status=status,
+        )
+
+        assert run_coverage(toml_file, "1.0.0", output_dir,
+                            phase=PHASE_REPORT) == EXIT_GATE_FAILED
+
+    def test_failed_tests_fail_the_gate_though_the_percentages_pass(self, tmp_path):
+        """build.py exiting non-zero during collection has to survive the split.
+
+        It is the one fact that lives only in the collect job's exit status, so
+        losing it would let a pipeline with failing tests gate green on the
+        coverage those same tests produced.
+        """
+        toml_file, output_dir = _report_workspace(tmp_path, status={
+            "tests_failed": True, "cpp_measured": True, "py_measured": True,
+        })
+
+        assert run_coverage(toml_file, "1.0.0", output_dir,
+                            phase=PHASE_REPORT) == EXIT_GATE_FAILED
+
+    def test_missing_status_file_is_an_error_not_a_gate_miss(self, tmp_path, caplog):
+        """A collect job that never delivered must not be forgiven.
+
+        The generated pipeline puts `allow_failure: exit_codes` on the gate
+        code alone, so returning it here would let a coverage run that produced
+        nothing pass as an advisory miss -- exactly the blanket
+        `allow_failure: true` failure this exit-code split exists to prevent.
+        """
+        toml_file, output_dir = _report_workspace(
+            tmp_path, omit=(COVERAGE_STATUS_FILE,),
+        )
+
+        with caplog.at_level(logging.ERROR, logger=LOGGER_NAME):
+            assert run_coverage(toml_file, "1.0.0", output_dir,
+                                phase=PHASE_REPORT) == EXIT_ERROR
+        assert any(COVERAGE_STATUS_FILE in m for m in logged_messages(caplog))
+
+    def test_missing_cpp_summary_is_an_error(self, tmp_path):
+        """Same reasoning: artifacts that did not arrive are not a threshold miss."""
+        toml_file, output_dir = _report_workspace(
+            tmp_path, omit=("cov-cpp-summary.json",),
+        )
+
+        assert run_coverage(toml_file, "1.0.0", output_dir,
+                            phase=PHASE_REPORT) == EXIT_ERROR
+
+    def test_prints_the_line_gitlab_scrapes_for_the_pipeline_percentage(
+            self, tmp_path, caplog):
+        """`coverage:` reads the gating job's log, and gcovr's TOTAL is elsewhere.
+
+        gcovr writes its own TOTAL in the collect job, whose log GitLab does not
+        scrape, so the number has to be re-emitted here or the pipeline shows no
+        coverage at all.
+        """
+        toml_file, output_dir = _report_workspace(tmp_path, cpp=82.4)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            run_coverage(toml_file, "1.0.0", output_dir, phase=PHASE_REPORT)
+
+        assert "Coverage total: 82.4%" in logged_messages(caplog)
+
+    def test_an_unmeasured_cpp_layer_publishes_no_percentage(self, tmp_path, caplog):
+        """An unmeasured layer logs n/a, which the regex matches nothing in.
+
+        The regex would otherwise scrape the merged percentage -- which covers
+        the binding layer alone in that case -- and show it as the pipeline's
+        coverage.
+        """
+        toml_file, output_dir = _report_workspace(tmp_path, cpp=82.4, status={
+            "tests_failed": False, "cpp_measured": False, "py_measured": True,
+        })
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            run_coverage(toml_file, "1.0.0", output_dir, phase=PHASE_REPORT)
+
+        assert "Coverage total: n/a" in logged_messages(caplog)
+
+    def test_report_phase_builds_nothing(self, tmp_path):
+        """No subprocess at all: the point of the split is a job with no toolchain."""
+        toml_file, output_dir = _report_workspace(tmp_path)
+
+        with patch("xmsconan.coverage_tools.coverage_generator.subprocess.run") as run:
+            run_coverage(toml_file, "1.0.0", output_dir, phase=PHASE_REPORT)
+
+        run.assert_not_called()
+
+    def test_an_unknown_phase_is_rejected(self, tmp_path):
+        """A typo must not silently select a half of the run."""
+        toml_file, output_dir = _report_workspace(tmp_path)
+
+        with pytest.raises(ValueError, match="Unknown coverage phase"):
+            run_coverage(toml_file, "1.0.0", output_dir, phase="collct")
+
+    def test_a_failed_collect_does_not_reach_the_gate(self, tmp_path):
+        """The default phase stops on a collect error rather than gating on it.
+
+        EXIT_ERROR has to survive to the caller: mapping it onto the gate code
+        would put it inside `allow_failure: exit_codes`.
+        """
+        toml_file, output_dir = _report_workspace(tmp_path)
+
+        with patch("xmsconan.coverage_tools.coverage_generator._collect_coverage",
+                   return_value=EXIT_ERROR) as collect:
+            with patch("xmsconan.coverage_tools.coverage_generator._report_coverage") as report:
+                assert run_coverage(toml_file, "1.0.0", output_dir) == EXIT_ERROR
+
+        collect.assert_called_once()
+        report.assert_not_called()
+
+    def test_collect_phase_stops_before_the_gate(self, tmp_path):
+        """--phase collect writes the artifacts and leaves the gating to the other job."""
+        toml_file, output_dir = _report_workspace(tmp_path)
+
+        with patch("xmsconan.coverage_tools.coverage_generator._collect_coverage",
+                   return_value=EXIT_OK):
+            with patch("xmsconan.coverage_tools.coverage_generator._report_coverage") as report:
+                assert run_coverage(toml_file, "1.0.0", output_dir,
+                                    phase=PHASE_COLLECT) == EXIT_OK
+
+        report.assert_not_called()
+
+
+class TestMeasurePhase:
+    """``--phase measure``: one instrumented leg, read where it was compiled.
+
+    The phase exists so the two instrumented builds can be concurrent GitLab
+    jobs. That makes its per-leg output naming load-bearing rather than
+    cosmetic -- both jobs upload into one artifact space -- so these assert on
+    the files each leg wrote as much as on the exit code.
+    """
+
+    def _setup_workspace(self, tmp_path, *, py_percent=80.0):
+        """A build.toml plus one build folder per leg, with gcovr stubbed.
+
+        Mirrors ``TestRunCoverageEndToEnd._setup_workspace`` but stays separate:
+        that helper stages the pair for a single ``collect`` run, and the point
+        here is that one leg runs alone and still writes a complete slice.
+        """
+        toml_file = tmp_path / "build.toml"
+        toml_file.write_text(
+            'library_name = "xmscore"\n'
+            'description = "desc"\n'
+            'python_namespaced_dir = "core"\n'
+            '\n'
+            '[coverage]\n'
+            'cpp_threshold = 70\n'
+            'python_threshold = 70\n',
+            encoding="utf-8",
+        )
+        cpp_build_folder = tmp_path / "fake-cpp-build"
+        py_build_folder = tmp_path / "fake-py-build"
+        cpp_build_folder.mkdir()
+        py_build_folder.mkdir()
+        (py_build_folder / "cov-py-summary.json").write_text(
+            json.dumps({"totals": {"percent_covered": py_percent}})
+        )
+        (py_build_folder / "cov-py.xml").write_text("<coverage/>")
+
+        def fake_run(cmd, env=None, cwd=None, **_kw):
+            if isinstance(cmd, list) and cmd and cmd[0] == "gcovr":
+                if "--json" in cmd and "--json-summary" not in cmd:
+                    idx = cmd.index("--json")
+                    Path(cmd[idx + 1]).write_text(json.dumps({
+                        "files": [{"file": "xmscore/foo.cpp", "lines": []}],
+                    }))
+            return MagicMock(returncode=0)
+
+        return toml_file, cpp_build_folder, py_build_folder, fake_run
+
+    @staticmethod
+    def _wire(mock_run, mock_path, mock_find, fake_run,
+              cpp_build_folder, py_build_folder, *, missing=()):
+        """Point the package lookup at the fake build folders.
+
+        ``missing`` names the kinds whose build left no package, which is what
+        ``_find_coverage_package`` signals with RuntimeError and what
+        ``_locate_coverage_build`` turns into None.
+        """
+        mock_run.side_effect = fake_run
+
+        def find(library_name, *, kind, python_version=None):
+            if kind in missing:
+                raise RuntimeError(f"no {kind} package in the cache")
+            return ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
+
+        mock_find.side_effect = find
+        mock_path.side_effect = lambda ref_with_pid, folder: (
+            cpp_build_folder if "pid-cpp" in ref_with_pid else py_build_folder
+        )
+
+    # --- the dispatch guards ---
+
+    def test_measure_without_a_leg_is_an_error(self, tmp_path):
+        """``--phase measure`` with no ``--leg`` refuses rather than guessing.
+
+        Defaulting to one leg would measure a single layer while the report
+        phase gated on both, and the unmeasured layer's threshold defaults to
+        0 -- so the guess would read as a clean pass.
+        """
+        toml_file, _, _, _ = self._setup_workspace(tmp_path)
+        with pytest.raises(ValueError, match="--leg"):
+            run_coverage(str(toml_file), "0.0.0", str(tmp_path),
+                         phase=PHASE_MEASURE)
+
+    def test_measure_rejects_an_unknown_leg(self, tmp_path):
+        """A leg outside COVERAGE_LEGS raises before anything is built."""
+        toml_file, _, _, _ = self._setup_workspace(tmp_path)
+        with pytest.raises(ValueError, match="Unknown coverage leg"):
+            _measure_coverage(str(toml_file), "0.0.0", str(tmp_path), "rust")
+
+    # --- what each leg writes ---
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_cpp_leg_writes_its_own_status_and_tracefile(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """The C++ leg reports itself measured and the Python layer not.
+
+        Each leg reports only on itself so a leg that never ran leaves its
+        layer unmeasured, rather than inheriting the surviving leg's answer.
+        """
+        toml_file, cpp, py, fake_run = self._setup_workspace(tmp_path)
+        self._wire(mock_run, mock_path, mock_find, fake_run, cpp, py)
+
+        exit_code = _measure_coverage(str(toml_file), "0.0.0", str(tmp_path),
+                                      LEG_CPP)
+
+        assert exit_code == EXIT_OK
+        status = json.loads(
+            (tmp_path / "coverage-status-cpp.json").read_text()
+        )
+        assert status == {"tests_failed": False, "cpp_measured": True,
+                          "py_measured": False}
+        assert (tmp_path / "cov-cpp-tracefile-cpp.json").exists()
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_python_leg_writes_its_own_status_and_lifts_pytest_cov_output(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """The Python leg copies pytest-cov's summary out of the build folder.
+
+        ``py_measured`` is conditional on that copy: pytest-cov writing nothing
+        means the layer was not measured, and a Python threshold defaulting to
+        0 would otherwise pass a layer nothing ran.
+        """
+        toml_file, cpp, py, fake_run = self._setup_workspace(tmp_path)
+        self._wire(mock_run, mock_path, mock_find, fake_run, cpp, py)
+
+        exit_code = _measure_coverage(str(toml_file), "0.0.0", str(tmp_path),
+                                      LEG_PYTHON)
+
+        assert exit_code == EXIT_OK
+        status = json.loads(
+            (tmp_path / "coverage-status-python.json").read_text()
+        )
+        assert status == {"tests_failed": False, "cpp_measured": False,
+                          "py_measured": True}
+        assert (tmp_path / "cov-cpp-tracefile-python.json").exists()
+        assert (tmp_path / "cov-py-summary.json").exists()
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_the_two_legs_do_not_overwrite_each_other(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """Both legs land in one output dir and the report phase unions them.
+
+        This is the property the per-leg filenames exist for: the two measuring
+        jobs upload into a single artifact space, and a fixed filename would
+        leave whichever finished last as the only surviving answer -- a status
+        that still looks complete while asserting one layer unmeasured.
+        """
+        toml_file, cpp, py, fake_run = self._setup_workspace(tmp_path)
+        self._wire(mock_run, mock_path, mock_find, fake_run, cpp, py)
+
+        _measure_coverage(str(toml_file), "0.0.0", str(tmp_path), LEG_CPP)
+        _measure_coverage(str(toml_file), "0.0.0", str(tmp_path), LEG_PYTHON)
+
+        assert sorted(f.name for f in tmp_path.glob("coverage-status-*.json")) == [
+            "coverage-status-cpp.json", "coverage-status-python.json",
+        ]
+        assert sorted(f.name for f in tmp_path.glob("cov-cpp-tracefile-*.json")) == [
+            "cov-cpp-tracefile-cpp.json", "cov-cpp-tracefile-python.json",
+        ]
+        assert _read_coverage_status(tmp_path) == {
+            "tests_failed": False, "cpp_measured": True, "py_measured": True,
+        }
+
+    # --- the failure the pipeline gates on ---
+
+    @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
+    @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_a_leg_that_left_no_package_errors_and_records_nothing_measured(
+        self, mock_run, mock_path, mock_find, tmp_path,
+    ):
+        """No package means exit 1 and no tracefile, not an empty one.
+
+        This is what fails the build-stage job when an instrumented build dies:
+        EXIT_ERROR, not EXIT_OK. An empty tracefile would merge as a layer that
+        is genuinely 0% covered, which reads as a coverage regression rather
+        than as the broken build it is.
+        """
+        toml_file, cpp, py, fake_run = self._setup_workspace(tmp_path)
+        self._wire(mock_run, mock_path, mock_find, fake_run, cpp, py,
+                   missing=("testing",))
+
+        exit_code = _measure_coverage(str(toml_file), "0.0.0", str(tmp_path),
+                                      LEG_CPP)
+
+        assert exit_code == EXIT_ERROR
+        status = json.loads(
+            (tmp_path / "coverage-status-cpp.json").read_text()
+        )
+        assert status["cpp_measured"] is False
+        assert status["py_measured"] is False
+        assert list(tmp_path.glob("cov-cpp-tracefile-*.json")) == []
