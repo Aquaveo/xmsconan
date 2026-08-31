@@ -95,6 +95,10 @@ class CoverageTable:
     ``filters`` stays ``None`` when unset because its default names the
     library (``["<library_name>/"]``); the coverage context resolves it.
 
+    ``parallel`` defaults off: overlapping the two coverage builds races
+    conan's local cache and costs more wall clock than it saves once the legs
+    contend for CPU. See ``docs/USAGE.md`` §5.7.
+
     ``excludes`` does not exclude the binding directory. It used to, back when
     only the testing build was read -- and that build does not compile the
     bindings, so the exclude removed nothing that existed. Now that the pybind
@@ -106,7 +110,7 @@ class CoverageTable:
     python_threshold: float = 0.0
     filters: Optional[list] = None
     excludes: list = field(default_factory=lambda: list(_DEFAULT_COVERAGE_EXCLUDES))
-    parallel: bool = True
+    parallel: bool = False
     python_version: Optional[str] = None
 
 

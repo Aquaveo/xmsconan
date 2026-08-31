@@ -966,9 +966,6 @@ def test_create_build_profile_not_confused_by_new_combination_keys(tmp_path):
         'PYTHON_TARGET_VERSION=3.13\n'
         'CI_COMMIT_TAG=False\n'
         'RELEASE_PYTHON=False\n'
-        'AQUAPI_USERNAME=None\n'
-        'AQUAPI_PASSWORD=None\n'
-        'AQUAPI_URL=None\n'
     )
 
     assert content == expected
@@ -1906,15 +1903,40 @@ def test_write_profiles_includes_dependency_options(tmp_path):
     assert "boost/*:without_locale=True" in (tmp_path / "linux_library_release.txt").read_text()
 
 
-@patch_env({"AQUAPI_PASSWORD": "s3cret-value"})
-def test_create_build_profile_still_carries_full_environment():
-    """The ephemeral build profile is unchanged: it keeps credentials the build needs."""
+@patch_env({"AQUAPI_PASSWORD": "s3cret-value", "AQUAPI_USERNAME": "ci-bot"})
+def test_create_build_profile_omits_credentials():
+    """The ephemeral build profile carries no credentials either.
+
+    Being temporary is not protection. Conan echoes whichever profile it is
+    handed to stdout under "Input profiles" before every build, so a secret
+    placed here lands in the CI job log and outlives the file by however long
+    the log is retained.
+    """
     packager = _linux_packager()
 
     path = packager.create_build_profile(packager.configurations[0])
 
     with open(path) as profile:
-        assert "AQUAPI_PASSWORD=s3cret-value" in profile.read()
+        contents = profile.read()
+    assert "s3cret-value" not in contents
+    assert "ci-bot" not in contents
+    assert "AQUAPI_PASSWORD" not in contents
+
+
+@patch_env({"AQUAPI_PASSWORD": "s3cret-value", "AQUAPI_USERNAME": "ci-bot"})
+def test_generate_configurations_keeps_credentials_out_of_buildenv():
+    """Credentials never enter buildenv, which is what both profiles serialize.
+
+    Guards the fix at its source rather than at either serializer: a new
+    profile writer added later inherits the guarantee instead of having to
+    re-implement the filtering.
+    """
+    configurations = _linux_packager().generate_configurations(system_platform="linux")
+
+    assert configurations, "no configurations -- the assertion below would pass vacuously"
+    for configuration in configurations:
+        leaked = [key for key in configuration["buildenv"] if key.startswith("AQUAPI_")]
+        assert not leaked, f"credential keys reached buildenv: {leaked}"
 
 
 # --- generator variants ---

@@ -76,7 +76,7 @@ def test_coverage_table_defaults():
     assert coverage.python_threshold == 0.0
     assert coverage.filters is None
     assert coverage.excludes == [r".*\.t\.h$", r".*/_package/tests/.*"]
-    assert coverage.parallel is True
+    assert coverage.parallel is False
     assert coverage.python_version is None
 
 
