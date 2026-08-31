@@ -377,11 +377,10 @@ def generate_ci(
 
     from xmsconan import __version__ as xmsconan_version
 
-    # Deferred like the coverage import above: coverage_generator imports
-    # _coverage_context from this module, so a module-scope import here would
-    # close a cycle. The generated job must forgive exactly the code the tool
-    # exits with for a gate miss, so the template takes the constant rather
-    # than repeating the number.
+    # Deferred: coverage_generator imports _coverage_context from this module,
+    # so a module-scope import here would close a cycle. The generated job must
+    # forgive exactly the code the tool exits with for a gate miss, so the
+    # template takes the constant rather than repeating the number.
     from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
 
     # Build template context
