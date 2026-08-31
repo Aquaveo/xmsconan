@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from xmsconan.build_toml import BuildToml, CiTable, CoverageTable
 from xmsconan.coverage_tools.coverage_generator import (
     _append_github_summary,
     _assert_gcovr_collected_data,
@@ -50,13 +51,13 @@ class TestCoverageContextDefaults:
 
     def test_thresholds_default_to_zero(self):
         """Both thresholds default to 0 (report-only mode)."""
-        ctx = _coverage_context({}, "xmscore")
+        ctx = _coverage_context(CoverageTable(), "xmscore")
         assert ctx["cpp_threshold"] == 0.0
         assert ctx["python_threshold"] == 0.0
 
     def test_filters_default_to_library_prefix(self):
         """The default gcovr filter scopes to the library's own source tree."""
-        ctx = _coverage_context({}, "xmsgrid")
+        ctx = _coverage_context(CoverageTable(), "xmsgrid")
         assert ctx["filters"] == ["xmsgrid/"]
 
     def test_excludes_baked_in_when_absent(self):
@@ -68,7 +69,7 @@ class TestCoverageContextDefaults:
         and merged in now, so excluding it would collect the binding layer's
         coverage and then throw it away.
         """
-        ctx = _coverage_context({}, "xmsgrid")
+        ctx = _coverage_context(CoverageTable(), "xmsgrid")
         excludes = ctx["excludes"]
         assert any(r".*\.t\.h$" in e for e in excludes)
         assert any("_package/tests" in e for e in excludes)
@@ -76,14 +77,14 @@ class TestCoverageContextDefaults:
 
     def test_user_supplied_filters_win(self):
         """User-supplied filters replace the defaults entirely."""
-        ctx = _coverage_context({"filters": ["only/"]}, "xmsgrid")
+        config = BuildToml(library_name="xmscore", coverage=CoverageTable(filters=["only/"]))
+        ctx = _coverage_context(config.coverage, "xmsgrid")
         assert ctx["filters"] == ["only/"]
 
     def test_user_supplied_thresholds_win(self):
-        """User-supplied thresholds replace the defaults and are coerced to float."""
-        ctx = _coverage_context(
-            {"cpp_threshold": 70, "python_threshold": 65}, "xmsgrid",
-        )
+        """User-supplied thresholds replace the defaults."""
+        config = BuildToml(library_name="xmscore", coverage=CoverageTable(cpp_threshold=70.0, python_threshold=65.0))
+        ctx = _coverage_context(config.coverage, "xmsgrid")
         assert ctx["cpp_threshold"] == 70.0
         assert ctx["python_threshold"] == 65.0
 
@@ -391,30 +392,32 @@ class TestResolveCoveragePythonVersion:
 
     def test_defaults_to_3_13_when_no_ci_python_versions(self):
         """An empty toml falls back to the global default ABI."""
-        assert _resolve_coverage_python_version({}) == "3.13"
+        config = BuildToml(library_name="xmscore")
+        assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_uses_highest_ci_python_versions(self):
         """Highest entry in [ci].python_versions wins by (major, minor)."""
-        toml_data = {"ci": {"python_versions": ["3.10", "3.13"]}}
-        assert _resolve_coverage_python_version(toml_data) == "3.13"
+        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.10", "3.13"]))
+        assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_handles_list_order_independence(self):
         """Order in [ci].python_versions doesn't matter."""
-        toml_data = {"ci": {"python_versions": ["3.13", "3.10"]}}
-        assert _resolve_coverage_python_version(toml_data) == "3.13"
+        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.13", "3.10"]))
+        assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_explicit_coverage_python_version_overrides(self):
         """[coverage].python_version overrides the [ci].python_versions default."""
-        toml_data = {
-            "ci": {"python_versions": ["3.13"]},
-            "coverage": {"python_version": "3.10"},
-        }
-        assert _resolve_coverage_python_version(toml_data) == "3.10"
+        config = BuildToml(
+            library_name="xmscore",
+            ci=CiTable(python_versions=["3.13"]),
+            coverage=CoverageTable(python_version="3.10"),
+        )
+        assert _resolve_coverage_python_version(config) == "3.10"
 
     def test_empty_ci_python_versions_falls_back(self):
         """An empty list in [ci] is treated like the key was missing."""
-        toml_data = {"ci": {"python_versions": []}}
-        assert _resolve_coverage_python_version(toml_data) == "3.13"
+        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=[]))
+        assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_rejects_a_coverage_python_version_the_recipe_does_not_allow(self):
         """[coverage].python_version is checked against the supported set.
@@ -424,9 +427,9 @@ class TestResolveCoveragePythonVersion:
         image name and PYTHON_TARGET_VERSION unchecked and only failed at conan
         configure time, inside the build, attributed to the wrong thing.
         """
-        toml_data = {"coverage": {"python_version": "3.11"}}
+        config = BuildToml(library_name="xmscore", coverage=CoverageTable(python_version="3.11"))
         with pytest.raises(ValueError, match="python_version option does not allow"):
-            _resolve_coverage_python_version(toml_data)
+            _resolve_coverage_python_version(config)
 
     def test_coerces_a_non_string_version_entry(self):
         """An unquoted TOML version parses as a float and must not stay one.
@@ -436,8 +439,8 @@ class TestResolveCoveragePythonVersion:
         only for comparison, so without a coercion here the float reaches
         subprocess's env, which rejects non-str values with a bare TypeError.
         """
-        toml_data = {"ci": {"linux_python_versions": [3.14]}}
-        resolved = _resolve_coverage_python_version(toml_data)
+        config = BuildToml(library_name="xmscore", ci=CiTable(linux_python_versions=[3.14]))
+        resolved = _resolve_coverage_python_version(config)
         assert resolved == "3.14"
         assert isinstance(resolved, str), f"resolver returned {type(resolved).__name__}"
 
@@ -1915,6 +1918,16 @@ class TestReexecUnderXvfb:
         execvpe.assert_not_called()
 
 
+def test_run_coverage_rejects_an_unknown_top_level_key(tmp_path):
+    """The coverage run validates build.toml before shelling out to anything."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    shelled_out = AssertionError("run_coverage shelled out before rejecting build.toml")
+    with patch("xmsconan.coverage_tools.coverage_generator._run", side_effect=shelled_out):
+        with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+            run_coverage(toml_file, "0.0.0", tmp_path)
+
+
 _LEGS = (
     _BuildLeg("C++", '{"build_type": "Debug"}'),
     _BuildLeg("Python", '{"build_type": "Release"}'),
@@ -1935,11 +1948,11 @@ class TestConcurrentCoverageBuilds:
         legs contend for CPU. Opting in stays possible; it is no longer the
         default anyone gets without asking.
         """
-        assert _coverage_context({}, "xmscore")["parallel"] is False
+        assert _coverage_context(CoverageTable(), "xmscore")["parallel"] is False
 
     def test_parallel_can_be_disabled(self):
         """[coverage].parallel = false puts the builds back in sequence."""
-        assert _coverage_context({"parallel": False}, "xmscore")["parallel"] is False
+        assert _coverage_context(CoverageTable(parallel=False), "xmscore")["parallel"] is False
 
     def test_parallel_opt_in_survives(self):
         """[coverage].parallel = true still opts a library in.
@@ -1948,12 +1961,7 @@ class TestConcurrentCoverageBuilds:
         read at all -- a regression hard-coding False in _coverage_context
         would pass every other test in this class.
         """
-        assert _coverage_context({"parallel": True}, "xmscore")["parallel"] is True
-
-    def test_parallel_rejects_non_boolean(self):
-        """A quoted "false" is a string, and bool() would count it as true."""
-        with pytest.raises(ValueError, match=r"\[coverage\]\.parallel"):
-            _coverage_context({"parallel": "false"}, "xmscore")
+        assert _coverage_context(CoverageTable(parallel=True), "xmscore")["parallel"] is True
 
     def test_builds_run_concurrently(self):
         """Both legs are in flight at once.

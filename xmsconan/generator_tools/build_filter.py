@@ -14,7 +14,11 @@ where it is applied before any ``--filter`` given on the command line (the two
 AND together). ``xmsconan ci`` reads the same table so the generated pipeline
 does not emit steps the filter has made unbuildable.
 """
+# 1. Standard python modules
+from typing import Optional
+
 # 3. Aquaveo modules
+from xmsconan.build_toml import BuildToml
 from xmsconan.constants import version_sort_key
 from xmsconan.package_tools.packager import (
     summarize_filter_matches,
@@ -69,11 +73,11 @@ COVERAGE_BUILD_FILTERS = {
 }
 
 
-def load_build_filter(toml_data: dict) -> dict:
+def load_build_filter(config: BuildToml) -> dict:
     """Read, validate, and sanity-check the ``[filter]`` table from ``build.toml``.
 
     Args:
-        toml_data: The parsed ``build.toml`` contents.
+        config: The parsed ``build.toml``.
 
     Returns:
         The filter dict, empty when the table is absent.
@@ -83,15 +87,15 @@ def load_build_filter(toml_data: dict) -> dict:
             generated configuration, or when the filter as a whole selects
             nothing to build.
     """
-    build_filter = toml_data.get("filter", {})
+    build_filter = config.filter
     try:
         validate_filter_dict(build_filter)
     except ValueError as e:
         raise ValueError(f"Invalid [filter] table in build.toml: {e}") from e
     if build_filter:
-        _reject_matrix_conflict(build_filter, toml_data.get("matrix"))
-        _reject_unbuildable_filter(
-            build_filter, ci_python_versions(toml_data), toml_data.get("matrix"))
+        _reject_matrix_conflict(build_filter, config.matrix)
+        python_versions = ci_python_versions(config)
+        _reject_unbuildable_filter(build_filter, python_versions, config.matrix)
     return build_filter
 
 
@@ -105,12 +109,11 @@ def load_build_filter(toml_data: dict) -> dict:
 CI_PYTHON_VERSION_KEYS = ("python_versions", "linux_python_versions", "mac_python_versions")
 
 
-def ci_python_versions(toml_data: dict) -> list:
+def ci_python_versions(config: BuildToml) -> Optional[list]:
     """The Python versions the pybind fan-out covers for this ``build.toml``."""
-    ci_config = toml_data.get("ci", {}) or {}
     versions = set()
     for key in CI_PYTHON_VERSION_KEYS:
-        versions.update(ci_config.get(key) or [])
+        versions.update(getattr(config.ci, key) or [])
     return sorted(versions, key=version_sort_key) or None
 
 
@@ -195,7 +198,7 @@ def _reject_unbuildable_filter(build_filter: dict, python_versions, matrix=None)
         )
 
 
-def ci_filter_effects(build_filter: dict, toml_data: dict) -> dict:
+def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
     """What a ``[filter]`` table does to the generated CI.
 
     Both answers have to come from the configurations that actually survive, not
@@ -218,8 +221,8 @@ def ci_filter_effects(build_filter: dict, toml_data: dict) -> dict:
 
     Args:
         build_filter: The validated ``[filter]`` table.
-        toml_data: The parsed ``build.toml``, for ``[ci]`` python versions and
-            the ``[matrix]`` table -- the filter has to be measured against the
+        config: The parsed build.toml, for [ci] python versions and the
+            [matrix] table -- the filter has to be measured against the
             configurations this library really produces.
 
     Returns:
@@ -239,8 +242,8 @@ def ci_filter_effects(build_filter: dict, toml_data: dict) -> dict:
     """
     pinned = build_filter.get("build_type")
     candidates = [pinned] if pinned is not None else list(DEFAULT_CI_BUILD_TYPES)
-    python_versions = ci_python_versions(toml_data)
-    matrix = toml_data.get("matrix")
+    python_versions = ci_python_versions(config)
+    matrix = config.matrix
 
     build_types = []
     pybind = {name: 0 for name in CI_WHEEL_PLATFORMS}

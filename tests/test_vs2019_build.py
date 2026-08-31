@@ -1322,9 +1322,10 @@ def test_library_repairs_wheel_defaults_to_true_without_a_build_toml(tmp_path):
 def test_malformed_build_toml_names_the_file(tmp_path):
     """A decode error names the path instead of being blamed on a CLI flag.
 
-    load_toml raises TOMLDecodeError, a ValueError, and the CLI's top-level
-    handler reads a bare ValueError as a bad --only / --from / --filter -- so an
-    unwrapped decode error produced advice about flags nobody typed.
+    read_build_toml wraps the decode error in a ValueError naming the file, and
+    the CLI's top-level handler reads a bare ValueError as a bad --only / --from
+    / --filter -- so an unwrapped decode error produced advice about flags
+    nobody typed.
     """
     (tmp_path / "build.toml").write_text("library_name = \n", encoding="utf-8")
     with pytest.raises(ValueError, match="could not parse"):
@@ -1355,3 +1356,12 @@ def test_build_library_passes_the_librarys_own_matrix(mock_run, mock_packager_cl
     assert mock_packager_cls.call_args.kwargs["matrix"] == {
         "compiler_runtime": ["dynamic"],
     }
+
+
+def test_library_matrix_rejects_an_unknown_top_level_key(tmp_path):
+    """The VS2019 driver validates each library's build.toml like every other reader."""
+    (tmp_path / "build.toml").write_text(
+        'library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        vs._library_matrix(tmp_path)

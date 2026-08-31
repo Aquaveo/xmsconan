@@ -9,7 +9,8 @@ import sys
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
-from xmsconan.ci_options import repairs_windows_wheel, validate_ci_table
+from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, read_build_toml
+from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
 from xmsconan.generator_tools.build_filter import (
     ci_filter_effects,
@@ -17,7 +18,6 @@ from xmsconan.generator_tools.build_filter import (
     empty_ci_jobs,
     load_build_filter,
 )
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 
 LOGGER = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def _job_name_py(platform_python_versions: list) -> str:
     return ""
 
 
-def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions: list) -> list:
+def _platform_python_versions(ci: CiTable, platform: str, ci_python_versions: list) -> list:
     """Resolve the Python fan-out for one non-Windows platform.
 
     ``[ci].python_versions`` fans out Windows only, because Windows is the
@@ -102,7 +102,7 @@ def _platform_python_versions(ci_config: dict, platform: str, ci_python_versions
     Defaults to the single highest entry of ``ci_python_versions``, which is
     the behavior these platforms had when the version was hardcoded.
     """
-    configured = ci_config.get(f"{platform}_python_versions")
+    configured = getattr(ci, f"{platform}_python_versions")
     if configured:
         return list(configured)
     return [max(ci_python_versions, key=version_sort_key)]
@@ -139,7 +139,7 @@ def _unsupported_python_versions(versions) -> list:
 _DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
 
 
-def _resolve_coverage_python_version(toml_data: dict) -> str:
+def _resolve_coverage_python_version(config: BuildToml) -> str:
     """Pick the single python_version the coverage build should pin to.
 
     Precedence: ``[coverage].python_version`` (explicit opt-in) > highest
@@ -160,24 +160,21 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
             check in :func:`generate_ci`, but coverage reads this key directly
             and so never reaches it.
     """
-    coverage_cfg = toml_data.get("coverage", {})
-    explicit = coverage_cfg.get("python_version")
+    explicit = config.coverage.python_version
     if explicit:
-        resolved = str(explicit)
-        if _unsupported_python_versions([resolved]):
+        if _unsupported_python_versions([explicit]):
             raise ValueError(
-                f"build.toml [coverage].python_version names Python {resolved}, "
+                f"build.toml [coverage].python_version names Python {explicit}, "
                 f"which the conanfile's python_version option does not allow "
                 f"(supported: {', '.join(SUPPORTED_PYTHON_VERSIONS)}). The [ci] "
                 "version lists are checked for this, but the coverage run reads "
                 "this key directly, so an unsupported value here would surface "
                 "much later as a conan configure error inside the build."
             )
-        return resolved
-    ci_config = toml_data.get("ci", {})
+        return explicit
     linux_versions = _platform_python_versions(
-        ci_config, "linux",
-        list(ci_config.get("python_versions") or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
+        config.ci, "linux",
+        list(config.ci.python_versions or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
     )
     # str() because the fallback returns an element of the TOML list verbatim,
     # and an unquoted `linux_python_versions = [3.14]` puts a float there.
@@ -186,30 +183,14 @@ def _resolve_coverage_python_version(toml_data: dict) -> str:
     return str(max(linux_versions, key=version_sort_key))
 
 
-def _coverage_context(coverage_config: dict, library_name: str) -> dict:
-    """Build the coverage template context, applying sensible defaults."""
-    parallel = coverage_config.get("parallel", False)
-    if not isinstance(parallel, bool):
-        raise ValueError(
-            "[coverage].parallel must be a TOML boolean (true or false), got "
-            f"{parallel!r}. A quoted \"false\" is a string, and any non-empty "
-            "string would silently enable the parallel mode."
-        )
+def _coverage_context(coverage: CoverageTable, library_name: str) -> dict:
+    """Build the coverage template context, applying the library-dependent default."""
     default_filters = [f"{library_name}/"]
-    # The binding directory is NOT excluded. It used to be, because only the
-    # testing build was read and that build does not compile the bindings --
-    # so the exclude removed nothing that existed. Now that the pybind build is
-    # instrumented and merged in, excluding it would collect the binding
-    # layer's coverage and then discard it.
-    default_excludes = [
-        r".*\.t\.h$",
-        r".*/_package/tests/.*",
-    ]
     return {
-        "cpp_threshold": float(coverage_config.get("cpp_threshold", 0)),
-        "python_threshold": float(coverage_config.get("python_threshold", 0)),
-        "filters": list(coverage_config.get("filters", default_filters)),
-        "excludes": list(coverage_config.get("excludes", default_excludes)),
+        "cpp_threshold": coverage.cpp_threshold,
+        "python_threshold": coverage.python_threshold,
+        "filters": list(coverage.filters if coverage.filters is not None else default_filters),
+        "excludes": list(coverage.excludes),
         # The C++ and Python halves of a coverage run are two independent
         # `conan create`s that share only the report step, so overlapping them
         # looks free. It is not, and it defaults to off.
@@ -226,7 +207,7 @@ def _coverage_context(coverage_config: dict, library_name: str) -> dict:
         # Set true only where neither applies -- a runner with a private cache
         # and cores to spare. An xvfb library whose image tests do not tolerate
         # a second client on the same display must leave it off regardless.
-        "parallel": parallel,
+        "parallel": coverage.parallel,
     }
 
 
@@ -251,7 +232,7 @@ def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
     return jobs
 
 
-def _warn_filter_conflicts(build_filter: dict, toml_data: dict, ci_type: str, context: dict) -> None:
+def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, context: dict) -> None:
     """Warn about pipelines the ``[filter]`` table leaves unbuildable.
 
     Emptying a job is only reported, never fixed: the platform fan-out lives in
@@ -267,10 +248,8 @@ def _warn_filter_conflicts(build_filter: dict, toml_data: dict, ci_type: str, co
 
     if not context["ci_coverage"]:
         return
-    # Deferred: coverage_generator imports _coverage_context from this module,
-    # so importing it at module scope would close a cycle.
-    from xmsconan.coverage_tools.coverage_generator import _resolve_coverage_python_version
-    for conflict in coverage_conflicts(build_filter, _resolve_coverage_python_version(toml_data)):
+    coverage_python_version = _resolve_coverage_python_version(config)
+    for conflict in coverage_conflicts(build_filter, coverage_python_version):
         LOGGER.warning(
             "[ci].coverage is enabled but the [filter] table %s — "
             "`xmsconan coverage` will find no configurations to build.", conflict,
@@ -298,30 +277,17 @@ def generate_ci(
     if not toml_file.exists():
         raise FileNotFoundError(f"The specified TOML file does not exist: {toml_file_path}")
 
-    # Parse the TOML file
-    toml_data = load_toml(toml_file)
-    # Third entry point reading this file with .get(), and the last one that
-    # was not validating. Without this, `xmsconan ci` emits a pipeline from a
-    # build.toml that `xmsconan gen` and `xmsconan profiles` both reject, and
-    # the committed CI keeps whatever defaults the typo produced.
-    validate_top_level_keys(toml_data, toml_file)
+    # Parse and validate the TOML file
+    config = read_build_toml(toml_file)
 
-    ci_type = toml_data.get("ci_type")
+    ci_type = config.ci_type
     if not ci_type:
         raise ValueError("build.toml must include a 'ci_type' key ('github' or 'gitlab')")
     if ci_type not in ("github", "gitlab"):
         raise ValueError(f"ci_type must be 'github' or 'gitlab', got '{ci_type}'")
 
-    library_name = toml_data["library_name"]
+    library_name = config.library_name
     display = _display_name(library_name)
-
-    # CI-specific options (for GitLab conditional sections)
-    ci_config = toml_data.get("ci", {})
-
-    # A misspelled key or a quoted boolean here is otherwise invisible: the
-    # reader falls back to a default, and for a switch that turns work off the
-    # work simply keeps happening.
-    validate_ci_table(ci_config)
 
     # A GitLab pipeline with neither platform builds nothing, and coverage runs
     # only under gcc.  Reject the impossible combinations here rather than
@@ -330,12 +296,12 @@ def generate_ci(
     # job, Windows in place inside its build job -- so a Windows-only pipeline
     # publishes wheels and only the coverage rule below still needs Linux.
     if ci_type == "gitlab":
-        if not ci_config.get("linux", True) and not ci_config.get("windows", True):
+        if not config.ci.linux_enabled and not config.ci.windows_enabled:
             raise ValueError(
                 "build.toml sets both [ci].linux and [ci].windows to false, "
                 "which would generate a pipeline with nothing to build."
             )
-        if ci_config.get("coverage", False) and not ci_config.get("linux", True):
+        if config.ci.coverage and not config.ci.linux_enabled:
             raise ValueError(
                 "build.toml sets [ci].coverage = true with [ci].linux = false. "
                 "Coverage builds with --coverage under gcc; the generated "
@@ -350,7 +316,7 @@ def generate_ci(
         # dies in build.py with "no complete set of wheels was extracted". The
         # Debug leg that could have produced one never stages it. Same class of
         # check as the two above.
-        pybind_build_types = toml_data.get("matrix", {}).get("pybind_build_types")
+        pybind_build_types = config.matrix.get("pybind_build_types")
         if pybind_build_types and "Release" not in pybind_build_types:
             raise ValueError(
                 f"build.toml sets [matrix].pybind_build_types = "
@@ -365,7 +331,7 @@ def generate_ci(
     # generation time. Warn on any explicit setting, not just false: setting
     # one to true is equally inert and equally worth knowing.
     if ci_type == "github":
-        ignored = [key for key in ("linux", "windows") if key in ci_config]
+        ignored = [key for key in ("linux", "windows") if getattr(config.ci, key) is not None]
         if ignored:
             LOGGER.warning(
                 "build.toml sets %s, but %s GitLab-only; the generated GitHub "
@@ -375,9 +341,9 @@ def generate_ci(
                 "them" if len(ignored) > 1 else "it",
             )
 
-    ci_python_versions = list(ci_config.get("python_versions", ["3.13"]))
-    ci_mac_python_versions = _platform_python_versions(ci_config, "mac", ci_python_versions)
-    ci_linux_python_versions = _platform_python_versions(ci_config, "linux", ci_python_versions)
+    ci_python_versions = list(config.ci.python_versions)
+    ci_mac_python_versions = _platform_python_versions(config.ci, "mac", ci_python_versions)
+    ci_linux_python_versions = _platform_python_versions(config.ci, "linux", ci_python_versions)
 
     for key, versions in (("python_versions", ci_python_versions),
                           ("mac_python_versions", ci_mac_python_versions),
@@ -393,8 +359,8 @@ def generate_ci(
 
     # This guard is about the Linux fan-out, so it is moot when Linux is
     # switched off entirely -- the list is inert in that case.
-    gitlab_split_tests = ci_type == "gitlab" and ci_config.get("split_tests", False)
-    linux_enabled = ci_config.get("linux", True)
+    gitlab_split_tests = ci_type == "gitlab" and config.ci.split_tests
+    linux_enabled = config.ci.linux_enabled
     if gitlab_split_tests and linux_enabled and len(ci_linux_python_versions) > 1:
         raise ValueError(
             "build.toml combines [ci].split_tests with more than one "
@@ -404,19 +370,17 @@ def generate_ci(
             "linux_python_versions to a single entry."
         )
 
-    coverage_config = toml_data.get("coverage", {})
-    build_filter = load_build_filter(toml_data)
+    build_filter = load_build_filter(config)
     # One measurement of the filter against the real matrix, feeding both the
     # build_type axis and the wheel-step gate below.
-    filter_effects = ci_filter_effects(build_filter, toml_data)
+    filter_effects = ci_filter_effects(build_filter, config)
 
     from xmsconan import __version__ as xmsconan_version
 
-    # Deferred like the coverage import above: coverage_generator imports
-    # _coverage_context from this module, so a module-scope import here would
-    # close a cycle. The generated job must forgive exactly the code the tool
-    # exits with for a gate miss, so the template takes the constant rather
-    # than repeating the number.
+    # Deferred: coverage_generator imports _coverage_context from this module,
+    # so a module-scope import here would close a cycle. The generated job must
+    # forgive exactly the code the tool exits with for a gate miss, so the
+    # template takes the constant rather than repeating the number.
     from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
 
     # Build template context
@@ -425,20 +389,20 @@ def generate_ci(
         "library_name": library_name,
         "display_name": display,
         "version": version,
-        "python_namespaced_dir": toml_data.get("python_namespaced_dir", library_name[3:]),
-        "ci_windows": ci_config.get("windows", True),
+        "python_namespaced_dir": config.python_namespaced_dir,
+        "ci_windows": config.ci.windows_enabled,
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
         # installable, so there is no equivalent switch for Linux or macOS. The
         # default follows ci_type -- see repairs_windows_wheel.
-        "ci_windows_wheel_repair": repairs_windows_wheel(toml_data),
-        "ci_linux": ci_config.get("linux", True),
-        "ci_deploy": ci_config.get("deploy", True),
-        "ci_coverage": ci_config.get("coverage", False),
-        "ci_xvfb": ci_config.get("xvfb", False),
-        "ci_linux_arm": ci_config.get("linux_arm", False),
-        "docker_image": ci_config.get("docker_image", ""),
-        "ci_split_tests": ci_config.get("split_tests", False),
-        "ci_test_shards": ci_config.get("test_shards", 0),
+        "ci_windows_wheel_repair": repairs_windows_wheel(config),
+        "ci_linux": config.ci.linux_enabled,
+        "ci_deploy": config.ci.deploy,
+        "ci_coverage": config.ci.coverage,
+        "ci_xvfb": config.ci.xvfb,
+        "ci_linux_arm": config.ci.linux_arm,
+        "docker_image": config.ci.docker_image,
+        "ci_split_tests": config.ci.split_tests,
+        "ci_test_shards": config.ci.test_shards,
         "ci_python_versions": ci_python_versions,
         "ci_mac_python_versions": ci_mac_python_versions,
         "ci_linux_python_versions": ci_linux_python_versions,
@@ -455,9 +419,9 @@ def generate_ci(
         ),
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
-        "coverage": _coverage_context(coverage_config, library_name),
+        "coverage": _coverage_context(config.coverage, library_name),
         "coverage_gate_exit_code": EXIT_GATE_FAILED,
-        "coverage_python_version": _resolve_coverage_python_version(toml_data),
+        "coverage_python_version": _resolve_coverage_python_version(config),
         "ci_build_types": filter_effects["build_types"],
         # Per platform: a filter can leave one platform building wheels and
         # another not (see ci_filter_effects). linux-arm reads the Linux flag.
@@ -467,7 +431,7 @@ def generate_ci(
     }
 
     if build_filter:
-        _warn_filter_conflicts(build_filter, toml_data, ci_type, context)
+        _warn_filter_conflicts(build_filter, config, ci_type, context)
 
     # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"

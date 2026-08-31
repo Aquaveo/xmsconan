@@ -1,6 +1,7 @@
 """Script to generate files for building Conan 2 libraries from templates using TOML data."""
 # 1. Standard python modules
 import argparse
+from dataclasses import asdict
 import logging
 import os
 from pathlib import Path
@@ -12,10 +13,10 @@ from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import UndefinedError
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import BuildToml, read_build_toml, XmsDependency
 from xmsconan.constants import PYTHON_BINDING_TYPES, TESTING_FRAMEWORKS
 from xmsconan.generator_tools.build_filter import load_build_filter
 from xmsconan.package_tools.packager import XmsConanPackager
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ _CMAKE_BUILTIN_DEPENDENCIES = frozenset({
 
 
 def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
-                              xms_dependencies: list) -> list[dict]:
+                              xms_dependencies: list[XmsDependency]) -> list[dict]:
     """Resolve which ``extra_dependencies`` the generated CMakeLists should find.
 
     ``extra_dependencies`` entries are Conan references (``"cereal/1.3.0"``), and
@@ -71,7 +72,7 @@ def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
     Args:
         extra_dependencies: The ``extra_dependencies`` list from ``build.toml``.
         overrides: The ``[extra_dependency_cmake_names]`` table.
-        xms_dependencies: The normalized ``xms_dependencies`` entries.
+        xms_dependencies: The xms_dependencies entries.
 
     Returns:
         One ``{"name": <cmake package name>}`` entry per dependency to find, in
@@ -103,10 +104,7 @@ def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
             )
 
     already_found = set(_CMAKE_BUILTIN_DEPENDENCIES)
-    already_found.update(
-        dep["name"] if isinstance(dep, dict) else str(dep).split("/")[0]
-        for dep in xms_dependencies
-    )
+    already_found.update(dep.name for dep in xms_dependencies)
 
     dependencies = []
     seen = set()
@@ -120,7 +118,7 @@ def _extra_cmake_dependencies(extra_dependencies: list, overrides: dict,
     return dependencies
 
 
-def _validate_vocabularies(toml_data, toml_file):
+def _validate_vocabularies(config: BuildToml, toml_file):
     """Reject values that name a framework, binding, or dependency that does not exist.
 
     The recipe performs the same checks in ``configure()``, but this function
@@ -130,7 +128,7 @@ def _validate_vocabularies(toml_data, toml_file):
     build time names a missing CMake package instead.
 
     Args:
-        toml_data: The parsed build.toml, after defaults have been applied.
+        config: The parsed build.toml.
         toml_file: Path the data came from, for the error messages.
 
     Raises:
@@ -139,24 +137,43 @@ def _validate_vocabularies(toml_data, toml_file):
     """
     for key, accepted in (("testing_framework", TESTING_FRAMEWORKS),
                           ("python_binding_type", PYTHON_BINDING_TYPES)):
-        value = toml_data[key]
+        value = getattr(config, key)
         if value not in accepted:
             raise ValueError(
                 f'{toml_file}: {key} must be one of {", ".join(sorted(accepted))}; '
                 f'got {value!r}.'
             )
 
-    declared = {
-        dependency["name"] if isinstance(dependency, dict) else str(dependency).split("/")[0]
-        for dependency in toml_data["xms_dependencies"]
-    }
-    unmatched = sorted(set(toml_data["xms_dependency_options"]) - declared)
+    declared = {dependency.name for dependency in config.xms_dependencies}
+    unmatched = sorted(set(config.xms_dependency_options) - declared)
     if unmatched:
         raise ValueError(
             f'{toml_file}: xms_dependency_options names {", ".join(unmatched)}, which is '
             f'not declared in xms_dependencies. Declared xms_dependencies: '
             f'{", ".join(sorted(declared)) or "(none)"}.'
         )
+
+
+def _render_context(config: BuildToml, version: str) -> dict:
+    """Build the Jinja context the templates expect from a parsed build.toml.
+
+    Templates read bare top-level names (``{{ library_name }}``), so the
+    dataclass is flattened to a dict. Keys whose value is ``None`` are left
+    out so ``StrictUndefined`` still reports a missing required field such as
+    ``description`` the way it always has.
+    """
+    context = {key: value for key, value in asdict(config).items() if value is not None}
+    context["version"] = version
+    # The [filter] table is a baseline matrix restriction; the generated
+    # build.py applies it before its own --filter. Validate it here so a typo
+    # fails `xmsconan gen` instead of every later build.
+    context["build_filter"] = load_build_filter(config)
+    context["extra_cmake_dependencies"] = _extra_cmake_dependencies(
+        config.extra_dependencies,
+        config.extra_dependency_cmake_names,
+        config.xms_dependencies,
+    )
+    return context
 
 
 def render_template_with_toml(
@@ -186,64 +203,14 @@ def render_template_with_toml(
     if not template_dir.exists() or not template_dir.is_dir():
         raise FileNotFoundError(f"The specified template directory does not exist: {template_dir}")
 
-    # Parse the TOML file into a dictionary
-    toml_data = load_toml(toml_file)
-    # Before the setdefault block below, which is what makes a misspelled key
-    # invisible: every optional key gets its default whether or not the file
-    # meant to set it.
-    validate_top_level_keys(toml_data, toml_file)
-    toml_data["version"] = version
-
-    # Set defaults for optional keys to prevent StrictUndefined template errors
-    toml_data.setdefault("testing_framework", "cxxtest")
-    toml_data.setdefault("python_binding_type", "pybind11")
-    toml_data.setdefault("extra_cmake_text", "")
-    toml_data.setdefault("post_library_cmake_text", "")
-    toml_data.setdefault("extra_dependencies", [])
-    toml_data.setdefault("extra_export_sources", [])
-    toml_data.setdefault("library_sources", [])
-    toml_data.setdefault("library_headers", [])
-    toml_data.setdefault("testing_sources", [])
-    toml_data.setdefault("testing_headers", [])
-    toml_data.setdefault("python_library_sources", [])
-    toml_data.setdefault("python_library_headers", [])
-    toml_data.setdefault("pybind_sources", [])
-    toml_data.setdefault("pybind_headers", [])
-    toml_data.setdefault("xms_dependency_options", {})
-    toml_data.setdefault("extra_dependency_cmake_names", {})
-    toml_data.setdefault("matrix", {})
-    toml_data.setdefault("pybind_advertises_module", False)
-    toml_data.setdefault("vs2019_dependency_overrides", {})
-    toml_data.setdefault("xms_dependencies", [])
-    toml_data.setdefault("xms_python_dependencies", [])
-    toml_data.setdefault("conan_profile_options", {})
-
-    # The [filter] table is a baseline matrix restriction; the generated
-    # build.py applies it before its own --filter. Validate it here so a typo
-    # fails `xmsconan gen` instead of every later build.
-    toml_data["build_filter"] = load_build_filter(toml_data)
-
-    if "library_name" in toml_data:
-        toml_data.setdefault("python_namespaced_dir", toml_data["library_name"][3:])
-
-    # Normalize xms_dependencies: add no_python=False if missing
-    if "xms_dependencies" in toml_data:
-        for dep in toml_data["xms_dependencies"]:
-            if isinstance(dep, dict):
-                dep.setdefault("no_python", False)
-
+    config = read_build_toml(toml_file)
     # Validated here rather than only where it is consumed: this function writes
     # [matrix] verbatim into the generated conanfile.py, so a caller that renders
     # templates without going on to generate profiles would otherwise produce an
     # artifact from unvalidated input. XmsConanPackager owns the vocabulary.
-    XmsConanPackager.resolve_matrix(toml_data["matrix"])
-    _validate_vocabularies(toml_data, toml_file)
-
-    toml_data["extra_cmake_dependencies"] = _extra_cmake_dependencies(
-        toml_data["extra_dependencies"],
-        toml_data["extra_dependency_cmake_names"],
-        toml_data["xms_dependencies"],
-    )
+    XmsConanPackager.resolve_matrix(config.matrix)
+    _validate_vocabularies(config, toml_file)
+    context = _render_context(config, version)
 
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -271,7 +238,7 @@ def render_template_with_toml(
 
         # Render the template with the TOML data
         try:
-            rendered_content = template.render(toml_data)
+            rendered_content = template.render(context)
         except UndefinedError as e:
             raise ValueError(f'Missing field in build.toml: {e}.') from e
 

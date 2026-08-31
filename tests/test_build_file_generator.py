@@ -1,5 +1,6 @@
 """Tests for generator_tools.build_file_generator."""
 import ast
+from dataclasses import fields
 import os
 from pathlib import Path
 import re
@@ -9,13 +10,13 @@ import sys
 import pytest
 
 import xmsconan
+from xmsconan.build_toml import BuildToml
 from xmsconan.generator_tools import build_file_generator as build_file_generator_module
 from xmsconan.generator_tools.build_file_generator import (
     _write_text_lf,
     copy_xms_conan2_file,
     render_template_with_toml,
 )
-from xmsconan.toml_utils import KNOWN_KEYS
 
 
 # --- Converted from existing unittest tests ---
@@ -1531,7 +1532,7 @@ def _keys_documented_in_usage():
 
 
 def test_known_keys_matches_the_documented_option_table():
-    """KNOWN_KEYS and the USAGE.md option table say the same thing.
+    """The BuildToml fields and the USAGE.md option table say the same thing.
 
     The whitelist rejects on first contact inside every consumer's Generate
     step, so the two ways it can be wrong are both expensive and neither is
@@ -1539,20 +1540,23 @@ def test_known_keys_matches_the_documented_option_table():
     here takes a valid build.toml down, and a key that is accepted but
     undocumented is a contract nobody can look up. Comparing against a source
     outside the module is the only way to catch either -- deriving the
-    expected set from KNOWN_KEYS would make this test pass by construction.
+    expected set from the ``BuildToml`` field set would make this test pass
+    by construction.
     """
     documented = _keys_documented_in_usage()
+    known = frozenset(f.name for f in fields(BuildToml))
 
-    assert documented == KNOWN_KEYS - _KEYS_WITHOUT_AN_OPTION_TABLE_ROW
+    assert documented == known - _KEYS_WITHOUT_AN_OPTION_TABLE_ROW
 
 
 def test_every_documented_key_is_accepted(template_dir, tmp_path):
     """A build.toml exercising the whole documented vocabulary generates cleanly.
 
-    Guards the reverse failure of the test above: a KNOWN_KEYS that forgot a
-    real key would reject a valid file, taking every consumer's CI down at the
-    Generate step. The key list comes from the docs rather than from
-    KNOWN_KEYS, so a key the whitelist forgot is still exercised here.
+    Guards the reverse failure of the test above: a ``BuildToml`` field set
+    that forgot a real key would reject a valid file, taking every consumer's
+    CI down at the Generate step. The key list comes from the docs rather
+    than from the whitelist derived from ``BuildToml``, so a key the
+    whitelist forgot is still exercised here.
     """
     documented = sorted(_keys_documented_in_usage())
     lines = ['library_name = "xmscore"']

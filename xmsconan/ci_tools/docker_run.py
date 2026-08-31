@@ -15,7 +15,7 @@ import shlex
 import shutil
 import subprocess
 
-import toml
+from xmsconan.build_toml import read_build_toml
 
 # Docker image registry and naming convention (matches CI templates).
 DOCKER_REGISTRY = "docker.aquaveo.com/aquaveo/conan-docker"
@@ -26,7 +26,7 @@ DOCKER_IMAGE_XVFB = "conan-gcc13-x11-gdal-py3.13"
 PIP_INDEX = "https://public.aquapi.aquaveo.com/aquaveo/dev/+simple"
 
 
-def resolve_docker_image(docker_image=None, toml_path="build.toml"):
+def resolve_docker_image(docker_image=None, toml_path: str | Path = "build.toml"):
     """Determine the Docker image to use.
 
     When *docker_image* is ``None``, the image is chosen based on the
@@ -42,14 +42,10 @@ def resolve_docker_image(docker_image=None, toml_path="build.toml"):
     if docker_image:
         return docker_image
 
-    data = toml.load(toml_path)
-    ci_config = data.get("ci", {})
-
-    toml_image = ci_config.get("docker_image")
-    if toml_image:
-        return toml_image
-
-    image_name = DOCKER_IMAGE_XVFB if ci_config.get("xvfb", False) else DOCKER_IMAGE_BASE
+    config = read_build_toml(toml_path)
+    if config.ci.docker_image:
+        return config.ci.docker_image
+    image_name = DOCKER_IMAGE_XVFB if config.ci.xvfb else DOCKER_IMAGE_BASE
     return f"{DOCKER_REGISTRY}/{image_name}"
 
 

@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_tools.publish import (
     _check_xvfb,
-    _read_library_name,
     main,
     publish,
     PublishSteps,
@@ -27,29 +27,27 @@ def mock_steps():
         wheel_repair=MagicMock(),
         wheel_deploy=MagicMock(),
         conan_deploy=MagicMock(),
-        check_xvfb=lambda _toml_path="build.toml": False,
+        check_xvfb=lambda _config: False,
     )
 
 
-# --- _read_library_name ---
+# --- publish ---
 
 
-def test_read_library_name(tmp_path):
-    """Reads library_name from build.toml."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-    assert _read_library_name(str(toml_file)) == "xmscore"
-
-
-def test_read_library_name_missing_key(tmp_path):
-    """Raises ValueError when library_name is missing."""
+def test_publish_rejects_a_build_toml_without_library_name(mock_steps, tmp_path):
+    """The reader names the file and the missing key."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('description = "desc"\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="No library_name"):
-        _read_library_name(str(toml_file))
+    with pytest.raises(ValueError, match="does not define library_name"):
+        publish(version="7.0.0", toml_path=toml_file, steps=mock_steps)
 
 
-# --- publish ---
+def test_publish_rejects_an_unknown_top_level_key(mock_steps, tmp_path):
+    """Publish validates the same way gen/ci/profiles do, so a typo fails here first."""
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
+        publish(version="7.0.0", toml_path=toml_file, steps=mock_steps)
 
 
 def test_publish_full_pipeline(mock_steps, tmp_path):
@@ -226,7 +224,7 @@ def test_publish_build_failure_stops(tmp_path):
         wheel_repair=MagicMock(),
         wheel_deploy=MagicMock(),
         conan_deploy=MagicMock(),
-        check_xvfb=lambda _toml_path="build.toml": False,
+        check_xvfb=lambda _config: False,
     )
 
     with pytest.raises(subprocess.CalledProcessError):
@@ -287,7 +285,8 @@ def test_check_xvfb_true_on_linux(mock_which, tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(str(toml_file)) is True
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is True
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "darwin")
@@ -298,7 +297,8 @@ def test_check_xvfb_false_on_macos(tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(str(toml_file)) is False
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is False
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
@@ -310,7 +310,8 @@ def test_check_xvfb_false_when_display_set(tmp_path):
         'library_name = "xmscore"\n[ci]\nxvfb = true\n',
         encoding="utf-8",
     )
-    assert _check_xvfb(str(toml_file)) is False
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is False
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "linux")
@@ -319,7 +320,8 @@ def test_check_xvfb_false_when_xvfb_not_configured(tmp_path):
     """Returns False when ci.xvfb is not set."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-    assert _check_xvfb(str(toml_file)) is False
+    config = read_build_toml(toml_file)
+    assert _check_xvfb(config) is False
 
 
 def test_publish_calls_conan_setup_with_login(mock_steps, tmp_path):
@@ -349,7 +351,7 @@ def test_publish_wraps_build_with_xvfb_run(tmp_path):
         wheel_repair=MagicMock(),
         wheel_deploy=MagicMock(),
         conan_deploy=MagicMock(),
-        check_xvfb=lambda _toml_path="build.toml": True,
+        check_xvfb=lambda _config: True,
     )
 
     publish(

@@ -19,8 +19,8 @@ import os
 import sys
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import read_build_toml
 from xmsconan.package_tools.packager import configurations, XmsConanPackager
-from xmsconan.toml_utils import load_toml, validate_top_level_keys
 
 LOGGER = logging.getLogger(__name__)
 
@@ -80,14 +80,8 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
     Returns:
         List of paths (that would be) written.
     """
-    data = load_toml(toml_file_path)
-    # Same check `xmsconan gen` makes. This entry point reads the same file with
-    # .get(), so without it `xmsconan profiles` would happily emit profiles from
-    # a build.toml that `xmsconan gen` rejects.
-    validate_top_level_keys(data, toml_file_path)
-    library_name = data.get("library_name")
-    if not library_name:
-        raise ValueError(f"{toml_file_path} does not define library_name")
+    config = read_build_toml(toml_file_path)
+    library_name = config.library_name
 
     base_dir = os.path.dirname(os.path.abspath(toml_file_path))
     profiles_dir = output_dir if os.path.isabs(output_dir) else os.path.join(base_dir, output_dir)
@@ -95,15 +89,15 @@ def generate_profiles(toml_file_path="build.toml", output_dir=DEFAULT_OUTPUT_DIR
     packager = XmsConanPackager(
         library_name,
         conanfile_path=base_dir,
-        profile_options=data.get("conan_profile_options") or None,
-        profile_conf=data.get("conan_profile_conf"),
-        profile_variants=data.get("conan_profile_variants"),
+        profile_options=config.conan_profile_options or None,
+        profile_conf=config.conan_profile_conf,
+        profile_variants=config.conan_profile_variants,
         # Profiles and presets describe the configurations that get built, so
         # they have to read the same [matrix] table build.py does. Otherwise a
         # library that trims its matrix still gets profiles and IDE presets for
         # configurations nothing builds, and one that adds Debug+pybind gets no
         # profile for the configuration it just asked for.
-        matrix=data.get("matrix"),
+        matrix=config.matrix,
     )
     # The [filter] table is deliberately *not* applied here, though it also
     # narrows what build.py builds. The two tables say different things: [matrix]

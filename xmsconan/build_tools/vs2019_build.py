@@ -86,6 +86,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -94,6 +95,7 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
+from xmsconan.build_toml import read_optional_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
@@ -101,7 +103,6 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
-from xmsconan.toml_utils import load_toml
 
 #: Username used to log in to :data:`VS2019_REMOTE_NAME` when neither the
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
@@ -624,34 +625,26 @@ def setup(password_file=None, username=None,
 # --- build ---------------------------------------------------------------
 
 
-def _library_build_toml(library_dir: str) -> dict:
-    """Parse a library's ``build.toml``, or return an empty table if it has none.
-
-    A malformed file is re-raised naming the path. ``load_toml`` raises
-    ``TOMLDecodeError`` -- which is a ``ValueError`` -- and the CLI's top-level
-    handler catches ``ValueError`` as a bad ``--only`` / ``--from`` / ``--filter``
-    argument, so an unreported decode error here surfaced as advice about flags
-    the developer never typed.
+def _library_build_toml(library_dir: str | Path):
+    """Parse a library's ``build.toml``, or return ``None`` if it has none.
 
     Args:
         library_dir: Directory holding the library's ``build.toml``.
 
     Returns:
-        The parsed table, or an empty dict when the file is absent.
+        The parsed :class:`~xmsconan.build_toml.BuildToml`, or ``None`` when
+        the file is absent.
 
     Raises:
-        ValueError: When the file exists but does not parse, naming it.
+        ValueError: When the file exists but does not parse or validate.
+            Parse errors name the file so the CLI's ``ValueError`` handler
+            does not blame a flag.
     """
     toml_path = os.path.join(library_dir, "build.toml")
-    if not os.path.isfile(toml_path):
-        return {}
-    try:
-        return load_toml(toml_path)
-    except ValueError as exc:
-        raise ValueError(f"could not parse {toml_path}: {exc}") from exc
+    return read_optional_build_toml(toml_path)
 
 
-def _library_repairs_wheel(library_dir: str) -> bool:
+def _library_repairs_wheel(library_dir: str | Path) -> bool:
     """Whether this library's Windows wheel should be repaired.
 
     Read from the library's own ``build.toml`` through the shared resolver, so
@@ -664,13 +657,13 @@ def _library_repairs_wheel(library_dir: str) -> bool:
     Returns:
         True when the wheel should be repaired.
     """
-    data = _library_build_toml(library_dir)
-    if not data:
+    config = _library_build_toml(library_dir)
+    if config is None:
         return True
-    return repairs_windows_wheel(data)
+    return repairs_windows_wheel(config)
 
 
-def _library_matrix(library_dir: str) -> dict:
+def _library_matrix(library_dir: str | Path) -> dict:
     """Read the ``[matrix]`` table out of a library's ``build.toml``.
 
     The VS2019 driver builds each library from its own checkout rather than
@@ -689,7 +682,8 @@ def _library_matrix(library_dir: str) -> dict:
     Raises:
         ValueError: When the file exists but does not parse.
     """
-    return _library_build_toml(library_dir).get("matrix", {})
+    config = _library_build_toml(library_dir)
+    return config.matrix if config is not None else {}
 
 
 def _new_packager(library, conanfile_path, python_versions, matrix=None):

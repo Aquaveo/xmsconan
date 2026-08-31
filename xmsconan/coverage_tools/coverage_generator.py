@@ -44,11 +44,11 @@ import traceback
 from typing import NamedTuple, Optional
 
 # 3. Aquaveo modules
+from xmsconan.build_toml import read_build_toml
 from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
 )
-from xmsconan.toml_utils import load_toml
 
 
 LOGGER = logging.getLogger(__name__)
@@ -98,11 +98,6 @@ def _opt_is_truthy(value) -> bool:
     if isinstance(value, str):
         return value.lower() == "true"
     return False
-
-
-def _load_toml(toml_path: Path) -> dict:
-    """Load a TOML file using stdlib tomllib when available."""
-    return load_toml(toml_path)
 
 
 def _reexec_under_xvfb():
@@ -829,7 +824,7 @@ def _append_github_summary(rows: list[tuple[str, float, Optional[float], bool]])
         f.write("\n".join(lines))
 
 
-def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
+def run_coverage(toml_file_path: str | Path, version: str, output_dir: str | Path) -> int:
     """Drive a two-build coverage run (C++ via CxxTest + Python via pytest-cov).
 
     The packager emits a Debug+testing-only config and a Release+pybind-only
@@ -856,13 +851,12 @@ def run_coverage(toml_file_path: str, version: str, output_dir: str) -> int:
             f"The specified TOML file does not exist: {toml_file_path}"
         )
 
-    toml_data = _load_toml(toml_file)
-    library_name = toml_data["library_name"]
-    ci_config = toml_data.get("ci", {})
-    coverage_cfg = _coverage_context(toml_data.get("coverage", {}), library_name)
-    coverage_python_version = _resolve_coverage_python_version(toml_data)
+    config = read_build_toml(toml_file)
+    library_name = config.library_name
+    coverage_cfg = _coverage_context(config.coverage, library_name)
+    coverage_python_version = _resolve_coverage_python_version(config)
 
-    if ci_config.get("xvfb"):
+    if config.ci.xvfb:
         _reexec_under_xvfb()
 
     # 1. Generate build artifacts.
