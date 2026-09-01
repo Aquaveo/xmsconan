@@ -14,6 +14,15 @@ import conanfile
 # --ignore-build-filter to build a configuration it excludes.
 BUILD_FILTER = {{ build_filter }}
 
+# The msvc 192 identity, rendered in rather than imported from
+# xmsconan.constants: a new name there would make a freshly generated build.py
+# fail at import against an older installed client, before argparse and with
+# nothing said about versions. `xmsconan_gen` rewrites this file on every CI
+# run, so the literals cannot drift from the tools that read them.
+VS2019_PLATFORM = "{{ vs2019_platform_key }}"
+VS2019_REMOTE = "{{ vs2019_remote_name }}"
+VS2019_MSVC_VERSION = "{{ vs2019_msvc_version }}"
+
 # arg parse for skip build and skip upload
 parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
@@ -31,6 +40,9 @@ parser.add_argument("--filter", help="Filter dictionary in JSON format")
 parser.add_argument("--ignore-build-filter", action="store_true",
                     help="Ignore the [filter] table from build.toml")
 parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
+parser.add_argument("--platform", default=None,
+                    help=f"Matrix to build ('windows', '{VS2019_PLATFORM}', 'linux', "
+                         "'darwin'). Default: detect from the running machine.")
 parser.add_argument("--python-only", help="Only build the Python (pybind) configuration", action="store_true")
 parser.add_argument("--wheel-dir", help="Extract pre-built wheel from pybind package to this directory")
 parser.add_argument("--skip-dependency-libs", action="store_true",
@@ -47,6 +59,17 @@ if __name__ == "__main__":
         test_shards = max((os.cpu_count() or 4) // 2, 2)
     else:
         test_shards = int(args.test_shards)
+    # The msvc 192 matrix resolves the legacy third-party stack (the recipe
+    # forks boost/zlib on compiler.version), and the boost defaults the
+    # packager would otherwise inject name conan-center boost 1.86 options
+    # that boost/1.74.0.3 does not declare -- Conan fails a build outright
+    # when a profile sets an option no recipe in the graph defines. The
+    # packager deliberately does not imply this from the platform key, so the
+    # caller has to; deriving it from --platform here rather than exposing a
+    # second flag means a pipeline cannot get one right and the other wrong.
+    apply_boost_defaults = args.platform != VS2019_PLATFORM
+    if not apply_boost_defaults:
+        print(f"Building the {args.platform} matrix: boost defaults not applied.")
     builder = packager.XmsConanPackager(
         conanfile.LIBRARY_NAME,
         conanfile.__file__,
@@ -55,8 +78,9 @@ if __name__ == "__main__":
         test_shards=test_shards,
         profile_options=conanfile.CONAN_PROFILE_OPTIONS,
         matrix=conanfile.CONAN_MATRIX,
+        apply_boost_defaults=apply_boost_defaults,
     )
-    builder.generate_configurations()
+    builder.generate_configurations(system_platform=args.platform)
     if BUILD_FILTER and not args.ignore_build_filter:
         print(f"Applying build.toml [filter]: {BUILD_FILTER}")
         builder.filter_configurations(BUILD_FILTER)
@@ -113,6 +137,18 @@ if __name__ == "__main__":
             print("error: --upload needs a concrete version. Pass --version, or set "
                   "XMS_VERSION (every generated CI leg does).")
             exit(1)
-        if builder.upload(version=args.version) != 0:
+        # msvc 192 binaries belong on their own remote, and `conan upload`
+        # matches by reference only -- so without the query an --upload from a
+        # machine that has also built msvc 194 would publish those to the
+        # VS2019 remote and exit 0. Both halves are derived from --platform for
+        # the same reason apply_boost_defaults is: one flag, no way to set the
+        # matrix and the destination to disagree.
+        upload_kwargs = {}
+        if args.platform == VS2019_PLATFORM:
+            upload_kwargs = {
+                "remote": VS2019_REMOTE,
+                "package_query": f"compiler.version={VS2019_MSVC_VERSION}",
+            }
+        if builder.upload(version=args.version, **upload_kwargs) != 0:
             print("errors when uploading... exiting...")
             exit(1)

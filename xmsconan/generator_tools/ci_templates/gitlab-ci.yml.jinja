@@ -451,6 +451,79 @@ Conan Build:
   tags:
     - WinVM
 
+<% if ci_windows_vs2019 %>
+<# The second Windows toolchain: msvc << vs2019_msvc_version >> (Visual Studio
+   2019), from [ci].windows_vs2019. It was built by hand on a developer
+   workstation for as long as no CI runner had VS2019 on it; GLR-UV does, so
+   the same matrix is produced here instead -- reproducibly, on every pipeline,
+   from the same `build.py` the msvc 194 job runs.
+
+   Four things separate it from that job, and all four are load-bearing:
+
+   * `--platform << vs2019_platform_key >>` selects the msvc 192 matrix. The
+     recipe forks its third-party stack on compiler.version (boost 1.74.0.3 +
+     zlib 1.2.11 rather than 1.86.0 + 1.3.1), and `build.py` drops the boost
+     option defaults for this platform because the legacy recipe does not
+     declare them -- Conan fails a build outright when a profile sets an
+     option no recipe in the graph defines.
+   * The `<< vs2019_remote_name >>` remote is added, and appended rather than
+     inserted first: it must not become the first stop for every `conan
+     install` on a shared runner. It is where the legacy dependencies are
+     resolved from as well as where the results go.
+   * Every deploy step carries `--package-query compiler.version=<<
+     vs2019_msvc_version >>`. The Conan cache on a runner is per machine, not
+     per job, so without it this job's `conan cache save` would tarball the
+     msvc 194 job's binaries and publish them to the VS2019 remote, exit 0,
+     and leave two toolchains mixed on a remote whose whole purpose is to keep
+     them apart.
+   * No `--wheel-dir`. A wheel's tags (`cp310-cp310-win_amd64`) say nothing
+     about which MSVC built it, so an msvc 192 wheel and an msvc 194 wheel are
+     the same devpi filename -- publishing both would have them overwrite each
+     other by upload order. The VS2019 wheels the desktop products consume are
+     still produced deliberately, by hand (USAGE section 16.8).
+
+   `--build-missing` for the same reason the workstation driver passes it: the
+   legacy dependency graph is not fully prebuilt for msvc 192. #>
+"Conan Build - Windows VS2019":
+<% if ci_split_tests %>
+  stage: Build
+<% else %>
+  stage: Test
+<% endif %>
+  image: GLR-UV
+  parallel:
+    matrix:
+<% for v in ci_python_versions %>
+      - PYTHON_TARGET_VERSION: '<< v >>'
+<% endfor %>
+  artifacts:
+    expire_in: '1d'
+    when: always
+    paths:
+<% if ci_deploy %>
+      - .export
+<% endif %>
+      - test_artifacts/
+  script:
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/Scripts/activate
+    - python --version
+    - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_conan_setup
+    - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
+    - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
+    - python build.py --version ${PACKAGE_VERSION} --platform << vs2019_platform_key >> --build-missing --artifacts-dir test_artifacts
+<% if ci_deploy %>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --package-query compiler.version=<< vs2019_msvc_version >>
+<% endif %>
+  tags:
+    - WinVM
+
+<% endif %>
 <% endif %>
 Lint:
   stage: Test
@@ -662,6 +735,48 @@ Repair Wheel:
     - tags
   tags:
     - WinVM
+
+<% if ci_windows_vs2019 %>
+<# Publishes what "Conan Build - Windows VS2019" exported, to
+   << vs2019_remote_name >> rather than to the CI remote. The package query is
+   repeated here rather than trusted from the save step: this is the command
+   that actually reaches a shared remote, and a tarball restored into a cache
+   that already holds msvc 194 binaries of the same reference would otherwise
+   publish those too.
+
+   No wheel deploy counterpart, and no `conan_packages/` snapshot -- see the
+   header on the build job for the wheel reasoning; the snapshot exists to
+   debug the msvc 194 pair and a second copy of it would only double the
+   artifact. #>
+"Conan Deploy - Windows VS2019":
+  stage: Deploy
+  image: GLR-UV
+  parallel:
+    matrix:
+<% for v in ci_python_versions %>
+      - PYTHON_TARGET_VERSION: '<< v >>'
+<% endfor %>
+  # The whole build job, not one parallel instance, for the reason given on
+  # "Conan Deploy - Windows" above: GitLab does not expand variables inside
+  # needs:parallel:matrix.
+  needs:
+    - job: "Conan Build - Windows VS2019"
+      artifacts: true
+  script:
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/Scripts/activate
+    - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_conan_setup
+    - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload --remote << vs2019_remote_name >> --package-query compiler.version=<< vs2019_msvc_version >>
+  only:
+    - tags
+  tags:
+    - WinVM
+<% endif %>
 <% endif %>
 <% endif %>
 

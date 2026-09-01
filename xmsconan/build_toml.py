@@ -65,6 +65,20 @@ class CiTable:
 
     windows: Optional[bool] = None
     linux: Optional[bool] = None
+    #: Also build the ``windows_vs2019`` (msvc 192) matrix in GitLab CI and
+    #: publish it to the ``aquaveo-vs2019`` remote.
+    #:
+    #: Opt-in, and a plain ``bool`` rather than one of the tri-state fields
+    #: above: unset means "no", not "decide later". It roughly doubles the
+    #: Windows half of a pipeline, and only the libraries the VS2019-era
+    #: desktop products consume need msvc 192 binaries at all -- so a
+    #: repository that has never asked for them should not start paying for
+    #: them because its runner acquired a second toolchain.
+    #:
+    #: Requires ``windows`` to be enabled: it fans out over the same
+    #: ``python_versions`` and is emitted beside the msvc 194 jobs, not
+    #: instead of them. See ``docs/USAGE.md`` §10.2.
+    windows_vs2019: bool = False
     linux_arm: bool = False
     deploy: bool = True
     coverage: bool = False
@@ -196,6 +210,7 @@ _XMS_DEPENDENCY_KEYS = frozenset(f.name for f in fields(XmsDependency))
 #: that the two name the same keys.
 _CI_KEY_TYPES = {
     "windows": bool,
+    "windows_vs2019": bool,
     "linux": bool,
     "linux_arm": bool,
     "deploy": bool,

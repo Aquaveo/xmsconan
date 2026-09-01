@@ -5,7 +5,9 @@ from unittest.mock import call, patch
 
 import pytest
 
-from xmsconan.ci_tools.conan_setup import conan_setup, DEFAULT_REMOTE_URL, main
+from xmsconan.ci_tools.conan_setup import (
+    conan_setup, DEFAULT_REMOTE_NAME, DEFAULT_REMOTE_URL, main,
+)
 from xmsconan.ci_tools.credentials import CredentialsError
 from .utils import patch_env
 
@@ -246,6 +248,7 @@ def test_main_passes_flags_through(mock_setup, monkeypatch, tmp_path):
         "xmsconan_conan_setup", "--remote-url", "https://example.com/conan",
         "--login", "--remove-conancenter", "--username", "u",
         "--password-file", str(password_file),
+        "--remote-name", "aquaveo-vs2019", "--append",
     ])
 
     main()
@@ -256,7 +259,28 @@ def test_main_passes_flags_through(mock_setup, monkeypatch, tmp_path):
         remove_conancenter=True,
         username="u",
         password="p",
+        remote_name="aquaveo-vs2019",
+        # --append maps to index=None; the default is index=0, i.e. first.
+        index=None,
     )
+
+
+@patch("xmsconan.ci_tools.conan_setup.conan_setup")
+def test_main_adds_the_remote_first_by_default(mock_setup, monkeypatch):
+    """Without --append the remote goes to index 0, as the CI remote always has.
+
+    The pair matters more than either value: --append exists so a
+    special-purpose remote does not become the first stop for every conan
+    install on a shared machine, and that is only true if omitting it keeps the
+    old behavior.
+    """
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_setup"])
+
+    main()
+
+    _, kwargs = mock_setup.call_args
+    assert kwargs["index"] == 0
+    assert kwargs["remote_name"] == DEFAULT_REMOTE_NAME
 
 
 @patch("xmsconan.ci_tools.conan_setup.conan_setup")

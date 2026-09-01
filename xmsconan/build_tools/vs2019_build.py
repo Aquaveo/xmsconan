@@ -100,7 +100,8 @@ from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
 from xmsconan.constants import (
-    MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
+    MSVC_VS2019_VERSION, version_sort_key, VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME,
+    VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
 
@@ -108,8 +109,11 @@ from xmsconan.package_tools.packager import XmsConanPackager
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
 DEFAULT_REMOTE_USERNAME = "aquaveo"
 
-#: Key into :data:`xmsconan.package_tools.packager.configurations`.
-PLATFORM_KEY = "windows_vs2019"
+#: Key into :data:`xmsconan.package_tools.packager.configurations`.  Aliases
+#: :data:`~xmsconan.constants.VS2019_PLATFORM_KEY`, which the GitLab generator
+#: also reads, so the workstation build and the generated pipeline cannot end
+#: up naming different matrices.
+PLATFORM_KEY = VS2019_PLATFORM_KEY
 
 #: Conan client requirement, matching the pin used by the CI workflows.
 CONAN_PIN = "~=2.31.0"

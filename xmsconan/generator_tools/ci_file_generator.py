@@ -11,7 +11,14 @@ from jinja2 import Environment, StrictUndefined
 # 3. Aquaveo modules
 from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, read_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
-from xmsconan.constants import SUPPORTED_PYTHON_VERSIONS, version_sort_key
+from xmsconan.constants import (
+    MSVC_VS2019_VERSION,
+    SUPPORTED_PYTHON_VERSIONS,
+    version_sort_key,
+    VS2019_PLATFORM_KEY,
+    VS2019_REMOTE_NAME,
+    VS2019_REMOTE_URL,
+)
 from xmsconan.generator_tools.build_filter import (
     ci_build_jobs,
     ci_filter_effects,
@@ -348,6 +355,18 @@ def generate_ci(
                 "Coverage builds with --coverage under gcc; the generated "
                 "CMakeLists rejects MSVC when XMS_COVERAGE is set."
             )
+        # The msvc 192 jobs are emitted beside the msvc 194 ones and reuse
+        # their shape -- the same runner, the same ABI fan-out, the same
+        # export/restore split. With Windows switched off there is nothing to
+        # emit them beside, and silently honoring the opt-in would resurrect
+        # the Windows half of a pipeline the repository asked not to have.
+        if config.ci.windows_vs2019 and not config.ci.windows_enabled:
+            raise ValueError(
+                "build.toml sets [ci].windows_vs2019 = true with [ci].windows = "
+                "false. The VS2019 (msvc 192) jobs are an addition to the Windows "
+                "jobs, not a replacement for them. Enable [ci].windows, or drop "
+                "windows_vs2019."
+            )
     if ci_type == "github":
         # Every wheel step in the GitHub workflow is gated on
         # `matrix.build_type == 'Release'` -- including the build step's
@@ -380,6 +399,17 @@ def generate_ci(
                 " and ".join(f"[ci].{key}" for key in ignored),
                 "these are" if len(ignored) > 1 else "this is",
                 "them" if len(ignored) > 1 else "it",
+            )
+        # Same reasoning, separate check: windows_vs2019 is a plain bool, so
+        # "explicitly set" and "true" are the same thing and it cannot join the
+        # tri-state list above. Worth its own warning rather than silence --
+        # a repository that opted into msvc 192 and got no msvc 192 job would
+        # otherwise find out from a consumer that cannot resolve the package.
+        if config.ci.windows_vs2019:
+            LOGGER.warning(
+                "build.toml sets [ci].windows_vs2019, but the VS2019 (msvc 192) "
+                "jobs are GitLab-only; the generated GitHub workflow emits none "
+                "and publishes nothing to the aquaveo-vs2019 remote."
             )
 
     ci_python_versions = list(config.ci.python_versions)
@@ -458,6 +488,16 @@ def generate_ci(
         "version": version,
         "python_namespaced_dir": config.python_namespaced_dir,
         "ci_windows": config.ci.windows_enabled,
+        # Opt-in second Windows toolchain. Not derived from windows_enabled:
+        # the msvc 192 matrix resolves a different third-party stack (the
+        # recipe forks boost/zlib on compiler.version) and publishes to a
+        # different remote, so it is a deliberate per-repository choice rather
+        # than something every Windows repository should inherit.
+        "ci_windows_vs2019": config.ci.windows_vs2019,
+        "vs2019_remote_name": VS2019_REMOTE_NAME,
+        "vs2019_remote_url": VS2019_REMOTE_URL,
+        "vs2019_platform_key": VS2019_PLATFORM_KEY,
+        "vs2019_msvc_version": MSVC_VS2019_VERSION,
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
         # installable, so there is no equivalent switch for Linux or macOS. The
         # default follows ci_type -- see repairs_windows_wheel.
