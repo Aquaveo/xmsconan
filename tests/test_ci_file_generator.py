@@ -307,14 +307,116 @@ def test_gitlab_python_versions_opt_in_only_fans_out_windows(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    # Only Windows fans out; PY_TAG variable is windows-only.
-    assert "PY_TAG: 'py310'" in content
-    assert "PY_TAG: 'py313'" in content
+    # Only Windows fans out. Read that off the Windows jobs' parallel matrix
+    # rather than off a substring of the file: every Linux job also declares a
+    # PYTHON_TARGET_VERSION, under `variables`, so a bare `"3.10" in content`
+    # would keep passing on a Windows job that had stopped fanning out at all.
+    parsed = yaml.safe_load(content)
+    for name in ("Conan Build - Windows", "Conan Deploy - Windows"):
+        matrix = parsed[name]["parallel"]["matrix"]
+        assert [entry["PYTHON_TARGET_VERSION"] for entry in matrix] == ["3.10", "3.13"], name
     # Linux jobs are single-version and use a static image.
     assert "conan-gcc13-py3.13" in content
     assert "cp313-cp313" in content
     # Linux jobs are NOT fanned out — so CP_TAG (only the wheel-repair var) is gone.
     assert "CP_TAG" not in content
+
+
+def test_gitlab_windows_jobs_run_on_the_uv_runner(tmp_path):
+    """Both Windows jobs select GLR-UV and still route to the WinVM fleet.
+
+    ``image:`` picks the VM template and ``tags:`` picks the fleet -- the two
+    are not interchangeable, and collapsing three per-ABI images into one could
+    plausibly have dropped either.
+    """
+    toml_file = write_gitlab_toml(tmp_path)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+
+    for name in ("Conan Build - Windows", "Conan Deploy - Windows"):
+        assert parsed[name]["image"] == "GLR-UV", name
+        assert parsed[name]["tags"] == ["WinVM"], name
+    # The retired per-ABI images, and the matrix variable whose only job was to
+    # spell one, must not survive anywhere in the file.
+    assert "GLR-py" not in content
+    assert "PY_TAG" not in content
+
+
+def test_gitlab_windows_jobs_build_a_uv_venv_of_the_matrix_abi(tmp_path):
+    """Each Windows job creates and activates a venv on its own PYTHON_TARGET_VERSION.
+
+    This is what let three per-ABI runner images collapse into one. The recipe
+    hands CMake ``Python3_EXECUTABLE = sys.executable`` and the generated
+    CMakeLists.txt does ``find_package(Python3 ... EXACT REQUIRED)``, so the
+    interpreter running conan *is* the ABI being built. GLR-py310 / GLR-py313
+    supplied that as the machine's own ``python``; on GLR-UV the job has to
+    establish it, and before anything else reaches for an interpreter.
+    """
+    toml_file = write_gitlab_toml(tmp_path, python_versions=["3.10", "3.13"])
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    for name in ("Conan Build - Windows", "Conan Deploy - Windows"):
+        script = parsed[name]["script"]
+        venv = script.index("uv venv --python ${PYTHON_TARGET_VERSION} .venv")
+        activate = script.index("source .venv/Scripts/activate")
+        assert venv < activate, name
+        # Nothing may reach for an interpreter, or for a console script
+        # installed beside one, before the venv is on PATH.
+        for step in script[:activate]:
+            assert not step.startswith(("python ", "python-m", "pip ", "xmsconan_")), (
+                f"{name}: {step!r} runs before the venv is activated"
+            )
+        # uv is proven present before a package install depends on it, so a
+        # runner without uv fails on a line that says so.
+        assert script.index("uv --version") < venv, name
+
+
+def test_gitlab_windows_jobs_install_with_uv_not_pip(tmp_path):
+    """The Windows jobs install through ``uv pip``; bare ``pip`` is gone from them.
+
+    Asserted per job rather than over the whole file: the Linux jobs keep plain
+    pip, because they run in containers that ship one and have no uv.
+    """
+    toml_file = write_gitlab_toml(tmp_path)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    for name in ("Conan Build - Windows", "Conan Deploy - Windows"):
+        installs = [step for step in parsed[name]["script"] if "install" in step]
+        assert installs, name
+        for step in installs:
+            assert step.startswith("uv pip install "), f"{name}: {step!r}"
+            # `-i` is pip's spelling for the index; uv takes the long option.
+            assert " -i http" not in step, f"{name}: {step!r}"
+        assert any('"conan~=2.31.0"' in step for step in installs), name
+        assert any("xmsconan>=" in step for step in installs), name
+
+
+def test_gitlab_windows_conan_cache_snapshot_follows_home(tmp_path):
+    """The cache snapshot reads ${HOME}, not the retired runner's admin path.
+
+    The conan home is ``~/.conan2``; the hard-coded ``/c/Users/admin`` was an
+    assumption about the GLR-py* service account, and under any other one the
+    job shipped an empty artifact and stayed green.
+    """
+    toml_file = write_gitlab_toml(tmp_path)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+
+    copies = [
+        step for step in parsed["Conan Deploy - Windows"]["script"]
+        if step.startswith("cp -r")
+    ]
+    assert len(copies) == 1
+    assert "${HOME}/.conan2/p" in copies[0]
+    assert "/c/Users/admin" not in content
 
 
 def test_github_linux_no_setup_python(ci_toml, tmp_path):
