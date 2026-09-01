@@ -387,7 +387,9 @@ def test_gitlab_windows_jobs_install_with_uv_not_pip(tmp_path):
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
     for name in ("Conan Build - Windows", "Conan Deploy - Windows"):
-        installs = [step for step in parsed[name]["script"] if "install" in step]
+        # "pip install", not "install": a future `conan install` step in these
+        # jobs would otherwise be swept in and asserted to start with "uv pip".
+        installs = [step for step in parsed[name]["script"] if "pip install" in step]
         assert installs, name
         for step in installs:
             assert step.startswith("uv pip install "), f"{name}: {step!r}"
@@ -1611,162 +1613,249 @@ def _gitlab_jobs(tmp_path, **ci_flags):
     return yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
 
-def test_gitlab_vs2019_jobs_are_opt_in(tmp_path):
-    """No [ci].windows_vs2019 means no msvc 192 jobs.
+class TestVs2019Ci:
+    """The msvc 192 opt-in: the jobs it adds, and the toolchain separation it needs.
 
-    The matrix roughly doubles the Windows half of a pipeline and only the
-    libraries the VS2019-era desktop products consume need it, so a repository
-    that has never asked for msvc 192 must not start building it because its
-    runner acquired a second toolchain.
+    Grouped because they share one premise -- two Windows toolchains building
+    the same reference on one runner fleet -- and because the msvc 194
+    assertions here only make sense next to the msvc 192 ones they mirror.
     """
-    pipeline = _gitlab_jobs(tmp_path)
 
-    assert "Conan Build - Windows VS2019" not in pipeline
-    assert "Conan Deploy - Windows VS2019" not in pipeline
-    # The msvc 194 jobs are untouched by the opt-in being absent.
-    assert "Conan Build - Windows" in pipeline
+    def test_gitlab_windows_publishes_are_restricted_to_their_own_toolchain(self, tmp_path):
+        """Both Windows toolchains restrict every publish to their own compiler.version.
 
+        The hazard is symmetric and the mitigation has to be. A runner's Conan cache
+        is per machine, not per job, and `conan cache save <ref>:*` / `conan upload
+        <ref>` match by *reference* -- so with both toolchains building the same
+        reference on the same fleet at the same time, an unqueried step on either
+        side ships the other's binaries. The msvc 192 direction pollutes a legacy
+        remote; the msvc 194 direction pollutes the production one.
 
-def test_gitlab_vs2019_build_selects_the_msvc_192_matrix(tmp_path):
-    """The build job passes --platform windows_vs2019 and nothing else does.
+        Asserted with the opt-in *off* as well, because the msvc 194 query has to be
+        unconditional: a guard that appears only in the configuration that needs it
+        is one refactor away from being dropped from the one that does.
+        """
+        for vs2019 in (False, True):
+            case_dir = tmp_path / f"vs2019-{vs2019}"
+            case_dir.mkdir()
+            pipeline = _gitlab_jobs(case_dir, windows_vs2019=vs2019)
+            expected = {
+                "Conan Build - Windows": "compiler.version=194",
+                "Conan Deploy - Windows": "compiler.version=194",
+                "Conan Build - Windows VS2019": "compiler.version=192",
+                "Conan Deploy - Windows VS2019": "compiler.version=192",
+            }
+            for name, query in expected.items():
+                if name not in pipeline:
+                    assert not vs2019 and "VS2019" in name, name
+                    continue
+                deploys = [
+                    step for step in pipeline[name]["script"]
+                    if step.startswith("xmsconan_conan_deploy")
+                ]
+                assert deploys, name
+                for step in deploys:
+                    assert f"--package-query {query}" in step, (name, step)
 
-    That flag is the whole difference in what gets compiled: it selects the
-    msvc 192 platform key, and `build.py` reads it to drop the boost option
-    defaults the legacy boost/1.74.0.3 recipe does not declare. The msvc 194
-    job must not acquire it.
-    """
-    pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
+    def test_windows_package_query_tracks_the_packager_matrix(self, tmp_path):
+        """The rendered compiler.version comes from the matrix it is meant to select.
 
-    builds = [step for step in pipeline["Conan Build - Windows VS2019"]["script"]
-              if step.startswith("python build.py")]
-    assert len(builds) == 1
-    assert "--platform windows_vs2019" in builds[0]
-    # The legacy dependency graph is not fully prebuilt for msvc 192.
-    assert "--build-missing" in builds[0]
+        A literal in the template would not fail loudly if the matrix moved on: a
+        `conan upload -p compiler.version=194` after a bump to 195 matches nothing,
+        and the job goes green having published no binaries at all.
+        """
+        from xmsconan.package_tools.packager import configurations
 
-    other = [step for step in pipeline["Conan Build - Windows"]["script"]
-             if step.startswith("python build.py")]
-    assert all("--platform" not in step for step in other)
+        pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
+        for name, platform in (
+            ("Conan Deploy - Windows", "windows"),
+            ("Conan Deploy - Windows VS2019", "windows_vs2019"),
+        ):
+            version, = configurations[platform]["compiler.version"]
+            step, = [
+                s for s in pipeline[name]["script"] if s.startswith("xmsconan_conan_deploy")
+            ]
+            assert f"--package-query compiler.version={version}" in step, (name, step)
 
+    def test_gitlab_vs2019_jobs_are_opt_in(self, tmp_path):
+        """No [ci].windows_vs2019 means no msvc 192 jobs.
 
-def test_gitlab_vs2019_build_publishes_no_wheel(tmp_path):
-    """No --wheel-dir, and no wheel artifact, on either msvc 192 job.
+        The matrix roughly doubles the Windows half of a pipeline and only the
+        libraries the VS2019-era desktop products consume need it, so a repository
+        that has never asked for msvc 192 must not start building it because its
+        runner acquired a second toolchain.
+        """
+        pipeline = _gitlab_jobs(tmp_path)
 
-    A wheel's tags (cp310-cp310-win_amd64) say nothing about which MSVC built
-    it, so an msvc 192 wheel and an msvc 194 wheel are the same devpi filename
-    -- publishing both would have them overwrite each other by upload order.
-    """
-    pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
+        assert "Conan Build - Windows VS2019" not in pipeline
+        assert "Conan Deploy - Windows VS2019" not in pipeline
+        # The msvc 194 jobs are untouched by the opt-in being absent.
+        assert "Conan Build - Windows" in pipeline
 
-    job = pipeline["Conan Build - Windows VS2019"]
-    assert all("--wheel-dir" not in step for step in job["script"])
-    assert all("wheel" not in path for path in job["artifacts"]["paths"])
-    # And no deploy job was added for a wheel that is never staged.
-    assert "Wheel Deploy - Windows VS2019" not in pipeline
+    def test_gitlab_vs2019_build_selects_the_msvc_192_matrix(self, tmp_path):
+        """The build job passes --platform windows_vs2019 and nothing else does.
 
+        That flag is the whole difference in what gets compiled: it selects the
+        msvc 192 platform key, and `build.py` reads it to drop the boost option
+        defaults the legacy boost/1.74.0.3 recipe does not declare. The msvc 194
+        job must not acquire it.
+        """
+        pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
-def test_gitlab_vs2019_jobs_keep_msvc_192_off_the_ci_remote(tmp_path):
-    """Every msvc 192 deploy step names the VS2019 remote and the 192 query.
+        builds = [step for step in pipeline["Conan Build - Windows VS2019"]["script"]
+                  if step.startswith("python build.py")]
+        assert len(builds) == 1
+        assert "--platform windows_vs2019" in builds[0]
+        # The legacy dependency graph is not fully prebuilt for msvc 192.
+        assert "--build-missing" in builds[0]
 
-    Both halves, on both jobs. The Conan cache on a runner is per machine, not
-    per job, so a save or an upload matching by reference alone would carry the
-    msvc 194 job's binaries onto a remote whose only purpose is to keep the two
-    toolchains apart -- and exit 0 having done it.
-    """
-    pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
+        other = [step for step in pipeline["Conan Build - Windows"]["script"]
+                 if step.startswith("python build.py")]
+        assert all("--platform" not in step for step in other)
 
-    deploys = [
-        step
-        for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019")
-        for step in pipeline[name]["script"]
-        if step.startswith("xmsconan_conan_deploy")
-    ]
-    assert len(deploys) == 2
-    for step in deploys:
-        assert "--package-query compiler.version=192" in step
-    upload = [step for step in deploys if "--upload" in step]
-    assert len(upload) == 1
-    assert "--remote aquaveo-vs2019" in upload[0]
+    def test_gitlab_vs2019_build_publishes_no_wheel(self, tmp_path):
+        """No --wheel-dir, and no wheel artifact, on either msvc 192 job.
 
-    # The VS2019 remote is added, and appended rather than inserted first: on a
-    # shared runner it must not become the first stop for every conan install.
-    for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019"):
-        setups = [step for step in pipeline[name]["script"]
-                  if step.startswith("xmsconan_conan_setup")]
-        assert any(
-            "--remote-name aquaveo-vs2019" in step and "--append" in step
-            for step in setups
-        ), name
-        # The CI remote is still configured: the recipe's own dependencies
-        # resolve from it even on the legacy toolchain.
-        assert "xmsconan_conan_setup" in setups
+        A wheel's tags (cp310-cp310-win_amd64) say nothing about which MSVC built
+        it, so an msvc 192 wheel and an msvc 194 wheel are the same devpi filename
+        -- publishing both would have them overwrite each other by upload order.
+        """
+        pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
+        job = pipeline["Conan Build - Windows VS2019"]
+        assert all("--wheel-dir" not in step for step in job["script"])
+        assert all("wheel" not in path for path in job["artifacts"]["paths"])
+        # And no deploy job was added for a wheel that is never staged.
+        assert "Wheel Deploy - Windows VS2019" not in pipeline
 
-def test_gitlab_vs2019_jobs_match_the_msvc_194_shape(tmp_path):
-    """Same runner, same ABI fan-out, same tag-gated deploy as the msvc 194 pair."""
-    pipeline = _gitlab_jobs(
-        tmp_path, windows_vs2019=True, python_versions=["3.10", "3.13"],
-    )
+    def test_gitlab_vs2019_jobs_keep_msvc_192_off_the_ci_remote(self, tmp_path):
+        """Every msvc 192 deploy step names the VS2019 remote and the 192 query.
 
-    for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019"):
-        job = pipeline[name]
-        assert job["image"] == "GLR-UV", name
-        assert job["tags"] == ["WinVM"], name
-        matrix = job["parallel"]["matrix"]
-        assert [entry["PYTHON_TARGET_VERSION"] for entry in matrix] == ["3.10", "3.13"], name
-        assert job["script"].index("uv venv --python ${PYTHON_TARGET_VERSION} .venv") < \
-            job["script"].index("source .venv/Scripts/activate"), name
+        Both halves, on both jobs. The Conan cache on a runner is per machine, not
+        per job, so a save or an upload matching by reference alone would carry the
+        msvc 194 job's binaries onto a remote whose only purpose is to keep the two
+        toolchains apart -- and exit 0 having done it.
+        """
+        pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
-    assert pipeline["Conan Build - Windows VS2019"]["stage"] == \
-        pipeline["Conan Build - Windows"]["stage"]
-    deploy = pipeline["Conan Deploy - Windows VS2019"]
-    assert deploy["stage"] == "Deploy"
-    assert deploy["only"] == ["tags"]
-    assert deploy["needs"] == [{"job": "Conan Build - Windows VS2019", "artifacts": True}]
+        deploys = [
+            step
+            for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019")
+            for step in pipeline[name]["script"]
+            if step.startswith("xmsconan_conan_deploy")
+        ]
+        assert len(deploys) == 2
+        for step in deploys:
+            assert "--package-query compiler.version=192" in step
+        upload = [step for step in deploys if "--upload" in step]
+        assert len(upload) == 1
+        assert "--remote aquaveo-vs2019" in upload[0]
 
+        # The VS2019 remote is added, and appended rather than inserted first: on a
+        # shared runner it must not become the first stop for every conan install.
+        for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019"):
+            setups = [step for step in pipeline[name]["script"]
+                      if step.startswith("xmsconan_conan_setup")]
+            assert any(
+                "--remote-name aquaveo-vs2019" in step and "--append" in step
+                for step in setups
+            ), name
+            # The CI remote is still configured, by a call that names no remote:
+            # the recipe's own dependencies resolve from it even on the legacy
+            # toolchain. Asserted as "an entry with no --remote-name" rather than
+            # as an exact string, so the bare call gaining an unrelated flag does
+            # not read as the CI remote having been dropped.
+            assert any("--remote-name" not in step for step in setups), name
 
-def test_gitlab_vs2019_without_deploy_exports_nothing(tmp_path):
-    """[ci].deploy = false leaves the msvc 192 build with no export and no deploy job.
+    def test_gitlab_vs2019_save_and_restore_spell_the_same_tarball(self, tmp_path):
+        """The VS2019 build's --save name and the deploy's --restore name agree.
 
-    `artifacts: paths:` with nothing under it is not a harmless no-op -- GitLab
-    parses the key as null and rejects the file -- so the build job has to keep
-    a path of its own when the export goes away.
-    """
-    pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True, deploy=False)
+        The same pairing the Linux jobs are held to, and for the same reason: the
+        deploy restores by name, so a build that saved one name while the deploy
+        asked for another fails only on a tag, in the job that publishes. The msvc
+        192 tarball carries an extra `-vs2019-` segment to keep it distinct from the
+        msvc 194 one in the same artifact space, which is exactly the kind of
+        detail one end can acquire without the other.
+        """
+        pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
-    job = pipeline["Conan Build - Windows VS2019"]
-    assert job["artifacts"]["paths"] == ["test_artifacts/"]
-    assert all(not step.startswith("xmsconan_conan_deploy") for step in job["script"])
-    assert "Conan Deploy - Windows VS2019" not in pipeline
+        def tarball(job_name, flag):
+            steps = [
+                step for step in pipeline[job_name]["script"]
+                if step.startswith("xmsconan_conan_deploy") and flag in step
+            ]
+            assert len(steps) == 1, (job_name, steps)
+            return steps[0].split(flag, 1)[1].split()[0]
 
+        saved = tarball("Conan Build - Windows VS2019", "--save ")
+        restored = tarball("Conan Deploy - Windows VS2019", "--restore ")
+        assert saved == restored, (saved, restored)
+        # And distinct from the msvc 194 pair's, which shares the artifact space.
+        assert "-vs2019-" in saved
+        assert saved != tarball("Conan Build - Windows", "--save ")
 
-def test_gitlab_vs2019_requires_windows(tmp_path):
-    """windows_vs2019 with [ci].windows = false is rejected, not silently honored.
+    def test_gitlab_vs2019_jobs_match_the_msvc_194_shape(self, tmp_path):
+        """Same runner, same ABI fan-out, same tag-gated deploy as the msvc 194 pair."""
+        pipeline = _gitlab_jobs(
+            tmp_path, windows_vs2019=True, python_versions=["3.10", "3.13"],
+        )
 
-    The msvc 192 jobs are an addition to the Windows jobs; emitting them under
-    [ci].windows = false would resurrect the Windows half of a pipeline the
-    repository asked not to have.
-    """
-    toml_file = write_gitlab_toml(tmp_path, windows_vs2019=True, windows=False)
+        for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019"):
+            job = pipeline[name]
+            assert job["image"] == "GLR-UV", name
+            assert job["tags"] == ["WinVM"], name
+            matrix = job["parallel"]["matrix"]
+            assert [entry["PYTHON_TARGET_VERSION"] for entry in matrix] == ["3.10", "3.13"], name
+            assert job["script"].index("uv venv --python ${PYTHON_TARGET_VERSION} .venv") < \
+                job["script"].index("source .venv/Scripts/activate"), name
 
-    with pytest.raises(ValueError, match=r"windows_vs2019 = true with \[ci\].windows"):
-        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+        assert pipeline["Conan Build - Windows VS2019"]["stage"] == \
+            pipeline["Conan Build - Windows"]["stage"]
+        deploy = pipeline["Conan Deploy - Windows VS2019"]
+        assert deploy["stage"] == "Deploy"
+        assert deploy["only"] == ["tags"]
+        assert deploy["needs"] == [{"job": "Conan Build - Windows VS2019", "artifacts": True}]
 
+    def test_gitlab_vs2019_without_deploy_exports_nothing(self, tmp_path):
+        """[ci].deploy = false leaves the msvc 192 build with no export and no deploy job.
 
-def test_github_warns_that_vs2019_is_gitlab_only(tmp_path, caplog):
-    """A GitHub project opting into msvc 192 is told it gets nothing.
+        `artifacts: paths:` with nothing under it is not a harmless no-op -- GitLab
+        parses the key as null and rejects the file -- so the build job has to keep
+        a path of its own when the export goes away.
+        """
+        pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True, deploy=False)
 
-    windows_vs2019 is a plain bool, so it cannot join the tri-state flags the
-    neighbouring warning covers -- and silence here would leave a repository
-    believing it publishes msvc 192 until a consumer failed to resolve it.
-    """
-    toml_file = write_github_toml(tmp_path, windows_vs2019=True)
+        job = pipeline["Conan Build - Windows VS2019"]
+        assert job["artifacts"]["paths"] == ["test_artifacts/"]
+        assert all(not step.startswith("xmsconan_conan_deploy") for step in job["script"])
+        assert "Conan Deploy - Windows VS2019" not in pipeline
 
-    with caplog.at_level(logging.WARNING):
-        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+    def test_gitlab_vs2019_requires_windows(self, tmp_path):
+        """windows_vs2019 with [ci].windows = false is rejected, not silently honored.
 
-    assert "windows_vs2019" in caplog.text
-    assert "GitLab-only" in caplog.text
+        The msvc 192 jobs are an addition to the Windows jobs; emitting them under
+        [ci].windows = false would resurrect the Windows half of a pipeline the
+        repository asked not to have.
+        """
+        toml_file = write_gitlab_toml(tmp_path, windows_vs2019=True, windows=False)
+
+        with pytest.raises(ValueError, match=r"windows_vs2019 = true with \[ci\].windows"):
+            generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+    def test_github_warns_that_vs2019_is_gitlab_only(self, tmp_path, caplog):
+        """A GitHub project opting into msvc 192 is told it gets nothing.
+
+        windows_vs2019 is a plain bool, so it cannot join the tri-state flags the
+        neighbouring warning covers -- and silence here would leave a repository
+        believing it publishes msvc 192 until a consumer failed to resolve it.
+        """
+        toml_file = write_github_toml(tmp_path, windows_vs2019=True)
+
+        with caplog.at_level(logging.WARNING):
+            generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+        assert "windows_vs2019" in caplog.text
+        assert "GitLab-only" in caplog.text
 
 
 def test_gitlab_windows_build_stages_a_wheel(tmp_path):

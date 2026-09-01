@@ -26,6 +26,36 @@ from xmsconan.generator_tools.build_filter import (
     empty_ci_jobs,
     load_build_filter,
 )
+from xmsconan.package_tools.packager import configurations as _platform_configurations
+
+
+def _only_msvc_version(platform_key: str) -> str:
+    """Return the single ``compiler.version`` the named Windows matrix pins.
+
+    Read from the packager's own matrix rather than written as a literal in the
+    template. The generated pipeline restricts every Windows publish to this
+    value, so a literal that fell behind a toolchain bump would not fail --
+    ``conan upload -p compiler.version=194`` after a move to 195 matches
+    nothing, and the job would go green having published no binaries at all.
+
+    Args:
+        platform_key: Key into the packager's ``configurations``.
+
+    Returns:
+        The compiler version as a string.
+
+    Raises:
+        ValueError: When the matrix pins more or fewer than one version, which
+            would make "the version this job publishes" ambiguous.
+    """
+    versions = _platform_configurations[platform_key]["compiler.version"]
+    if len(versions) != 1:
+        raise ValueError(
+            f"platform {platform_key!r} pins {len(versions)} compiler.version values "
+            f"({', '.join(versions)}); the generated publish steps restrict to exactly "
+            f"one, so this needs a decision rather than a guess."
+        )
+    return versions[0]
 
 
 LOGGER = logging.getLogger(__name__)
@@ -498,6 +528,11 @@ def generate_ci(
         "vs2019_remote_url": VS2019_REMOTE_URL,
         "vs2019_platform_key": VS2019_PLATFORM_KEY,
         "vs2019_msvc_version": MSVC_VS2019_VERSION,
+        # The msvc 194 jobs restrict their publishes too, not just the 192 ones.
+        # A runner's Conan cache is per machine, so the hazard is symmetric: an
+        # unqueried save/upload on this side would carry the VS2019 job's
+        # binaries onto the production `aquaveo` remote.
+        "windows_msvc_version": _only_msvc_version("windows"),
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
         # installable, so there is no equivalent switch for Linux or macOS. The
         # default follows ci_type -- see repairs_windows_wheel.

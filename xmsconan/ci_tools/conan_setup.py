@@ -4,7 +4,8 @@ Usage::
 
     xmsconan_conan_setup [--remote-url URL] [--login] [--remove-conancenter]
     xmsconan_conan_setup --login --username USER --password-file PATH
-    xmsconan_conan_setup --remote-name aquaveo-vs2019         --remote-url https://.../aquaveo-vs2019 --append
+    xmsconan_conan_setup --remote-name aquaveo-vs2019 \
+        --remote-url https://.../aquaveo-vs2019 --append
 """
 import argparse
 import os

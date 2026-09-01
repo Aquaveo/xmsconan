@@ -58,9 +58,11 @@ DEFAULT_REMOTE_NAME = "aquaveo"
 #: ``aquaveo-stable`` repository).
 DEFAULT_REMOTE_URL = f"{ARTIFACTORY_BASE_URL}/aquaveo-stable"
 
-#: Conan remote name for the manually built Visual Studio 2019 (msvc 192)
-#: packages.  Kept separate from :data:`DEFAULT_REMOTE_NAME` so the legacy
-#: binaries never mix with the CI-published ones.
+#: Conan remote name for the Visual Studio 2019 (msvc 192) packages, built
+#: either on a developer workstation or by the GitLab jobs a repository opts
+#: into with ``[ci].windows_vs2019``.  Kept separate from
+#: :data:`DEFAULT_REMOTE_NAME` so the legacy binaries never mix with the
+#: msvc 194 ones.
 VS2019_REMOTE_NAME = "aquaveo-vs2019"
 
 #: Artifactory URL backing :data:`VS2019_REMOTE_NAME`.

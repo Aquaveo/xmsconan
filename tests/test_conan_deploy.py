@@ -96,54 +96,58 @@ def test_save_with_a_package_query_resolves_a_package_list_first(mock_run):
     )
 
     assert mock_run.call_count == 2
+    # Whole commands, not slices with the middle skipped: `-c` sits in that
+    # middle, and it is the flag that keeps the list a list of *cached*
+    # binaries. Deleting it passed a `[:3]` / `[-3:]` pair of assertions.
     list_command = mock_run.call_args_list[0][0][0]
-    assert list_command[:3] == ["conan", "list", "xmscore/7.0.0:*"]
-    assert list_command[-3:] == ["-p", "compiler.version=192", "--format=json"]
+    assert list_command == [
+        "conan", "list", "xmscore/7.0.0:*", "-c",
+        "-p", "compiler.version=192", "--format=json",
+    ]
 
     save_command = mock_run.call_args_list[1][0][0]
-    assert save_command[:3] == ["conan", "cache", "save"]
-    assert "--list" in save_command
-    assert save_command[-2:] == ["--file", "out.tar.gz"]
+    list_file = save_command[save_command.index("--list") + 1]
+    assert save_command == [
+        "conan", "cache", "save", "--list", list_file, "--file", "out.tar.gz",
+    ]
     # The unrestricted pattern must not appear: it is what the query exists to
     # avoid, and passing both is a Conan error anyway.
     assert "xmscore/7.0.0:*" not in save_command
 
 
-@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
-def test_save_with_a_package_query_removes_the_list_file(mock_run):
-    """The resolved package list is a temp file and does not outlive the save.
+def _list_file_recorder(seen, fail=False):
+    """Record the ``--list`` path each `conan cache save` is handed.
 
-    It is written outside the artifact tree and deleted either way, so a
-    pipeline cannot pick up a stale list from a previous job -- which would
-    publish that job's package ids.
+    Shared by the cleanup tests so the two do not drift apart, and so neither
+    has to know the flag's argv position.
     """
-    written = []
-
     def record(command, **kwargs):
-        if command[1] == "cache":
-            written.append(command[command.index("--list") + 1])
-
-    mock_run.side_effect = record
-    conan_deploy(
-        "xmscore", "7.0.0", save="out.tar.gz", package_query="compiler.version=192",
-    )
-
-    assert len(written) == 1
-    assert not os.path.exists(written[0])
-
-
-@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
-def test_save_with_a_package_query_removes_the_list_file_on_failure(mock_run):
-    """A failed `conan cache save` still cleans up, and still raises."""
-    seen = []
-
-    def record(command, **kwargs):
-        if command[1] == "cache":
+        if "--list" in command:
             seen.append(command[command.index("--list") + 1])
-            raise subprocess.CalledProcessError(1, "conan")
+            if fail:
+                raise subprocess.CalledProcessError(1, "conan")
+    return record
 
-    mock_run.side_effect = record
-    with pytest.raises(subprocess.CalledProcessError):
+
+@pytest.mark.parametrize("fail", [False, True], ids=["save-succeeds", "save-fails"])
+@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
+def test_save_with_a_package_query_removes_the_list_file(mock_run, fail):
+    """The resolved package list never outlives the save, on either path.
+
+    It is a temp file rather than an artifact-tree file so a pipeline cannot
+    pick up a stale list from a previous job and publish that job's package
+    ids -- which only holds if the cleanup is unconditional.
+    """
+    seen = []
+    mock_run.side_effect = _list_file_recorder(seen, fail=fail)
+
+    if fail:
+        with pytest.raises(subprocess.CalledProcessError):
+            conan_deploy(
+                "xmscore", "7.0.0", save="out.tar.gz",
+                package_query="compiler.version=192",
+            )
+    else:
         conan_deploy(
             "xmscore", "7.0.0", save="out.tar.gz", package_query="compiler.version=192",
         )
@@ -152,13 +156,19 @@ def test_save_with_a_package_query_removes_the_list_file_on_failure(mock_run):
     assert not os.path.exists(seen[0])
 
 
+@pytest.mark.parametrize(
+    "error", [subprocess.CalledProcessError(1, "conan"), FileNotFoundError("conan")],
+    ids=["conan-exits-nonzero", "conan-not-on-path"],
+)
 @patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
-def test_package_list_removed_when_conan_list_fails(mock_run):
-    """A failed resolve leaves no file behind for a later step to trust.
+def test_package_list_removed_when_conan_list_fails(mock_run, error):
+    """A failed resolve leaves no file behind, however `conan list` failed.
 
     An empty or partial list is worse than none: `conan cache save --list`
     would accept it and produce a tarball missing binaries, and the deploy that
-    follows would publish that as a complete release.
+    follows would publish that as a complete release. The first version caught
+    ``CalledProcessError`` only, so a `conan` missing from PATH -- a
+    ``FileNotFoundError`` out of the same call -- leaked the file.
     """
     tempfiles = []
     real_mkstemp = tempfile.mkstemp
@@ -168,9 +178,9 @@ def test_package_list_removed_when_conan_list_fails(mock_run):
         tempfiles.append(path)
         return handle, path
 
-    mock_run.side_effect = subprocess.CalledProcessError(1, "conan")
+    mock_run.side_effect = error
     with patch("xmsconan.ci_tools.conan_deploy.tempfile.mkstemp", side_effect=spy):
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(type(error)):
             conan_deploy(
                 "xmscore", "7.0.0", save="out.tar.gz",
                 package_query="compiler.version=192",

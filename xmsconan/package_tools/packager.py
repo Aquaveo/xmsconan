@@ -109,10 +109,13 @@ configurations = {
         'compiler.version': ['194'],
         'compiler.runtime': ['dynamic', 'static'],
     },
-    # Visual Studio 2019 (msvc 192). GitHub retired the `windows-2019`
-    # runner image, so this matrix is built manually on a developer
-    # workstation and published to the `aquaveo-vs2019` remote rather than
-    # to `aquaveo` (see XmsConanPackager.upload's `remote` argument).
+    # Visual Studio 2019 (msvc 192). Published to the `aquaveo-vs2019` remote
+    # rather than to `aquaveo` (see XmsConanPackager.upload's `remote`
+    # argument), so the two toolchains never mix. Built either on a developer
+    # workstation (xmsconan.build_tools.vs2019_build) or, where a repository
+    # sets `[ci].windows_vs2019`, by the GitLab jobs that pass
+    # `build.py --platform windows_vs2019`. GitHub cannot build it: it retired
+    # the `windows-2019` runner image.
     # Identical to 'windows' apart from the compiler version.
     'windows_vs2019': {
         'os': ['Windows'],

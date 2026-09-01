@@ -447,7 +447,17 @@ Conan Build:
    on purpose. A library with nothing to vendor opts out. #>
     - xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
 <% endif %>
-    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz
+<# Queried, like the VS2019 job's save below and for the same reason in the
+   mirror direction. A runner's Conan cache is per machine, not per job, and
+   `conan cache save <ref>:*` matches by reference -- so with
+   [ci].windows_vs2019 on, both toolchains build the same reference on the same
+   fleet at the same time, and an unqueried save here would tarball the msvc
+   192 binaries and the deploy below would publish them to the production
+   `aquaveo` remote at exit 0. Emitted unconditionally rather than only under
+   the opt-in: the restriction is a no-op when this is the only toolchain on
+   the machine, and a guard that appears only in the configuration that needs
+   it is one refactor away from being dropped from the one that does. #>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --package-query compiler.version=<< windows_msvc_version >>
   tags:
     - WinVM
 
@@ -514,6 +524,18 @@ Conan Build:
     - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
+<# Two `conan remote add` calls per job, on a fleet that runs several jobs per
+   machine, all writing one ~/.conan2/remotes.json. Conan 2.31 writes it as
+   `remotes.json.tmp` followed by `os.replace` (conan/api/subapi/remotes.py
+   `_save`), so the file cannot be torn: a reader sees one complete document or
+   the other. There is no lock around the read-modify-write, though, so two
+   jobs adding remotes in the same instant can lose one of the two additions.
+
+   Left as is deliberately. The lost update is loud -- the job that lost its
+   remote fails resolving dependencies rather than publishing somewhere wrong
+   -- and the alternative, a per-job CONAN_HOME, gives up the shared package
+   cache these Windows builds depend on. That is a cache-model change with its
+   own blast radius, not a footnote to this one. #>
     - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
     - python build.py --version ${PACKAGE_VERSION} --platform << vs2019_platform_key >> --build-missing --artifacts-dir test_artifacts
@@ -715,7 +737,11 @@ Repair Wheel:
     - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
-    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload
+<# The query is repeated on the upload rather than trusted from the save: this
+   is the command that reaches the shared remote, and a tarball restored into a
+   cache that already holds the other toolchain's binaries of the same
+   reference would otherwise publish those too. #>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload --package-query compiler.version=<< windows_msvc_version >>
     - mkdir -p conan_packages
     <# ${HOME}, not the hard-coded /c/Users/admin the GLR-py* images ran as:
        the conan home is `~/.conan2`, so a runner whose service account is
@@ -770,6 +796,7 @@ Repair Wheel:
     - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
+<# Concurrent remotes.json writers: see the note on the build job above. #>
     - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
     - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload --remote << vs2019_remote_name >> --package-query compiler.version=<< vs2019_msvc_version >>
   only:

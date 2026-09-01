@@ -1,10 +1,21 @@
 r"""Drive the manual Visual Studio 2019 (msvc 192) package build.
 
-GitHub retired the ``windows-2019`` runner image, so the msvc 192 binaries
-can no longer be produced in CI.  They are built by hand, on a developer
-workstation that has Visual Studio 2019 installed, and published to a
-separate Conan remote (``aquaveo-vs2019``) so they never mix with the
-CI-published ``aquaveo`` remote.  Nothing in this module runs in CI.
+The msvc 192 binaries are published to a separate Conan remote
+(``aquaveo-vs2019``) so they never mix with the CI-published ``aquaveo``
+remote.  This module builds them by hand, on a developer workstation that has
+Visual Studio 2019 installed; nothing in it runs in CI.
+
+It is no longer the only route.  The GitLab ``GLR-UV`` runner carries VS2019,
+so a repository that sets ``[ci].windows_vs2019`` gets the same matrix built on
+every pipeline and published to the same remote (see ``docs/USAGE.md``
+section 10.2); that path drives ``build.py --platform windows_vs2019`` rather
+than this module.  GitHub still cannot -- it retired the ``windows-2019``
+image and has no replacement.
+
+This track remains the only way to produce msvc 192 *wheels*, which CI
+deliberately does not publish (a wheel's tags do not record which MSVC built
+it, so it would collide with the msvc 194 wheel on devpi), and the way to
+build a library whose repository has not opted in.
 
 Three subcommands::
 

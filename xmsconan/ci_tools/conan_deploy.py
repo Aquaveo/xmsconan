@@ -9,7 +9,9 @@ Usage::
         --remote aquaveo-vs2019 --package-query compiler.version=192
 """
 import argparse
+import contextlib
 import os
+from pathlib import Path
 import subprocess
 import sys
 import tempfile
@@ -17,24 +19,33 @@ import tempfile
 from xmsconan.constants import DEFAULT_REMOTE_NAME
 
 
+@contextlib.contextmanager
 def _package_list(ref, package_query):
-    """Write a Conan package list of ``ref``'s binaries matching ``package_query``.
+    """Yield a Conan package list of ``ref``'s binaries matching ``package_query``.
 
     ``conan cache save`` takes either a pattern or a package list, and only the
     list can be narrowed by a binary query -- so a query is resolved to a list
     first, with ``conan list``, and the list is what gets saved.
 
+    A context manager rather than a function returning a path: the file must not
+    outlive the save, and an ownership contract that lives only in a docstring
+    is one that a later caller can miss. It also makes the cleanup total. The
+    first version unlinked on ``CalledProcessError`` alone, which left the file
+    behind for the two failures that do not raise it -- ``conan`` missing from
+    PATH (``FileNotFoundError``) and an unwritable temp directory (``OSError``
+    from ``open``) -- while the docstring promised a failed resolve leaves
+    nothing behind.
+
     Args:
         ref: ``<library>/<version>`` reference.
         package_query: Conan binary query, e.g. ``"compiler.version=192"``.
 
-    Returns:
-        Path to the package list JSON. The caller owns it and must delete it.
+    Yields:
+        Path to the package list JSON, valid for the duration of the block.
 
     Raises:
-        subprocess.CalledProcessError: ``conan list`` failed. The file is
-            removed first, so a failed resolve leaves nothing behind for a
-            later step to mistake for a complete list.
+        subprocess.CalledProcessError: ``conan list`` exited nonzero.
+        OSError: The list could not be written, or ``conan`` is not on PATH.
     """
     handle, path = tempfile.mkstemp(prefix="xmsconan-pkglist-", suffix=".json")
     os.close(handle)
@@ -45,10 +56,14 @@ def _package_list(ref, package_query):
     try:
         with open(path, "w", encoding="utf-8") as output:
             subprocess.run(command, check=True, stdout=output)
-    except subprocess.CalledProcessError:
-        os.unlink(path)
-        raise
-    return path
+        yield path
+    finally:
+        # missing_ok rather than an `if os.path.exists` guard: mkstemp created
+        # the file, so the only way it is gone is that the body moved or
+        # removed it -- and a cleanup that raised would mask whatever exception
+        # is being unwound. Expressed without a branch because that branch is
+        # not reachable from any caller and so could not be tested.
+        Path(path).unlink(missing_ok=True)
 
 
 def conan_deploy(library, version, save=None, restore=None, upload=False,
@@ -79,14 +94,11 @@ def conan_deploy(library, version, save=None, restore=None, upload=False,
 
     if save:
         if package_query:
-            list_file = _package_list(ref, package_query)
-            try:
+            with _package_list(ref, package_query) as list_file:
                 subprocess.run(
                     ["conan", "cache", "save", "--list", list_file, "--file", save],
                     check=True,
                 )
-            finally:
-                os.unlink(list_file)
         else:
             # `conan cache save` treats a bare `pkg/version` as a recipe-only pattern, so
             # the tarball would carry the recipe and none of the binaries built alongside

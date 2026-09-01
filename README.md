@@ -92,6 +92,7 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 | `pybind_advertises_module` | boolean | `false` | Advertise the pybind module's import library (`_<name>`) to C++ consumers instead of the static library, and install the module to `bin/` + `lib/`. Windows-only in effect; opt-in because module consumers see only exported symbols. Also what renames the Windows Debug module to `_<name>_d`, matching what `cpp_info` advertises. See `docs/USAGE.md` §7.5. |
 | `[matrix].compiler_runtime` | array[string] | `["dynamic", "static"]` | Which MSVC runtimes the fan-out builds. `["dynamic"]` drops the static-CRT configurations (and their `wchar_t` / `testing` copies) for a library nothing consumes a `/MT` build of. Inert on Linux and macOS. See `docs/USAGE.md` §5.4.1. |
 | `[matrix].wheel_only` | boolean | `false` | Build only what a wheel release needs — Release with tests, Debug with tests, and the pybind build. Three configurations for a single-ABI library (down from 5 on Linux/macOS, 13 on Windows), matching in everything but `build_type` and `pybind`. The pybind leg fans out, so each extra `python_versions` or `pybind_build_types` entry adds one configuration on top of the three. Drops the library-only and `wchar_t=typedef` configurations and narrows `compiler_runtime` to `["dynamic"]` unless set explicitly. See `docs/USAGE.md` §5.4.1. |
+| `[ci].windows_vs2019` | boolean | `false` | Also build the `windows_vs2019` (msvc 192) matrix in CI and publish it to the `aquaveo-vs2019` remote. **GitLab only** — a GitHub project setting it is warned and gets no jobs. Emitted beside the msvc 194 Windows jobs, so it requires `[ci].windows` and is rejected with it off. No wheels: an msvc 192 wheel and an msvc 194 wheel are the same devpi filename. See `docs/USAGE.md` §10.2. |
 | `[matrix].pybind_build_types` | array[string] | `["Release"]` | Which build types get a pybind configuration. Add `"Debug"` when consumers link a Debug module; `XMS_COVERAGE=1` no longer adds `Debug` on top, because coverage takes its Python half from the Release pybind build. On Windows the Debug leg publishes no wheel and runs no Python tests. See `docs/USAGE.md` §5.4.1 and §7.5. |
 
 ### Build Matrix Filter (`[filter]`)
@@ -380,9 +381,11 @@ On Windows, use `nextms-dev-x86` for x86_64 Linux builds. The commands are ident
 
 ## VS2019 (msvc 192) Packages
 
-GitHub retired the `windows-2019` runner image, so the msvc 192 binaries the Aquaveo desktop products (GMS/SMS/WMS) consume are built **manually, on a developer workstation with Visual Studio 2019 installed**, and published to a separate Conan remote, `aquaveo-vs2019`.
+The msvc 192 binaries the Aquaveo desktop products (GMS/SMS/WMS) consume are published to a separate Conan remote, `aquaveo-vs2019`, so they never mix with the CI-published ones. `xmsconan vs2019` drives that build **manually, on a developer workstation with Visual Studio 2019 installed**.
 
-**None of this runs in CI, by design.** CI is unchanged: it still builds gcc 13 / apple-clang 17 / msvc 194 and publishes to the `aquaveo` remote (the `aquaveo-stable` Artifactory repo). There is no Windows-2019 CI job to restore — the runner image is gone.
+**GitLab CI can build this matrix too.** The `GLR-UV` runner carries VS2019 alongside VS2022, so a repository can set `[ci].windows_vs2019 = true` and get a `Conan Build - Windows VS2019` job on every pipeline, publishing to the same `aquaveo-vs2019` remote — see `docs/USAGE.md` §10.2. GitHub cannot: it retired the `windows-2019` image and has no replacement, so a GitHub project setting the flag is warned and gets no jobs.
+
+The manual track below stays, and is still the only route for **wheels** (CI deliberately publishes none for msvc 192 — a wheel's tags do not record which MSVC built it, so it would collide with the msvc 194 wheel on devpi) and for **libraries whose repository has not opted in**.
 
 ```bash
 # One time: add + log in to the aquaveo-vs2019 remote, then check the machine

@@ -40,9 +40,13 @@ parser.add_argument("--filter", help="Filter dictionary in JSON format")
 parser.add_argument("--ignore-build-filter", action="store_true",
                     help="Ignore the [filter] table from build.toml")
 parser.add_argument("--build-missing", help="Build missing dependencies from source", action="store_true")
-parser.add_argument("--platform", default=None,
-                    help=f"Matrix to build ('windows', '{VS2019_PLATFORM}', 'linux', "
-                         "'darwin'). Default: detect from the running machine.")
+# choices from the packager's own matrix, not a hand-kept list: --platform is a
+# closed set compared by exact equality below, so a typo has to fail at parse
+# time naming the valid keys. Without it `--platform windows-vs2019` reaches
+# generate_configurations, and `apply_boost_defaults` and the upload remote have
+# already been decided against a value that matches nothing.
+parser.add_argument("--platform", default=None, choices=sorted(packager.configurations),
+                    help="Matrix to build. Default: detect from the running machine.")
 parser.add_argument("--python-only", help="Only build the Python (pybind) configuration", action="store_true")
 parser.add_argument("--wheel-dir", help="Extract pre-built wheel from pybind package to this directory")
 parser.add_argument("--skip-dependency-libs", action="store_true",

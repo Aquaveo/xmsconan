@@ -191,7 +191,15 @@ def test_copy_xms_conan2_file_copies(tmp_path):
 
 # --- Template generation tests ---
 
-REAL_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "xmsconan" / "generator_tools" / "templates"
+#: This checkout's root, derived from the test file's own location.
+#:
+#: Deliberately not from an imported module's ``__file__``: under an installed
+#: (non-editable) layout that resolves into site-packages, so anything using it
+#: to pin a subprocess to "this tree" would silently pin it to another one --
+#: which is the exact failure the pin exists to prevent.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+REAL_TEMPLATE_DIR = REPO_ROOT / "xmsconan" / "generator_tools" / "templates"
 
 
 def _copy_template(name, dest_dir):
@@ -764,6 +772,24 @@ def test_generated_build_py_ties_boost_defaults_and_upload_remote_to_platform(tm
     assert '"package_query": f"compiler.version={VS2019_MSVC_VERSION}",' in content
 
 
+def _preview_column(stdout, header):
+    """Return one column of ``build.py --preview``'s table, one entry per configuration.
+
+    The table is a tabulate grid, so the rows worth reading are the ones whose
+    first cell is the configuration number; the separator rows and the banner
+    above the table are not.
+    """
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in stdout.splitlines()
+        if line.strip().startswith("|")
+    ]
+    if not rows:
+        return []
+    index = rows[0].index(header)
+    return [row[index] for row in rows[1:] if row[0].isdigit()]
+
+
 def test_generated_build_py_builds_the_msvc_192_matrix_when_asked(tmp_path):
     """`build.py --preview --platform windows_vs2019` really produces msvc 192.
 
@@ -772,12 +798,6 @@ def test_generated_build_py_builds_the_msvc_192_matrix_when_asked(tmp_path):
     matrix" are different claims -- and the platform key is a string the
     packager could stop recognizing without any of the text changing.
     """
-    import os
-    import subprocess
-    import sys
-
-    from xmsconan import generator_tools
-
     toml_file = tmp_path / "build.toml"
     toml_file.write_text('library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8")
     output_dir = tmp_path / "output"
@@ -792,18 +812,21 @@ def test_generated_build_py_builds_the_msvc_192_matrix_when_asked(tmp_path):
     # PYTHONPATH pins the subprocess to *this* checkout. build.py runs from the
     # generated directory, so it would otherwise import whatever xmsconan is
     # installed on the machine and the test would grade someone else's tree.
-    repo_root = Path(generator_tools.__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "build.py", "--preview", "--platform", "windows_vs2019"],
         cwd=str(output_dir), capture_output=True, text=True,
-        env={**os.environ, "PYTHONPATH": str(repo_root)},
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "boost defaults not applied" in result.stdout
-    # Every configuration in the table is msvc 192, and none is the CI toolchain.
-    assert "192" in result.stdout
-    assert "194" not in result.stdout
+    # Read the compiler.version column rather than searching stdout for "192".
+    # A substring check passes on any table that mentions the number anywhere —
+    # a package version, a path — and `"194" not in stdout` would pass on an
+    # empty matrix, which is the failure most worth catching here.
+    versions = _preview_column(result.stdout, "compiler.version")
+    assert versions, f"no configurations in the preview table:\n{result.stdout}"
+    assert set(versions) == {"192"}, versions
 
 
 def test_generated_build_py_can_skip_the_dependency_libs_pass(tmp_path):
