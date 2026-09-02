@@ -435,6 +435,34 @@ def test_gitlab_windows_build_jobs_take_cmake_from_the_venv(tmp_path):
         assert not [step for step in script if "cmake" in step], f"{name}: {script!r}"
 
 
+def test_gitlab_windows_build_jobs_pin_uv_to_the_matrix_abi(tmp_path):
+    """The Windows build jobs export ``UV_PYTHON`` before anything builds a wheel.
+
+    ``uv build`` given no interpreter discovers one itself and takes the newest
+    it can see, which on GLR-UV is 3.14 regardless of which leg is running -- so
+    a 3.10 leg built a cp314 wheel and then refused to install it into its own
+    venv. The variable is what makes the wheel carry the ABI the rest of the
+    build was compiled against.
+
+    It has to be the environment rather than a flag on the recipe's own
+    command, because the msvc 192 job passes ``--build-missing``: its
+    dependencies are compiled from source by the recipe copy each was exported
+    with, and only uv's own environment reaches those.
+    """
+    parsed = _gitlab_jobs(tmp_path, windows_vs2019=True)
+
+    for name in ("Conan Build - Windows", "Conan Build - Windows VS2019"):
+        script = parsed[name]["script"]
+        export = script.index("export UV_PYTHON=${PYTHON_TARGET_VERSION}")
+        # Ahead of every uv invocation, not merely somewhere in the script: a
+        # `uv build` above the export would silently pick its own interpreter.
+        first_uv = min(
+            index for index, step in enumerate(script)
+            if step.startswith("uv ") or step.startswith("python build.py")
+        )
+        assert export < first_uv, f"{name}: exported at {export}, first uv at {first_uv}"
+
+
 def test_gitlab_windows_conan_cache_snapshot_follows_home(tmp_path):
     """The cache snapshot reads ${HOME}, not the retired runner's admin path.
 

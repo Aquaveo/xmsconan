@@ -410,6 +410,19 @@ Conan Build:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - echo ${PACKAGE_VERSION}
+<# The interpreter every `uv build` in this job's dependency graph builds a
+   wheel with. `uv build` given no interpreter discovers one itself and takes
+   the newest it can see -- 3.14 on GLR-UV, whichever leg is running -- so a
+   3.10 leg produced a cp314 wheel and then could not install it into its own
+   venv. Read by uv itself, so unlike a flag on the recipe's own command it
+   also reaches the recipe copies of dependencies conan builds from source,
+   each of which was exported with whatever xmsconan published it.
+
+   Invisible until GLR-UV: the retired per-ABI images held exactly one
+   interpreter and it was the target ABI, so an unpinned discovery could not
+   be wrong. One image serving every ABI is the point of the migration, and it
+   makes the omission load-bearing. #>
+    - export UV_PYTHON=${PYTHON_TARGET_VERSION}
 <# uv, not pip, and into a venv of the matrix ABI rather than the machine's
    own interpreter. GLR-UV serves every ABI, so there is no longer a `python`
    on PATH that happens to be the right one -- `uv venv --python` is what
@@ -532,6 +545,11 @@ Conan Build:
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
+<# See "Conan Build - Windows" above. This job needs it more than that one
+   does: --build-missing means the msvc 192 dependencies are compiled from
+   source, each running its own exported recipe, and nothing but an
+   environment variable reaches those. #>
+    - export UV_PYTHON=${PYTHON_TARGET_VERSION}
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
