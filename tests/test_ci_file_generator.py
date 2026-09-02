@@ -399,6 +399,42 @@ def test_gitlab_windows_jobs_install_with_uv_not_pip(tmp_path):
         assert any("xmsconan>=" in step for step in installs), name
 
 
+def test_gitlab_windows_build_jobs_take_cmake_from_the_venv(tmp_path):
+    """The Windows *build* jobs install cmake; the deploy jobs do not.
+
+    GLR-py310 / GLR-py313 carried cmake on PATH and GLR-UV does not, so the job
+    has to supply it -- conan shells out to ``cmake`` to configure every
+    configuration, including the dependencies it builds from source.
+
+    Split by job rather than asserted over the file: the deploy jobs restore a
+    cache tarball and upload it, never invoking cmake, and installing a
+    compiler-adjacent tool they do not use would be the kind of copied line
+    nobody later dares remove.
+    """
+    toml_file = write_gitlab_toml(tmp_path, windows_vs2019=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+    for name in ("Conan Build - Windows", "Conan Build - Windows VS2019"):
+        script = parsed[name]["script"]
+        installs = [step for step in script if "pip install" in step and "cmake" in step]
+        assert len(installs) == 1, f"{name}: {installs!r}"
+        assert '"cmake>=3.21"' in installs[0], f"{name}: {installs[0]!r}"
+        # Proven present after the install and before the first step that needs
+        # it, so a resolution failure reads as one instead of resurfacing as a
+        # per-configuration build error much later.
+        check = script.index("cmake --version")
+        assert script.index(installs[0]) < check, name
+        assert check < min(
+            index for index, step in enumerate(script) if step.startswith("python build.py")
+        ), name
+
+    for name in ("Conan Deploy - Windows", "Conan Deploy - Windows VS2019"):
+        script = parsed[name]["script"]
+        assert not [step for step in script if "cmake" in step], f"{name}: {script!r}"
+
+
 def test_gitlab_windows_conan_cache_snapshot_follows_home(tmp_path):
     """The cache snapshot reads ${HOME}, not the retired runner's admin path.
 
