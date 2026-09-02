@@ -877,7 +877,13 @@ class XmsConan2File(ConanFile):
             os.environ["_PYTHON_HOST_PLATFORM"] = "macosx-15.0-arm64"
         try:
             if _has_uv():
-                self.run(f'uv build --wheel --no-build-logs --out-dir "{dist_dir}" "{package_src}"')
+                # Build logs left on. They are noise on the happy path, but
+                # this command reports a backend failure as three lines that
+                # name no cause ("Call to `setuptools.build_meta.build_wheel`
+                # failed"), and on a CI runner there is nothing to attach to
+                # afterwards -- the container is gone and the traceback went
+                # with it.
+                self.run(f'uv build --wheel --out-dir "{dist_dir}" "{package_src}"')
             else:
                 self.run(f'"{sys.executable}" -m pip wheel . --no-deps --wheel-dir "{dist_dir}"', cwd=package_src)
         finally:
