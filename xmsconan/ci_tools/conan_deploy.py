@@ -116,7 +116,15 @@ def conan_deploy(library, version, save=None, restore=None, upload=False,
         )
 
     if upload:
-        command = ["conan", "upload", ref, "-r", remote, "--confirm"]
+        # `:*` for the same reason `conan cache save` needs it above, and the
+        # omission here was worse: a bare `pkg/version` is a recipe-only
+        # pattern, so `-p` filtered an empty set of packages and conan uploaded
+        # the recipe alone and exited 0. Without `-p` a bare reference does
+        # carry the binaries, which is why the unqueried Linux deploy published
+        # correctly and every Windows deploy silently published nothing --
+        # Aquaveo/xmsconstraint 6.0.12, pipeline 63339, where all five jobs went
+        # green and only Linux had packages in its upload summary.
+        command = ["conan", "upload", f"{ref}:*", "-r", remote, "--confirm"]
         if package_query:
             command += ["-p", package_query]
         subprocess.run(command, check=True)

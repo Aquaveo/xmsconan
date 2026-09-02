@@ -48,7 +48,7 @@ def test_upload(mock_run):
     conan_deploy("xmsgrid", "2.0.0", upload=True)
 
     mock_run.assert_called_once_with(
-        ["conan", "upload", "xmsgrid/2.0.0", "-r", "aquaveo", "--confirm"],
+        ["conan", "upload", "xmsgrid/2.0.0:*", "-r", "aquaveo", "--confirm"],
         check=True,
     )
 
@@ -205,11 +205,34 @@ def test_upload_honors_the_remote_and_the_package_query(mock_run):
 
     mock_run.assert_called_once_with(
         [
-            "conan", "upload", "xmscore/7.0.0", "-r", "aquaveo-vs2019", "--confirm",
+            "conan", "upload", "xmscore/7.0.0:*", "-r", "aquaveo-vs2019", "--confirm",
             "-p", "compiler.version=192",
         ],
         check=True,
     )
+
+
+@pytest.mark.parametrize("package_query", [None, "compiler.version=192"])
+@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
+def test_upload_selects_binaries_not_just_the_recipe(mock_run, package_query):
+    """The upload pattern carries ``:*``, with or without a query.
+
+    A bare ``pkg/version`` is a recipe-only pattern. Unqueried, conan uploads
+    the binaries under it anyway; add ``-p`` and the query filters an empty set
+    of packages, so the recipe goes up alone and the command exits 0. That
+    published Aquaveo/xmsconstraint 6.0.12 with no Windows binaries on either
+    remote while all five deploy jobs reported success.
+
+    Asserted for the unqueried case too. That one is not broken today, but it
+    is broken by the same pattern, and the queried case only differs by a flag
+    -- so a future edit that "simplifies" one back to a bare reference should
+    fail here rather than at the next release.
+    """
+    conan_deploy("xmscore", "7.0.0", upload=True, package_query=package_query)
+
+    command, = mock_run.call_args.args
+    assert "xmscore/7.0.0:*" in command
+    assert "xmscore/7.0.0" not in command
 
 
 @patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
