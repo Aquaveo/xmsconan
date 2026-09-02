@@ -136,6 +136,24 @@ class TestBuildWheelPlatformOverride:
 
         assert "_PYTHON_HOST_PLATFORM" not in os.environ
 
+    @patch("xmsconan.xms_conan2_file._has_uv", return_value=True)
+    @patch("os.makedirs")
+    def test_build_logs_are_not_suppressed(self, _makedirs, _has_uv):
+        """``uv build`` runs without ``--no-build-logs``.
+
+        With the flag, a backend failure reports three lines that name no cause
+        -- "Call to `setuptools.build_meta.build_wheel` failed (exit code: 1)"
+        and nothing else. On a CI runner the container is gone by the time
+        anyone reads that, and the traceback went with it.
+        """
+        obj = _make_conan_file("Windows", "x86_64")
+
+        obj._build_wheel()
+
+        command, = obj.run.call_args.args
+        assert command.startswith("uv build --wheel ")
+        assert "--no-build-logs" not in command
+
 
 class TestSaveTestArtifacts:
     """Verify _save_test_artifacts copies the right files."""
