@@ -90,6 +90,20 @@ def test_save_with_a_package_query_resolves_a_package_list_first(mock_run):
     used here at all. The Conan cache on a CI runner is per machine, not per
     job, so the pattern form would tarball a concurrent msvc 194 job's
     binaries under the same reference.
+
+    The ``#*`` on the end of the pattern is what makes the resulting list
+    usable. ``conan list "<ref>:*"`` reports each binary as an ``info`` block
+    and nothing else; ``conan cache save`` needs a *package revision* to know
+    which folder to archive, so a list without one saves the recipe and
+    silently skips every binary. Adding ``#*`` asks for the package revisions
+    too, and the entries gain a ``revisions`` key.
+
+    The failure this pins is quiet end to end: the save exits 0 with a
+    recipe-only tarball, the deploy stage restores it and uploads the recipe
+    alone, also exiting 0, and the break only surfaces when a consumer resolves
+    the reference and finds no binary. Aquaveo/data_objects 5.1.0 shipped that
+    way -- pipeline 63341 green, `No packages found for this revision` on the
+    remote. Branch pipelines cannot catch it because they never upload.
     """
     conan_deploy(
         "xmscore", "7.0.0", save="out.tar.gz", package_query="compiler.version=192",
@@ -101,7 +115,7 @@ def test_save_with_a_package_query_resolves_a_package_list_first(mock_run):
     # binaries. Deleting it passed a `[:3]` / `[-3:]` pair of assertions.
     list_command = mock_run.call_args_list[0][0][0]
     assert list_command == [
-        "conan", "list", "xmscore/7.0.0:*", "-c",
+        "conan", "list", "xmscore/7.0.0:*#*", "-c",
         "-p", "compiler.version=192", "--format=json",
     ]
 

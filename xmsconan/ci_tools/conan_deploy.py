@@ -25,7 +25,9 @@ def _package_list(ref, package_query):
 
     ``conan cache save`` takes either a pattern or a package list, and only the
     list can be narrowed by a binary query -- so a query is resolved to a list
-    first, with ``conan list``, and the list is what gets saved.
+    first, with ``conan list``, and the list is what gets saved. The list must
+    name package revisions (``:*#*``, not ``:*``) or the save silently drops
+    every binary; see the comment on the command below.
 
     A context manager rather than a function returning a path: the file must not
     outlive the save, and an ownership contract that lives only in a docstring
@@ -52,7 +54,15 @@ def _package_list(ref, package_query):
     # `-c` is the default when no `--remote` is given, but it is spelled out:
     # this list decides what gets published, and "the local cache" must not be
     # something a reader has to know a default to be sure of.
-    command = ["conan", "list", f"{ref}:*", "-c", "-p", package_query, "--format=json"]
+    #
+    # `#*` asks for each binary's package REVISION, and without it this whole
+    # path is a no-op. `conan list "<ref>:*"` reports a package as an `info`
+    # block alone; `conan cache save` archives a package *revision* folder, so
+    # handed a list with no revision it saves the recipe and skips every
+    # binary -- exit 0, tarball written, nothing in it. The deploy stage then
+    # restores that and uploads a lone recipe, also exit 0. Nothing fails until
+    # a consumer resolves the reference and finds no binary for its settings.
+    command = ["conan", "list", f"{ref}:*#*", "-c", "-p", package_query, "--format=json"]
     try:
         with open(path, "w", encoding="utf-8") as output:
             subprocess.run(command, check=True, stdout=output)
