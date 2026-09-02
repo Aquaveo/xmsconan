@@ -1,6 +1,8 @@
 """Tests for ci_tools.conan_deploy."""
+import os
 import subprocess
 import sys
+import tempfile
 from unittest.mock import patch
 
 import pytest
@@ -80,6 +82,137 @@ def test_save_and_upload(mock_run):
 
 
 @patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
+def test_save_with_a_package_query_resolves_a_package_list_first(mock_run):
+    """A query turns --save into `conan list` + `conan cache save --list`.
+
+    ``conan cache save`` accepts a pattern *or* a package list, and only the
+    list can be narrowed by a binary query -- so the pattern form cannot be
+    used here at all. The Conan cache on a CI runner is per machine, not per
+    job, so the pattern form would tarball a concurrent msvc 194 job's
+    binaries under the same reference.
+    """
+    conan_deploy(
+        "xmscore", "7.0.0", save="out.tar.gz", package_query="compiler.version=192",
+    )
+
+    assert mock_run.call_count == 2
+    # Whole commands, not slices with the middle skipped: `-c` sits in that
+    # middle, and it is the flag that keeps the list a list of *cached*
+    # binaries. Deleting it passed a `[:3]` / `[-3:]` pair of assertions.
+    list_command = mock_run.call_args_list[0][0][0]
+    assert list_command == [
+        "conan", "list", "xmscore/7.0.0:*", "-c",
+        "-p", "compiler.version=192", "--format=json",
+    ]
+
+    save_command = mock_run.call_args_list[1][0][0]
+    list_file = save_command[save_command.index("--list") + 1]
+    assert save_command == [
+        "conan", "cache", "save", "--list", list_file, "--file", "out.tar.gz",
+    ]
+    # The unrestricted pattern must not appear: it is what the query exists to
+    # avoid, and passing both is a Conan error anyway.
+    assert "xmscore/7.0.0:*" not in save_command
+
+
+def _list_file_recorder(seen, fail=False):
+    """Record the ``--list`` path each `conan cache save` is handed.
+
+    Shared by the cleanup tests so the two do not drift apart, and so neither
+    has to know the flag's argv position.
+    """
+    def record(command, **kwargs):
+        if "--list" in command:
+            seen.append(command[command.index("--list") + 1])
+            if fail:
+                raise subprocess.CalledProcessError(1, "conan")
+    return record
+
+
+@pytest.mark.parametrize("fail", [False, True], ids=["save-succeeds", "save-fails"])
+@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
+def test_save_with_a_package_query_removes_the_list_file(mock_run, fail):
+    """The resolved package list never outlives the save, on either path.
+
+    It is a temp file rather than an artifact-tree file so a pipeline cannot
+    pick up a stale list from a previous job and publish that job's package
+    ids -- which only holds if the cleanup is unconditional.
+    """
+    seen = []
+    mock_run.side_effect = _list_file_recorder(seen, fail=fail)
+
+    if fail:
+        with pytest.raises(subprocess.CalledProcessError):
+            conan_deploy(
+                "xmscore", "7.0.0", save="out.tar.gz",
+                package_query="compiler.version=192",
+            )
+    else:
+        conan_deploy(
+            "xmscore", "7.0.0", save="out.tar.gz", package_query="compiler.version=192",
+        )
+
+    assert len(seen) == 1
+    assert not os.path.exists(seen[0])
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.CalledProcessError(1, "conan"), FileNotFoundError("conan")],
+    ids=["conan-exits-nonzero", "conan-not-on-path"],
+)
+@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
+def test_package_list_removed_when_conan_list_fails(mock_run, error):
+    """A failed resolve leaves no file behind, however `conan list` failed.
+
+    An empty or partial list is worse than none: `conan cache save --list`
+    would accept it and produce a tarball missing binaries, and the deploy that
+    follows would publish that as a complete release. The first version caught
+    ``CalledProcessError`` only, so a `conan` missing from PATH -- a
+    ``FileNotFoundError`` out of the same call -- leaked the file.
+    """
+    tempfiles = []
+    real_mkstemp = tempfile.mkstemp
+
+    def spy(*args, **kwargs):
+        handle, path = real_mkstemp(*args, **kwargs)
+        tempfiles.append(path)
+        return handle, path
+
+    mock_run.side_effect = error
+    with patch("xmsconan.ci_tools.conan_deploy.tempfile.mkstemp", side_effect=spy):
+        with pytest.raises(type(error)):
+            conan_deploy(
+                "xmscore", "7.0.0", save="out.tar.gz",
+                package_query="compiler.version=192",
+            )
+
+    assert len(tempfiles) == 1
+    assert not os.path.exists(tempfiles[0])
+
+
+@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
+def test_upload_honors_the_remote_and_the_package_query(mock_run):
+    """--upload sends only matching binaries, and to the named remote.
+
+    `conan upload` matches by reference, so the query is what keeps msvc 194
+    binaries sitting in a shared runner's cache from being published to the
+    VS2019 remote -- silently, and with exit 0.
+    """
+    conan_deploy(
+        "xmscore", "7.0.0", upload=True,
+        remote="aquaveo-vs2019", package_query="compiler.version=192",
+    )
+
+    mock_run.assert_called_once_with(
+        [
+            "conan", "upload", "xmscore/7.0.0", "-r", "aquaveo-vs2019", "--confirm",
+            "-p", "compiler.version=192",
+        ],
+        check=True,
+    )
+
+
+@patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
 def test_no_action_does_nothing(mock_run):
     """No flags → no subprocess calls."""
     conan_deploy("xmscore", "7.0.0")
@@ -103,6 +236,7 @@ def test_main_passes_flags_through(mock_deploy, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "xmsconan_conan_deploy", "xmscore", "7.0.0",
         "--save", "out.tar.gz", "--restore", "in.tar.gz", "--upload",
+        "--remote", "aquaveo-vs2019", "--package-query", "compiler.version=192",
     ])
 
     main()
@@ -113,6 +247,8 @@ def test_main_passes_flags_through(mock_deploy, monkeypatch):
         save="out.tar.gz",
         restore="in.tar.gz",
         upload=True,
+        remote="aquaveo-vs2019",
+        package_query="compiler.version=192",
     )
 
 

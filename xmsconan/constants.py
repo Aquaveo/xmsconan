@@ -58,19 +58,31 @@ DEFAULT_REMOTE_NAME = "aquaveo"
 #: ``aquaveo-stable`` repository).
 DEFAULT_REMOTE_URL = f"{ARTIFACTORY_BASE_URL}/aquaveo-stable"
 
-#: Conan remote name for the manually built Visual Studio 2019 (msvc 192)
-#: packages.  Kept separate from :data:`DEFAULT_REMOTE_NAME` so the legacy
-#: binaries never mix with the CI-published ones.
+#: Conan remote name for the Visual Studio 2019 (msvc 192) packages, built
+#: either on a developer workstation or by the GitLab jobs a repository opts
+#: into with ``[ci].windows_vs2019``.  Kept separate from
+#: :data:`DEFAULT_REMOTE_NAME` so the legacy binaries never mix with the
+#: msvc 194 ones.
 VS2019_REMOTE_NAME = "aquaveo-vs2019"
 
 #: Artifactory URL backing :data:`VS2019_REMOTE_NAME`.
 VS2019_REMOTE_URL = f"{ARTIFACTORY_BASE_URL}/aquaveo-vs2019"
 
 #: Conan ``compiler.version`` value identifying the Visual Studio 2019
-#: toolset.  GitHub retired the ``windows-2019`` runner image, so packages
-#: with this compiler version are built by hand and published to
-#: :data:`VS2019_REMOTE_NAME`.
+#: toolset.  Packages with this compiler version are published to
+#: :data:`VS2019_REMOTE_NAME` rather than to :data:`DEFAULT_REMOTE_NAME`.
 MSVC_VS2019_VERSION = "192"
+
+#: Key into :data:`xmsconan.package_tools.packager.configurations` selecting
+#: the msvc 192 matrix.
+#:
+#: Named here rather than in one of its callers because there are now two:
+#: :mod:`xmsconan.build_tools.vs2019_build`, which drives the workstation
+#: build, and the GitLab generator, which writes the key into the generated
+#: pipeline's ``build.py --platform`` invocation.  A literal in each would be
+#: free to drift, and the failure mode is quiet -- an unknown key raises, but
+#: a *stale* one would build the wrong matrix and publish it as msvc 192.
+VS2019_PLATFORM_KEY = "windows_vs2019"
 
 
 #: Build-folder suffix for each CMake generator.  CMake refuses to reuse a

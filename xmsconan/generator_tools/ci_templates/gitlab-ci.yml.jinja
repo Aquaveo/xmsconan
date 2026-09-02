@@ -352,12 +352,23 @@ Conan Build:
 <% else %>
   stage: Test
 <% endif %>
-  image: GLR-${PY_TAG}
+<# One Windows image for every ABI. It replaced the per-version GLR-py310 /
+   GLR-py313 images, whose whole purpose was to make `python` on PATH the
+   matrix version: the recipe points CMake at the interpreter running conan
+   and the generated CMakeLists.txt requires that exact version (see
+   check_python_versions), so before GLR-UV the ABI had to be chosen by
+   picking an image and could not be changed inside the job. GLR-UV carries
+   uv and the pre-loaded 3.10 / 3.13 / 3.14 interpreters, so the script picks
+   the ABI itself with `uv venv --python` -- and PY_TAG, which existed only to
+   spell an image name, is gone with it.
+
+   `tags: WinVM` below still routes the job to the Windows fleet; `image:`
+   only selects which VM template that fleet starts. #>
+  image: GLR-UV
   parallel:
     matrix:
 <% for v in ci_python_versions %>
       - PYTHON_TARGET_VERSION: '<< v >>'
-        PY_TAG: 'py<< v | replace(".", "") >>'
 <% endfor %>
   variables:
     AQUAPI_URL: "https://aquapi.aquaveo.com/aquaveo/dev"
@@ -399,9 +410,21 @@ Conan Build:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - echo ${PACKAGE_VERSION}
+<# uv, not pip, and into a venv of the matrix ABI rather than the machine's
+   own interpreter. GLR-UV serves every ABI, so there is no longer a `python`
+   on PATH that happens to be the right one -- `uv venv --python` is what
+   makes it right, and it must come before anything reads `python`. Activating
+   persists for the rest of the script: GitLab runs these lines as one shell.
+
+   `uv --version` first so a runner without uv fails on that line with an
+   obvious message, rather than four lines later on a `uv pip install` that
+   reads like a packaging problem. #>
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/Scripts/activate
     - python --version
-    - pip install "conan~=2.31.0" toml packaging devpi-client
-    - python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv pip install "conan~=2.31.0" toml packaging devpi-client
+    - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
     - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
 <% if ci_wheel_only %>
@@ -424,10 +447,105 @@ Conan Build:
    on purpose. A library with nothing to vendor opts out. #>
     - xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
 <% endif %>
-    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz
+<# Queried, like the VS2019 job's save below and for the same reason in the
+   mirror direction. A runner's Conan cache is per machine, not per job, and
+   `conan cache save <ref>:*` matches by reference -- so with
+   [ci].windows_vs2019 on, both toolchains build the same reference on the same
+   fleet at the same time, and an unqueried save here would tarball the msvc
+   192 binaries and the deploy below would publish them to the production
+   `aquaveo` remote at exit 0. Emitted unconditionally rather than only under
+   the opt-in: the restriction is a no-op when this is the only toolchain on
+   the machine, and a guard that appears only in the configuration that needs
+   it is one refactor away from being dropped from the one that does. #>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --package-query compiler.version=<< windows_msvc_version >>
   tags:
     - WinVM
 
+<% if ci_windows_vs2019 %>
+<# The second Windows toolchain: msvc << vs2019_msvc_version >> (Visual Studio
+   2019), from [ci].windows_vs2019. It was built by hand on a developer
+   workstation for as long as no CI runner had VS2019 on it; GLR-UV does, so
+   the same matrix is produced here instead -- reproducibly, on every pipeline,
+   from the same `build.py` the msvc 194 job runs.
+
+   Four things separate it from that job, and all four are load-bearing:
+
+   * `--platform << vs2019_platform_key >>` selects the msvc 192 matrix. The
+     recipe forks its third-party stack on compiler.version (boost 1.74.0.3 +
+     zlib 1.2.11 rather than 1.86.0 + 1.3.1), and `build.py` drops the boost
+     option defaults for this platform because the legacy recipe does not
+     declare them -- Conan fails a build outright when a profile sets an
+     option no recipe in the graph defines.
+   * The `<< vs2019_remote_name >>` remote is added, and appended rather than
+     inserted first: it must not become the first stop for every `conan
+     install` on a shared runner. It is where the legacy dependencies are
+     resolved from as well as where the results go.
+   * Every deploy step carries `--package-query compiler.version=<<
+     vs2019_msvc_version >>`. The Conan cache on a runner is per machine, not
+     per job, so without it this job's `conan cache save` would tarball the
+     msvc 194 job's binaries and publish them to the VS2019 remote, exit 0,
+     and leave two toolchains mixed on a remote whose whole purpose is to keep
+     them apart.
+   * No `--wheel-dir`. A wheel's tags (`cp310-cp310-win_amd64`) say nothing
+     about which MSVC built it, so an msvc 192 wheel and an msvc 194 wheel are
+     the same devpi filename -- publishing both would have them overwrite each
+     other by upload order. The VS2019 wheels the desktop products consume are
+     still produced deliberately, by hand (USAGE section 16.8).
+
+   `--build-missing` for the same reason the workstation driver passes it: the
+   legacy dependency graph is not fully prebuilt for msvc 192. #>
+"Conan Build - Windows VS2019":
+<% if ci_split_tests %>
+  stage: Build
+<% else %>
+  stage: Test
+<% endif %>
+  image: GLR-UV
+  parallel:
+    matrix:
+<% for v in ci_python_versions %>
+      - PYTHON_TARGET_VERSION: '<< v >>'
+<% endfor %>
+  artifacts:
+    expire_in: '1d'
+    when: always
+    paths:
+<% if ci_deploy %>
+      - .export
+<% endif %>
+      - test_artifacts/
+  script:
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/Scripts/activate
+    - python --version
+    - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_conan_setup
+<# Two `conan remote add` calls per job, on a fleet that runs several jobs per
+   machine, all writing one ~/.conan2/remotes.json. Conan 2.31 writes it as
+   `remotes.json.tmp` followed by `os.replace` (conan/api/subapi/remotes.py
+   `_save`), so the file cannot be torn: a reader sees one complete document or
+   the other. There is no lock around the read-modify-write, though, so two
+   jobs adding remotes in the same instant can lose one of the two additions.
+
+   Left as is deliberately. The lost update is loud -- the job that lost its
+   remote fails resolving dependencies rather than publishing somewhere wrong
+   -- and the alternative, a per-job CONAN_HOME, gives up the shared package
+   cache these Windows builds depend on. That is a cache-model change with its
+   own blast radius, not a footnote to this one. #>
+    - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
+    - xmsconan_gen --version ${PACKAGE_VERSION} build.toml
+    - python build.py --version ${PACKAGE_VERSION} --platform << vs2019_platform_key >> --build-missing --artifacts-dir test_artifacts
+<% if ci_deploy %>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --save .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --package-query compiler.version=<< vs2019_msvc_version >>
+<% endif %>
+  tags:
+    - WinVM
+
+<% endif %>
 <% endif %>
 Lint:
   stage: Test
@@ -586,12 +704,16 @@ Repair Wheel:
 
 "Conan Deploy - Windows":
   stage: Deploy
-  image: GLR-${PY_TAG}
+  # GLR-UV and `uv venv`, for the reasons spelled out on "Conan Build -
+  # Windows" above. This job only restores and uploads a cache tarball, so it
+  # does not compile against the interpreter -- it still builds the venv on
+  # the matrix ABI so both Windows jobs bootstrap identically and neither can
+  # be the one that rots.
+  image: GLR-UV
   parallel:
     matrix:
 <% for v in ci_python_versions %>
       - PYTHON_TARGET_VERSION: '<< v >>'
-        PY_TAG: 'py<< v | replace(".", "") >>'
 <% endfor %>
   # Depend on the whole build job rather than selecting one parallel instance.
   # GitLab does not expand variables inside needs:parallel:matrix, so a selector
@@ -609,22 +731,79 @@ Repair Wheel:
       - conan_packages/
   script:
     - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
-    - pip install "conan~=2.31.0" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/Scripts/activate
+    - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
-    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload
+<# The query is repeated on the upload rather than trusted from the save: this
+   is the command that reaches the shared remote, and a tarball restored into a
+   cache that already holds the other toolchain's binaries of the same
+   reference would otherwise publish those too. #>
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload --package-query compiler.version=<< windows_msvc_version >>
     - mkdir -p conan_packages
-    <# `|| echo`, not `|| true`: with nothing under the cache path -- a runner
-       whose user is not `admin`, or a restore that produced nothing -- the
-       job used to go green and ship an empty conan_packages/ artifact with
-       no line in the log saying so. It stays non-fatal because the upload
-       above has already succeeded by this point and nothing consumes this
-       artifact; it is a snapshot of the cache for debugging. #>
-    - cp -r /c/Users/admin/.conan2/p/* conan_packages/ || echo "warning - no Conan packages under /c/Users/admin/.conan2/p, conan_packages/ artifact will be empty"
+    <# ${HOME}, not the hard-coded /c/Users/admin the GLR-py* images ran as:
+       the conan home is `~/.conan2`, so a runner whose service account is
+       anyone else silently produced an empty artifact. GLR-UV is a different
+       machine, so the old literal is exactly the kind of assumption this
+       migration has to stop making.
+
+       `|| echo`, not `|| true`: with nothing under the cache path -- a
+       restore that produced nothing, or a HOME that is not where conan put
+       its cache -- the job used to go green and ship an empty
+       conan_packages/ artifact with no line in the log saying so. It stays
+       non-fatal because the upload above has already succeeded by this point
+       and nothing consumes this artifact; it is a snapshot of the cache for
+       debugging. #>
+    - cp -r ${HOME}/.conan2/p/* conan_packages/ || echo "warning - no Conan packages under ${HOME}/.conan2/p, conan_packages/ artifact will be empty"
   only:
     - tags
   tags:
     - WinVM
+
+<% if ci_windows_vs2019 %>
+<# Publishes what "Conan Build - Windows VS2019" exported, to
+   << vs2019_remote_name >> rather than to the CI remote. The package query is
+   repeated here rather than trusted from the save step: this is the command
+   that actually reaches a shared remote, and a tarball restored into a cache
+   that already holds msvc 194 binaries of the same reference would otherwise
+   publish those too.
+
+   No wheel deploy counterpart, and no `conan_packages/` snapshot -- see the
+   header on the build job for the wheel reasoning; the snapshot exists to
+   debug the msvc 194 pair and a second copy of it would only double the
+   artifact. #>
+"Conan Deploy - Windows VS2019":
+  stage: Deploy
+  image: GLR-UV
+  parallel:
+    matrix:
+<% for v in ci_python_versions %>
+      - PYTHON_TARGET_VERSION: '<< v >>'
+<% endfor %>
+  # The whole build job, not one parallel instance, for the reason given on
+  # "Conan Deploy - Windows" above: GitLab does not expand variables inside
+  # needs:parallel:matrix.
+  needs:
+    - job: "Conan Build - Windows VS2019"
+      artifacts: true
+  script:
+    - export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/Scripts/activate
+    - uv pip install "conan~=2.31.0" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - uv pip install --upgrade "xmsconan>=<< xmsconan_version >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan_conan_setup
+<# Concurrent remotes.json writers: see the note on the build job above. #>
+    - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
+    - xmsconan_conan_deploy << library_name >> ${PACKAGE_VERSION} --restore .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-${PACKAGE_VERSION}.tar.gz --upload --remote << vs2019_remote_name >> --package-query compiler.version=<< vs2019_msvc_version >>
+  only:
+    - tags
+  tags:
+    - WinVM
+<% endif %>
 <% endif %>
 <% endif %>
 

@@ -1,10 +1,21 @@
 r"""Drive the manual Visual Studio 2019 (msvc 192) package build.
 
-GitHub retired the ``windows-2019`` runner image, so the msvc 192 binaries
-can no longer be produced in CI.  They are built by hand, on a developer
-workstation that has Visual Studio 2019 installed, and published to a
-separate Conan remote (``aquaveo-vs2019``) so they never mix with the
-CI-published ``aquaveo`` remote.  Nothing in this module runs in CI.
+The msvc 192 binaries are published to a separate Conan remote
+(``aquaveo-vs2019``) so they never mix with the CI-published ``aquaveo``
+remote.  This module builds them by hand, on a developer workstation that has
+Visual Studio 2019 installed; nothing in it runs in CI.
+
+It is no longer the only route.  The GitLab ``GLR-UV`` runner carries VS2019,
+so a repository that sets ``[ci].windows_vs2019`` gets the same matrix built on
+every pipeline and published to the same remote (see ``docs/USAGE.md``
+section 10.2); that path drives ``build.py --platform windows_vs2019`` rather
+than this module.  GitHub still cannot -- it retired the ``windows-2019``
+image and has no replacement.
+
+This track remains the only way to produce msvc 192 *wheels*, which CI
+deliberately does not publish (a wheel's tags do not record which MSVC built
+it, so it would collide with the msvc 194 wheel on devpi), and the way to
+build a library whose repository has not opted in.
 
 Three subcommands::
 
@@ -100,7 +111,8 @@ from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
 from xmsconan.constants import (
-    MSVC_VS2019_VERSION, version_sort_key, VS2019_REMOTE_NAME, VS2019_REMOTE_URL,
+    MSVC_VS2019_VERSION, version_sort_key, VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME,
+    VS2019_REMOTE_URL,
 )
 from xmsconan.package_tools.packager import XmsConanPackager
 
@@ -108,8 +120,11 @@ from xmsconan.package_tools.packager import XmsConanPackager
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
 DEFAULT_REMOTE_USERNAME = "aquaveo"
 
-#: Key into :data:`xmsconan.package_tools.packager.configurations`.
-PLATFORM_KEY = "windows_vs2019"
+#: Key into :data:`xmsconan.package_tools.packager.configurations`.  Aliases
+#: :data:`~xmsconan.constants.VS2019_PLATFORM_KEY`, which the GitLab generator
+#: also reads, so the workstation build and the generated pipeline cannot end
+#: up naming different matrices.
+PLATFORM_KEY = VS2019_PLATFORM_KEY
 
 #: Conan client requirement, matching the pin used by the CI workflows.
 CONAN_PIN = "~=2.31.0"

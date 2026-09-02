@@ -4,6 +4,8 @@ Usage::
 
     xmsconan_conan_setup [--remote-url URL] [--login] [--remove-conancenter]
     xmsconan_conan_setup --login --username USER --password-file PATH
+    xmsconan_conan_setup --remote-name aquaveo-vs2019 \
+        --remote-url https://.../aquaveo-vs2019 --append
 """
 import argparse
 import os
@@ -154,9 +156,24 @@ def main():
         help="Conan remote URL (default: Aquaveo stable).",
     )
     parser.add_argument(
+        "--remote-name",
+        default=DEFAULT_REMOTE_NAME,
+        help=f"Conan remote name to add (default: {DEFAULT_REMOTE_NAME}). Pair "
+             f"it with --remote-url; a name and URL that disagree configure a "
+             f"remote pointing somewhere nobody expects.",
+    )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Add the remote after the ones already configured instead of "
+             "first. Use it for a special-purpose remote: inserting a second "
+             "Aquaveo remote at index 0 makes it the first stop for every "
+             "conan install on the machine, including unrelated ones.",
+    )
+    parser.add_argument(
         "--login",
         action="store_true",
-        help="Run 'conan remote login aquaveo' after adding the remote.",
+        help="Run 'conan remote login <remote-name>' after adding the remote.",
     )
     parser.add_argument(
         "--remove-conancenter",
@@ -201,6 +218,8 @@ def main():
             remove_conancenter=args.remove_conancenter,
             username=args.username,
             password=password,
+            remote_name=args.remote_name,
+            index=None if args.append else 0,
         )
     except CredentialsError as exc:
         # load_conan_credentials() raises this for a ~/.xmsconan.toml that does
