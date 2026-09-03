@@ -15,7 +15,7 @@ file precisely so it never has to be typed onto a command line.
 """
 from pathlib import Path
 
-import toml
+from xmsconan._tomllib import loads, TOMLDecodeError
 
 CONFIG_FILENAME = ".xmsconan.toml"
 
@@ -41,7 +41,7 @@ def _load_section(config_path, section):
 
     An absent config file is a normal state -- credentials may come from the
     CLI or the environment instead -- so it yields an empty dict. A file that
-    exists but does not parse is not: swallowing ``TomlDecodeError`` made the
+    exists but does not parse is not: swallowing the decode error made the
     two indistinguishable, so a stray character in ``~/.xmsconan.toml``
     surfaced as ``wheel_deploy``'s "No devpi URL provided (--url,
     $AQUAPI_URL, or ~/.xmsconan.toml)" -- advice to configure the very file
@@ -62,8 +62,10 @@ def _load_section(config_path, section):
     if not path.is_file():
         return {}
     try:
-        data = toml.load(path)
-    except toml.TomlDecodeError as exc:
+        data = loads(path.read_text(encoding="utf-8"))
+    except (TOMLDecodeError, UnicodeDecodeError) as exc:
+        # TOML is UTF-8 by definition, so a file in another encoding is
+        # as unparseable as one with a syntax error, and gets the same report.
         raise CredentialsError(f"Could not parse {path}: {exc}") from exc
     table = data.get(section, {})
     if not isinstance(table, dict):

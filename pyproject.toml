@@ -32,7 +32,10 @@ dependencies = [
     "jinja2",
     "setuptools-scm",
     "tabulate",
-    "toml",
+    # The TOML parser. tomllib is standard from 3.11; tomli is the same API
+    # for the one older interpreter still supported. xmsconan/_tomllib.py
+    # picks between them, and nothing else imports either directly.
+    'tomli; python_version < "3.11"',
 ]
 
 [project.scripts]
@@ -52,6 +55,25 @@ xmsconan_publish = "xmsconan.ci_tools.publish:main"
 
 [project.optional-dependencies]
 test = ["pytest", "pyyaml"]
+
+[dependency-groups]
+# Everything a contributor -- and xmsconan's own CI -- needs beyond the
+# runtime dependencies: `uv sync --group dev`. The `test` extra above stays
+# for consumers that pip-install it; this group is the superset that also
+# carries the linter and the coverage plugin. `tomli` is here
+# unconditionally so the < 3.11 fallback in xmsconan/_tomllib.py can be
+# exercised on every interpreter, not only the 3.10 CI leg.
+dev = [
+    "flake8",
+    "flake8-bugbear",
+    "flake8-docstrings",
+    "flake8-import-order",
+    "pep8-naming",
+    "pytest",
+    "pytest-cov",
+    "pyyaml",
+    "tomli",
+]
 
 [project.urls]
 Homepage = "https://github.com/Aquaveo/xmsconan"

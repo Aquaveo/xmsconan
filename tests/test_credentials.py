@@ -2,6 +2,7 @@
 import pytest
 
 from xmsconan.ci_tools.credentials import (
+    CredentialsError,
     load_conan_credentials,
     load_credentials,
     read_password_file,
@@ -74,6 +75,15 @@ def test_load_conan_credentials_invalid_toml_raises(tmp_path):
 
     with pytest.raises(ValueError, match=r"Could not parse .*\.xmsconan\.toml"):
         load_conan_credentials(config_path=cfg)
+
+
+def test_load_credentials_non_utf8_raises(tmp_path):
+    """A config file that is not UTF-8 is reported as unparseable, not as a stray ``UnicodeDecodeError``."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_bytes(b'[aquapi]\nusername = "caf\xe9"\n')  # latin-1 e-acute: not valid UTF-8
+
+    with pytest.raises(CredentialsError, match=r"Could not parse .*\.xmsconan\.toml"):
+        load_credentials(config_path=cfg)
 
 
 # --- load_conan_credentials ---
