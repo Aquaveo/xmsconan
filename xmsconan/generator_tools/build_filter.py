@@ -181,10 +181,12 @@ def _reject_unbuildable_filter(build_filter: dict, python_versions, matrix=None)
     individually legal, and together they build nothing.
     """
     # [buildenv] is left out of this check: those values come from the
-    # environment doing the generating (XMS_VERSION, CI_COMMIT_TAG, AQUAPI_* are
-    # all os.getenv in generate_configurations, and XMS_TEST_ARTIFACTS_LABEL is
+    # environment doing the generating (XMS_VERSION and CI_COMMIT_TAG are
+    # os.getenv in generate_configurations, and XMS_TEST_ARTIFACTS_LABEL is
     # added per configuration by run()), so at generation time they are None or
-    # absent and *any* pin would look unbuildable. Names and value shapes are
+    # absent and *any* pin would look unbuildable. The AQUAPI_* credentials are
+    # not among them: they are deliberately never placed in [buildenv], because
+    # conan echoes every profile it is handed to stdout. Names and value shapes are
     # still validated by validate_filter_dict; whether a pin matches is only
     # knowable in the build environment.
     settings_only = {key: value for key, value in build_filter.items() if key != "buildenv"}

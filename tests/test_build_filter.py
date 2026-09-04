@@ -123,10 +123,13 @@ def test_load_build_filter_accepts_a_buildenv_pin():
     """A [filter.buildenv] pin is not judged unbuildable at generation time.
 
     Those values come from the environment doing the generating -- XMS_VERSION
-    and the AQUAPI_* names are os.getenv in generate_configurations, and
+    and CI_COMMIT_TAG are os.getenv in generate_configurations, and
     XMS_TEST_ARTIFACTS_LABEL is added per configuration by run() -- so at
     generation time they are None or absent. Checking them for emptiness
     rejected every buildenv pin, making a documented feature unusable.
+
+    The AQUAPI_* credentials are not pinnable here and never were: they are
+    kept out of [buildenv] entirely, so they are not names the profiles set.
     """
     for name in ("XMS_VERSION", "PYTHON_TARGET_VERSION", "XMS_TEST_ARTIFACTS_LABEL"):
         config = BuildToml(library_name="xmscore", filter={"buildenv": {name: "1"}})

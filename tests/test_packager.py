@@ -17,9 +17,11 @@ from xmsconan.constants import (
     VS2019_REMOTE_NAME,
 )
 from xmsconan.package_tools.packager import (
+    config_label,
     configurations,
     emitted_buildenv_keys,
     get_current_arch,
+    PUBLIC_BUILDENV_KEYS,
     summarize_filter_matches,
     validate_filter_dict,
     XmsConanPackager,
@@ -2010,6 +2012,136 @@ def test_generate_configurations_keeps_credentials_out_of_buildenv():
     for configuration in configurations:
         leaked = [key for key in configuration["buildenv"] if key.startswith("AQUAPI_")]
         assert not leaked, f"credential keys reached buildenv: {leaked}"
+
+
+def test_configurations_covers_every_platform_the_allow_list_test_parametrizes():
+    """Pin the platform table, because the test below parametrizes over it.
+
+    ``sorted(configurations)`` is the parametrize axis, so a platform dropped
+    from the table takes its allow-list check away with it and the suite still
+    passes -- one platform lighter, and silently. Naming the set here turns
+    that narrowing into a failure that says which platform went missing.
+    """
+    assert set(configurations) == {"windows", "windows_vs2019", "linux", "darwin"}
+
+
+@patch_env({
+    "AQUAPI_PASSWORD": "s3cret-value",
+    "AQUAPI_USERNAME": "ci-bot",
+    "CONAN_PASSWORD_AQUAVEO": "conan-secret",
+    "GITHUB_TOKEN": "gh-token",
+})
+@pytest.mark.parametrize("system_platform", sorted(configurations))
+def test_every_generated_buildenv_key_is_public(system_platform):
+    """Every [buildenv] name in every configuration is on the allow-list.
+
+    Both profiles are public -- the committed one, and the ephemeral one that
+    `create_build_profile` prints before conan echoes it under "Input
+    profiles" -- so nothing can be filtered out on the way to disk; a secret
+    has to be absent from buildenv altogether. This is the guard for that: a
+    new [buildenv] entry fails here until it is consciously added to
+    PUBLIC_BUILDENV_KEYS, which is the moment to ask whether it belongs in a
+    job log. The credential-shaped variables above are set so a generator that
+    copies its environment into buildenv fails here rather than passes.
+
+    run() adds one more name to the copy it hands conan; the test below
+    covers that profile, since this one never sees it.
+    """
+    generated = _packager_for(system_platform, coverage=True).configurations
+
+    assert generated, "no configurations -- the assertion below would pass vacuously"
+    for configuration in generated:
+        outside = sorted(set(configuration["buildenv"]) - PUBLIC_BUILDENV_KEYS)
+        assert not outside, (
+            f"{config_label(configuration)}: buildenv keys outside PUBLIC_BUILDENV_KEYS: {outside}"
+        )
+
+
+def _buildenv(profile_text):
+    """A serialized profile's ``[buildenv]`` section, as a mapping.
+
+    The values matter as well as the names: run() writes one profile per
+    configuration to the same temp path, so the only thing that tells the
+    captured profiles apart afterwards is the label run() itself put in
+    ``XMS_TEST_ARTIFACTS_LABEL``.
+    """
+    section = profile_text.split("[buildenv]\n", 1)[1].split("\n[", 1)[0]
+    return dict(line.split("=", 1) for line in section.splitlines() if "=" in line)
+
+
+@patch_env({
+    "AQUAPI_PASSWORD": "s3cret-value",
+    "CONAN_PASSWORD_AQUAVEO": "conan-secret",
+    "GITHUB_TOKEN": "gh-token",
+}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_hands_conan_only_public_buildenv_keys(mock_run, tmp_path):
+    """The profile run() prints and hands to conan carries only allow-listed keys.
+
+    run() serializes a copy of each configuration with XMS_TEST_ARTIFACTS_LABEL
+    added, so the profile conan echoes to the log is not the one the
+    generate-time test above inspects. The temp profile is overwritten per
+    configuration, so subprocess.run is replaced with a reader that captures
+    each one at the moment `conan create` would have read it.
+
+    The stand-in is a real CompletedProcess rather than a MagicMock: a mock
+    answers every attribute the caller reaches for, so it would keep this test
+    green through a change that starts reading a field conan never returned.
+    """
+    captured = []
+
+    def capture(cmd, *args, **kwargs):
+        if cmd[:2] == ["conan", "create"]:
+            profile = Path(cmd[cmd.index("--profile") + 1]).read_text()
+            buildenv = _buildenv(profile)
+            captured.append((buildenv.get("XMS_TEST_ARTIFACTS_LABEL"), set(buildenv)))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    mock_run.side_effect = capture
+    packager = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path))
+    packager.generate_configurations(system_platform="linux")
+
+    packager.run()
+
+    assert captured, "no conan create ran -- the assertions below would pass vacuously"
+    # Asserted per profile rather than with `all(...)`: run() writes one per
+    # configuration, and a failure has to name which of them carried the key
+    # that does not belong.
+    for label, keys in captured:
+        assert label is not None, "a profile reached conan without run()'s own key, which is under test"
+        outside = sorted(keys - PUBLIC_BUILDENV_KEYS)
+        assert not outside, f"{label}: buildenv keys outside PUBLIC_BUILDENV_KEYS: {outside}"
+
+
+def test_emitted_buildenv_keys_are_all_public():
+    """Every name the matrix can emit, run()'s label included, is on the allow-list."""
+    assert emitted_buildenv_keys() <= PUBLIC_BUILDENV_KEYS, (
+        sorted(emitted_buildenv_keys() - PUBLIC_BUILDENV_KEYS)
+    )
+
+
+def test_serialize_profile_refuses_a_buildenv_name_outside_the_allow_list(tmp_path):
+    """An off-list ``[buildenv]`` name stops the write instead of being dropped.
+
+    The guard sits on the one path both profiles go through, so this one test
+    covers `write_profiles` and `create_build_profile` together -- and covers
+    a third writer added later, which is why the check lives there rather than
+    in either caller.
+
+    The file's absence is asserted alongside the raise, because refusing and
+    filtering differ exactly there: a filter would leave a profile on disk
+    that conan could still be handed, minus an entry nobody was told had been
+    removed.
+    """
+    packager = _linux_packager()
+    configuration = dict(packager.configurations[0])
+    configuration["buildenv"] = dict(configuration["buildenv"], AQUAPI_PASSWORD="s3cret-value")
+    path = tmp_path / "leaky.txt"
+
+    with pytest.raises(ValueError, match="AQUAPI_PASSWORD"):
+        packager._serialize_profile(configuration, str(path))
+
+    assert not path.exists()
 
 
 # --- generator variants ---

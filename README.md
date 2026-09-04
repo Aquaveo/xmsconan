@@ -37,7 +37,7 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan vs2019` | Build/publish the manual VS2019 (msvc 192) matrix (see `docs/USAGE.md` §16) |
 | `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |
 | `xmsconan wheel-repair` | Repair Python wheels for the current platform (Linux/macOS/Windows) |
-| `xmsconan wheel-deploy` | Upload repaired wheels to a devpi index |
+| `xmsconan wheel-deploy` | Upload repaired wheels to a devpi index with `uv publish` |
 | `xmsconan conan-deploy` | Save, restore, or upload Conan packages in CI |
 | `xmsconan publish` | Build, repair, and deploy a library |
 
@@ -250,14 +250,18 @@ xmsconan wheel-deploy --wheel-dir wheelhouse
 
 # Point at a different index without moving the credentials
 xmsconan wheel-deploy --wheel-dir wheelhouse --url https://... --username user
+
+# Password from a file rather than the environment
+xmsconan wheel-deploy --wheel-dir wheelhouse --password-file ~/.aquapi-password
 ```
 
-`--password` exists, but it puts the password in this process's command line —
-where your shell history, `ps`, and Windows process-creation auditing all read
-it. Use `$AQUAPI_PASSWORD` or the `[aquapi]` section of `~/.xmsconan.toml`
-(`docs/USAGE.md` §17) instead. This is the one credential xmsconan still hands
-to a subprocess on a command line; the Conan side does not (see
-`xmsconan conan-setup --password-file` and `docs/USAGE.md` §16.2).
+The upload is `uv publish`, with the username and password handed to it in its
+environment (`UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD`), so the password is
+never on a command line — not this process's (there is deliberately no
+`--password` flag, only `--password-file`, as with `conan-setup`) and not the
+child's. `--client devpi` keeps the old devpi-client path for one release; it is
+the last place a password went on a subprocess's argv. See `docs/USAGE.md` §13
+and §17.
 
 #### Conan Deploy
 
