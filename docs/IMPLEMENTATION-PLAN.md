@@ -30,9 +30,9 @@
 ```
 Phase 0  operational (S1)                    — no code, do now
    │
-Phase 1  foundations (R5 R6 R7 R8 S6)         — CI of xmsconan itself
+Phase 1  foundations (R5 R6 R7 R8)            — CI of xmsconan itself
    │
-   ├── Phase 2  secrets hardening (S1–S5)      — one template + one tool PR
+   ├── Phase 2  secrets hardening (S1–S6)      — one template + one tool PR
    │
    ├── Phase 3  template safety net (R19 R18)  ─┐
    │                                            ├── Phase 5  xmsconan job (design)
@@ -65,7 +65,7 @@ One PR. Nothing here changes generated output.
 | 1.2 | **R5** Python matrix | Workflow matrix `["3.10", "3.13", "3.14"]`. | The `toml` fallback branch (`build_toml.py:14-17`) executes on the 3.10 leg |
 | 1.3 | **R6** Coverage gate | `pytest --cov=xmsconan --cov-fail-under=90` in CI; the per-module low spots in the review's health snapshot become the targets for 7.10. | CI fails below 90 %; the current tree passes |
 | 1.4 | **R8** `toml` → `tomli` | `tomli; python_version < "3.11"` in dependencies; `credentials.py:56` and `build_toml.py:14-17` share one `_tomllib` import shim. | `toml` no longer appears in `pyproject.toml` or the templates' pip lines (the template line goes in 5.1 if not here) |
-| 1.5 | **S6** `AQUAPI_URL` | `.github/workflows/xmsconan-ci.yaml`: read the index URL from `vars.AQUAPI_URL_DEV`, not `secrets.`. The generated GitHub template makes the same switch in 5.4 (or in Phase 2 if the secrets PR touches that block anyway). | `Looking in indexes:` is legible in the xmsconan CI log |
+| 1.5 | **S6** `AQUAPI_URL` | *Moved to 2b.1.* xmsconan's own workflow hard-codes the index URL in `devpi use`, so nothing there is masked; every `secrets.AQUAPI_URL_DEV` reference is in the generated GitHub templates, which 2b.1 rewrites anyway. | — |
 
 Size: M. Docs: README "Development" section gains the `uv sync --group dev`
 and `pre-commit install` lines.
@@ -91,7 +91,7 @@ Phase 5 rewrites.
 
 | # | Item | Change | Test |
 |---|---|---|---|
-| 2b.1 | **S3** Step-scope GitHub secrets | `github-ci.yaml.jinja`: delete `CONAN_*` / `AQUAPI_*` from the job-level `env:` blocks (`:119-125`, `:281`, `:431`, `:575`; `github-coverage.yaml.jinja:34-39`). Put `CONAN_LOGIN_USERNAME` / `CONAN_PASSWORD` on the `xmsconan_conan_setup --login` step (`:158`) and `AQUAPI_*` on the wheel-upload step (`:216`). Leave `CONAN_PASSWORD` on the `build.py --upload` step until a tag pipeline confirms conan's persisted token suffices, then remove it. | Golden-file test if Phase 3 has landed; otherwise assertions that no `secrets.` reference appears at job level |
+| 2b.1 | **S3, S6** Step-scope GitHub secrets | `github-ci.yaml.jinja`: delete `CONAN_*` / `AQUAPI_*` from the job-level `env:` blocks (`:119-125`, `:281`, `:431`, `:575`; `github-coverage.yaml.jinja:34-39`). Put `CONAN_LOGIN_USERNAME` / `CONAN_PASSWORD` on the `xmsconan_conan_setup --login` step (`:158`) and `AQUAPI_*` on the wheel-upload step (`:216`). Leave `CONAN_PASSWORD` on the `build.py --upload` step until a tag pipeline confirms conan's persisted token suffices, then remove it. While there, read the index URL from `vars.AQUAPI_URL_DEV` instead of `secrets.` (S6): a public URL masked as `***` hides the `Looking in indexes:` diagnostic without protecting anything. | Golden-file test if Phase 3 has landed; otherwise assertions that no `secrets.` reference appears at job level; `Looking in indexes:` is legible in a consumer's GitHub CI log |
 | 2b.2 | **S2** template | Replace the `devpi` install and the `xmsconan_wheel_deploy` invocation's environment with the `UV_PUBLISH_*` names from 2a.1 in both templates. | Same |
 
 Regenerate consumers once after 2b. Size: 2a M, 2b S. Verify on one tag
@@ -252,7 +252,7 @@ Any time; each row is its own small PR.
 | R7 | 1.1 | R15 | 7.4 | R23 | 7.8 |
 | R8 | 1.4 | R16 | 4.4 | R24 | 7.9 |
 | S1 | 0.1 + 2a.4 | S3 | 2b.1 (fully realised in 5.4) | S5 | 2a.3 |
-| S2 | 2a.1 + 2b.2 | S4 | 2a.2 | S6 | 1.5 |
+| S2 | 2a.1 + 2b.2 | S4 | 2a.2 | S6 | 2b.1 |
 
 ## Definition of done, per PR
 
