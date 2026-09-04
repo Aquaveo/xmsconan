@@ -629,7 +629,11 @@ The generated jobs follow the pattern:
   profile it is handed to stdout under "Input profiles" before every `conan create`, so a credential put there is
   printed to the job log in cleartext. Nothing in the recipe or the generated CMake reads them, so a build is
   unaffected. This is why they are absent from the `[filter.buildenv]` names in §5.8 -- they are not names the
-  profiles set.
+  profiles set. The absence is enforced, not merely maintained: the single function that serializes a profile
+  refuses to write a `[buildenv]` name outside the allow-list, so a credential that reached a configuration by
+  accident fails the build at that point rather than being quietly dropped from one profile and printed by
+  another. Adding a genuinely new build variable therefore means adding its name to `PUBLIC_BUILDENV_KEYS` --
+  which is the moment to ask whether it is safe to print in a job log.
 - **Concurrent `conan remote add` on one runner.** Each Windows job adds its remotes at the start, and several jobs share a machine, so they write one `~/.conan2/remotes.json`. Conan writes it as `remotes.json.tmp` plus an `os.replace`, so the file cannot be torn — but there is no lock around the read-modify-write, so two jobs adding remotes in the same instant can lose one of the two additions. The failure is loud (the job that lost its remote fails resolving dependencies; it does not publish to the wrong place) and the fix — a per-job `CONAN_HOME` — would give up the shared package cache these builds depend on, so it is left alone deliberately. Retry the job.
 - Required CI variables with `[ci].windows_vs2019`: `CONAN_LOGIN_USERNAME_AQUAVEO_VS2019` and
   `CONAN_PASSWORD_AQUAVEO_VS2019`, for the upload to `aquaveo-vs2019`. Conan derives those names by uppercasing

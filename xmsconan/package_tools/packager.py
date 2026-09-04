@@ -75,6 +75,12 @@ class ProfilePlan(NamedTuple):
 # holds every configuration to: a new [buildenv] name fails that test until it
 # is consciously admitted here, which is the moment to ask whether it belongs
 # in a log.
+#
+# `_serialize_profile` refuses to write a name that is not here. That is the
+# backstop, not the guard -- it fires only if a key reached a configuration in
+# spite of the tests above -- and it refuses instead of filtering, so it stops
+# the committed profile and the printed one together rather than quietly
+# dropping an entry from one of them.
 PUBLIC_BUILDENV_KEYS = frozenset({
     'XMS_VERSION',
     'PYTHON_TARGET_VERSION',
@@ -1716,13 +1722,24 @@ class XmsConanPackager(object):
         """Write one configuration to a Conan profile file.
 
         Single serialization path shared by the ephemeral build profile and the
-        profiles written into a repository by :meth:`write_profiles`. It writes
-        ``[buildenv]`` as it finds it, on purpose: every profile is public --
-        the committed one obviously, and the ephemeral one because
-        :meth:`create_build_profile` prints it and conan echoes it under
-        "Input profiles" -- so the keys are held to ``PUBLIC_BUILDENV_KEYS``
-        where the configurations are generated, not filtered here. A filter at
-        this point would protect the file on disk and not the log.
+        profiles written into a repository by :meth:`write_profiles`. Every
+        profile is public -- the committed one obviously, and the ephemeral one
+        because :meth:`create_build_profile` prints it and conan echoes it
+        under "Input profiles" -- so a ``[buildenv]`` name outside
+        ``PUBLIC_BUILDENV_KEYS`` stops the write.
+
+        It refuses rather than filters, which is the whole difference. A filter
+        drops the offending entry and lets the build go on with a profile
+        nobody was told had changed, and it guards whichever profile it sits
+        in front of. Raising at the one path both *kinds* of profile go
+        through covers them with one check, and stops the ephemeral one before
+        conan can echo it. It is not atomic across a :meth:`write_profiles`
+        run: the check is per file, so profiles serialized before the raise
+        are already on disk. None of them holds the refused name -- the file
+        that would have is the one that raised.
+        The keys are still kept out of ``combination['buildenv']`` in
+        ``generate_configurations``; this is the backstop for that, not a
+        replacement for it.
 
         Args:
             configuration: One entry from :attr:`configurations`.
@@ -1732,8 +1749,24 @@ class XmsConanPackager(object):
                 which Conan would faithfully export into the build.
             conf: Mapping written as a ``[conf]`` section. None omits the
                 section entirely, preserving the ephemeral profile's shape.
+
+        Raises:
+            ValueError: A ``[buildenv]`` name is not in
+                ``PUBLIC_BUILDENV_KEYS``.
         """
         settings = {k: v for k, v in configuration.items() if k not in ['options', 'buildenv']}
+
+        buildenv = configuration['buildenv']
+        outside = sorted(set(buildenv) - PUBLIC_BUILDENV_KEYS)
+        if outside:
+            raise ValueError(
+                f'Refusing to write {path}: [buildenv] names outside '
+                f'PUBLIC_BUILDENV_KEYS: {outside}. Every profile xmsconan writes is '
+                f'public -- the committed one, and the ephemeral one conan echoes '
+                f'under "Input profiles" -- so a name that is not on the allow-list '
+                f'must not reach a profile at all. Add it to PUBLIC_BUILDENV_KEYS if '
+                f'it is safe to print, or keep it out of the configuration.'
+            )
 
         with open(path, 'w') as f:
             f.write('[settings]\n')
@@ -1749,7 +1782,7 @@ class XmsConanPackager(object):
                     f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
 
             f.write('\n[buildenv]\n')
-            for k, v in configuration['buildenv'].items():
+            for k, v in buildenv.items():
                 if skip_empty and v is None:
                     continue
                 f.write(f'{k}={v}\n')

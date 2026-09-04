@@ -43,6 +43,15 @@ dependencies = [
     # generated Wheel Deploy jobs, which install nothing else -- so the switch
     # needs no consumer regeneration. `uv publish` arrived in the 0.4 series;
     # 0.5 is the floor.
+    #
+    # Those jobs install with `-i` (index-url, not extra-index-url), so this
+    # dependency has to resolve from the Aquaveo index rather than PyPI --
+    # and uv ships as platform-specific wheels, so mirroring the project is
+    # not enough on its own. Checked:
+    # https://public.aquapi.aquaveo.com/aquaveo/dev/+simple/uv/ answers 200 and
+    # lists manylinux_2_17_x86_64 and win_amd64 wheels, which are the two the
+    # generated deploy jobs need. Re-check that page, not just the project's
+    # existence, before raising this floor.
     "uv>=0.5",
 ]
 

@@ -116,10 +116,18 @@ jobs:
         id: gitTag
         uses: little-core-labs/get-git-tag@2c292ff564c1a61b989e29f0410d131317f89b03  # v3.0.2
       # Check Tag
+      #
+      # The tag reaches python through the environment, not through the `-c`
+      # string. A tag name is caller-supplied text, and GitHub substitutes
+      # `${{ }}` before the shell parses the line -- so a tag carrying a quote
+      # or `$(...)` would run as this step, in the job whose Upload Wheel step
+      # holds the deploy credentials.
       - name: Check Tag Against Version
+        env:
+          GIT_TAG: ${{ steps.gitTag.outputs.tag }}
         run: |
-          uv run --no-sync python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + ' | Tag: ${{ steps.gitTag.outputs.tag }}')"
-          uv run --no-sync python -c "from xmsconan import __version__; exit(0 if __version__ == '${{ steps.gitTag.outputs.tag }}' else 1)"
+          uv run --no-sync python -c "import os; from xmsconan import __version__; print('Version: ' + str(__version__) + ' | Tag: ' + os.environ['GIT_TAG'])"
+          uv run --no-sync python -c "import os, sys; from xmsconan import __version__; sys.exit(0 if __version__ == os.environ['GIT_TAG'] else 1)"
       # Build Wheel
       - name: Build Wheel
         run: |

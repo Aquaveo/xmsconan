@@ -10,13 +10,22 @@ Credentials are resolved in order:
   2. Environment variables (``AQUAPI_URL``, ``AQUAPI_USERNAME``, ``AQUAPI_PASSWORD``)
   3. ``~/.xmsconan.toml`` config file (see :mod:`xmsconan.ci_tools.credentials`)
 
-The password never goes on a command line, in either direction.  There is no
-``--password`` flag, for the reason ``conan-setup`` has none: a process's argv
-is copied into shell history, ``ps`` output, and the Windows Event 4688 /
-Sysmon record that ships to the SIEM in cleartext.  And the upload itself is
-``uv publish``, which reads ``UV_PUBLISH_USERNAME`` and ``UV_PUBLISH_PASSWORD``
-from its environment, so the child gets the secret the way ``conan remote
-login`` gets ``CONAN_PASSWORD_<REMOTE>`` from ``conan_setup``.
+For this entry point the password never goes on a command line, in either
+direction -- except on the deprecated ``--client devpi`` path described
+below, which is the one place it still does.  There is no ``--password``
+flag, for the reason ``conan-setup`` has none: a process's argv is copied
+into shell history, ``ps`` output, and the Windows Event 4688 / Sysmon
+record that ships to the SIEM in cleartext.
+And the upload itself is ``uv publish``, which reads ``UV_PUBLISH_USERNAME``
+and ``UV_PUBLISH_PASSWORD`` from its environment, so the child gets the secret
+the way ``conan remote login`` gets ``CONAN_PASSWORD_<REMOTE>`` from
+``conan_setup``.
+
+The qualifier is load-bearing: ``xmsconan publish`` still registers its own
+``--password`` and forwards the value to :func:`wheel_deploy`, so that command
+puts the same secret on xmsconan's argv.  Closing it is a change to that
+command's interface and is made separately; until then the claim above is
+about ``xmsconan_wheel_deploy``, not about every route into this function.
 
 The ``uv`` that runs is the one the ``uv`` package -- a dependency of
 xmsconan -- installed next to this code, found with ``uv.find_uv_bin()``.
@@ -27,11 +36,14 @@ runs ``xmsconan_wheel_deploy`` from exactly such an install.
 ``--client devpi`` keeps the previous ``devpi use`` / ``devpi login
 --password`` / ``devpi upload`` sequence for one release.  It is the last
 place xmsconan puts a password on a subprocess's argv, it says so on stderr
-every time it runs, and it goes away in the release after this one.
+every time it runs, and it goes away in the release after this one.  The two
+clients do not upload the same files: ``devpi upload --from-dir`` ships the
+whole directory, sdists and anything stale in it included, where the uv path
+ships exactly the ``*.whl`` :func:`_wheels_in` found.
 """
 import argparse
-import glob
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -89,6 +101,15 @@ def _wheels_in(wheel_dir):
     so an empty wheelhouse has to be refused here, or a deploy job with
     nothing to upload exits 0 having uploaded nothing.
 
+    A directory that is not there is reported as itself rather than as an
+    empty one.  They are different faults -- an artifact download that never
+    ran, against a build that produced no wheel -- and answering the first
+    with "no wheels to upload" sends the operator to the wrong one.
+
+    The match is ``Path.glob`` rather than ``glob.glob`` because the latter
+    reads ``[``, ``]``, ``*`` and ``?`` in *wheel_dir* itself as pattern
+    syntax: a wheelhouse under such a path matched nothing and looked empty.
+
     Args:
         wheel_dir: Directory holding the repaired wheels.
 
@@ -96,9 +117,12 @@ def _wheels_in(wheel_dir):
         The wheel paths.
 
     Raises:
-        WheelDeployError: There is no wheel to upload.
+        WheelDeployError: *wheel_dir* is not a directory, or holds no wheel.
     """
-    wheels = sorted(glob.glob(os.path.join(wheel_dir, "*.whl")))
+    directory = Path(wheel_dir)
+    if not directory.is_dir():
+        raise WheelDeployError(f"Wheel directory does not exist: {wheel_dir}")
+    wheels = sorted(str(wheel) for wheel in directory.glob("*.whl"))
     if not wheels:
         raise WheelDeployError(f"No wheels to upload in {wheel_dir}")
     return wheels
@@ -132,8 +156,15 @@ def _publish_with_devpi(url, username, password, wheel_dir):
     )
 
 
-def wheel_deploy(wheel_dir="wheelhouse", url=None, username=None, password=None, client="uv"):
+def wheel_deploy(wheel_dir="wheelhouse", *, url=None, username=None, password=None, client="uv"):
     """Upload the wheels in *wheel_dir* to a devpi index.
+
+    Everything after *wheel_dir* is keyword-only.  Four bare strings in a row,
+    three of them a URL, a username and a password, are interchangeable at a
+    call site: swapping the last two puts the password in
+    ``UV_PUBLISH_USERNAME``, where the index's own authentication failure is
+    free to echo it back into the job log.  Both callers already pass
+    keywords, so the restriction costs nothing and removes the shape.
 
     Args:
         wheel_dir: Directory containing repaired ``.whl`` files.
@@ -150,8 +181,8 @@ def wheel_deploy(wheel_dir="wheelhouse", url=None, username=None, password=None,
             command line; kept for one release.
 
     Raises:
-        WheelDeployError: A credential is missing, or *wheel_dir* holds no
-            wheel.
+        WheelDeployError: A credential is missing or is not a string, or
+            *wheel_dir* holds no wheel.
         CredentialsError: ``~/.xmsconan.toml`` exists but cannot be used.
         ValueError: *client* is not one of ``UPLOAD_CLIENTS``.
         FileNotFoundError: The upload tool is not installed.
@@ -180,6 +211,21 @@ def wheel_deploy(wheel_dir="wheelhouse", url=None, username=None, password=None,
             "No devpi password provided (--password-file, $AQUAPI_PASSWORD, or ~/.xmsconan.toml)"
         )
 
+    # A value out of ~/.xmsconan.toml is whatever TOML decoded, and only the
+    # [aquapi] table itself is type-checked on the way out (credentials.py).
+    # `password = 12345678` without quotes -- a realistic all-digit password --
+    # decodes as an int, which reaches subprocess.run's env as a non-str and
+    # raises TypeError from inside the upload, past every handler in main().
+    # Every other unusable-config shape here answers with one line and exit 2,
+    # so this one does too. The type is named and the value is not: whichever
+    # of the three is wrong, the message is going to a terminal or a job log.
+    for name, value in (("url", url), ("username", username), ("password", password)):
+        if not isinstance(value, str):
+            raise WheelDeployError(
+                f"The {name} is {type(value).__name__}, not a string. In "
+                f'~/.xmsconan.toml write it quoted: {name} = "..."'
+            )
+
     # The emptiness check applies to both clients: a deploy with nothing to
     # upload is an error whichever tool would have run.
     wheels = _wheels_in(wheel_dir)
@@ -190,8 +236,13 @@ def wheel_deploy(wheel_dir="wheelhouse", url=None, username=None, password=None,
         _publish_with_uv(url, username, password, wheels)
 
 
-def main():
-    """CLI entry point for ``xmsconan_wheel_deploy``."""
+def _build_parser():
+    """Return the ``xmsconan_wheel_deploy`` parser.
+
+    Split out so ``main`` reads as what it does -- resolve the password file,
+    deploy, map each fault to an exit status -- instead of that logic sitting
+    below thirty lines of declarative ``add_argument``.
+    """
     parser = argparse.ArgumentParser(
         description="Upload repaired wheels to a devpi index with uv publish.",
     )
@@ -222,6 +273,12 @@ def main():
              "command line.",
     )
     add_refused_password_flag(parser, env_var="AQUAPI_PASSWORD", section="aquapi")
+    return parser
+
+
+def main():
+    """CLI entry point for ``xmsconan_wheel_deploy``."""
+    parser = _build_parser()
     args = parser.parse_args()
     try:
         password = read_password_file(args.password_file) if args.password_file else None

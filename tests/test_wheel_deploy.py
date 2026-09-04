@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 from uv import find_uv_bin
@@ -14,8 +14,26 @@ from .utils import patch_env
 UV = "/venv/bin/uv"
 
 
+@pytest.fixture(autouse=True)
+def _no_developer_config():
+    """Keep the suite off the real ``~/.xmsconan.toml`` of whoever runs it.
+
+    ``wheel_deploy`` calls ``load_credentials()`` on every path, and
+    ``patch_env(clear=True)`` does not stop it: unsetting HOME only makes
+    ``Path.home()`` fall back to the password database, so the developer's own
+    config file is still found. A file that holds a URL would then supply the
+    credential a "missing credential" test needs absent, and one that does not
+    parse would red every test here for a reason that has nothing to do with
+    the code under test. Tests that want config values patch the same name
+    themselves, which takes effect inside this one.
+    """
+    with patch("xmsconan.ci_tools.wheel_deploy.load_credentials", return_value={}):
+        yield
+
+
 def _wheelhouse(tmp_path, *names):
     """A wheel directory holding empty wheels called *names*, as a str path."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     for name in names or ("xmscore-7.0.0-cp313-cp313-linux_x86_64.whl",):
         (tmp_path / name).write_bytes(b"")
     return str(tmp_path)
@@ -135,40 +153,69 @@ def test_deploy_from_config_file(mock_run, mock_uv, mock_creds, tmp_path):
     assert kwargs["env"]["UV_PUBLISH_PASSWORD"] == "cfgpass"
 
 
+@pytest.mark.parametrize(("present", "message"), [
+    pytest.param({}, "No devpi URL", id="url"),
+    pytest.param({"AQUAPI_URL": "https://x/"}, "No devpi username", id="username"),
+    pytest.param(
+        {"AQUAPI_URL": "https://x/", "AQUAPI_USERNAME": "u"},
+        # Names the flag that supplies it, which is --password-file and not
+        # the --password this entry point refuses.
+        r"No devpi password provided \(--password-file",
+        id="password",
+    ),
+])
+def test_missing_credential_raises(present, message, monkeypatch):
+    """Each missing credential is its own WheelDeployError naming how to supply it.
+
+    Parametrized over which credentials are present rather than written three
+    times: the cases differ only in that, and the id says which one is under
+    test when one fails.
+    """
+    for name in ("AQUAPI_URL", "AQUAPI_USERNAME", "AQUAPI_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in present.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(WheelDeployError, match=message):
+        wheel_deploy()
+
+
+@pytest.mark.parametrize("key", ["url", "username", "password"])
 @patch_env(clear=True)
-@patch(
-    "xmsconan.ci_tools.wheel_deploy.load_credentials",
-    return_value={},
-)
-def test_missing_url_raises(mock_creds):
-    """Raises WheelDeployError when no URL is available."""
-    with pytest.raises(WheelDeployError, match="No devpi URL"):
-        wheel_deploy()
+@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
+def test_non_string_credential_from_the_config_file_is_a_usage_error(mock_run, key, tmp_path):
+    """An unquoted TOML value is reported, not left to fail inside subprocess.
+
+    ``password = 12345678`` in ~/.xmsconan.toml decodes as an int, and only
+    the [aquapi] table itself is type-checked on the way out. Without this
+    guard the int reaches ``subprocess.run``'s env and raises TypeError from
+    inside the upload -- past every handler in ``main``, so the operator gets
+    a traceback where every other unusable-config shape gives one line.
+    """
+    config = {"url": "https://x/", "username": "u", "password": "p"}
+    config[key] = 12345678
+
+    with patch("xmsconan.ci_tools.wheel_deploy.load_credentials", return_value=config):
+        with pytest.raises(WheelDeployError, match=f"The {key} is int, not a string"):
+            wheel_deploy(wheel_dir=_wheelhouse(tmp_path))
+
+    mock_run.assert_not_called()
 
 
-@patch_env({"AQUAPI_URL": "https://x/"}, clear=True)
-@patch(
-    "xmsconan.ci_tools.wheel_deploy.load_credentials",
-    return_value={},
-)
-def test_missing_username_raises(mock_creds):
-    """Raises WheelDeployError when no username is available."""
-    with pytest.raises(WheelDeployError, match="No devpi username"):
-        wheel_deploy()
+@patch_env(clear=True)
+def test_a_refused_credential_type_is_named_but_never_printed(tmp_path):
+    """The message names the type and not the value, whichever credential it is.
 
+    All three land in a terminal or a job log, and the password is not the
+    only one worth keeping out of it -- an index URL can carry a token.
+    """
+    config = {"url": "https://x/", "username": "u", "password": 12345678}
 
-@patch_env(
-    {"AQUAPI_URL": "https://x/", "AQUAPI_USERNAME": "u"},
-    clear=True
-)
-@patch(
-    "xmsconan.ci_tools.wheel_deploy.load_credentials",
-    return_value={},
-)
-def test_missing_password_raises(mock_creds):
-    """Raises WheelDeployError when no password is available, naming --password-file as the flag."""
-    with pytest.raises(WheelDeployError, match="No devpi password provided \\(--password-file"):
-        wheel_deploy()
+    with patch("xmsconan.ci_tools.wheel_deploy.load_credentials", return_value=config):
+        with pytest.raises(WheelDeployError) as exc_info:
+            wheel_deploy(wheel_dir=_wheelhouse(tmp_path))
+
+    assert "12345678" not in str(exc_info.value)
 
 
 def test_wheel_deploy_error_is_a_value_error():
@@ -184,6 +231,39 @@ def test_empty_wheel_dir_raises(mock_run, tmp_path):
         wheel_deploy(wheel_dir=str(tmp_path), url="https://x/", username="u", password="p")
 
     mock_run.assert_not_called()
+
+
+@patch_env(clear=True)
+@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
+def test_missing_wheel_dir_is_not_reported_as_empty(mock_run, tmp_path):
+    """A wheelhouse that was never created is its own fault.
+
+    An artifact download that did not run and a build that produced no wheel
+    are different problems; answering the first with "no wheels to upload"
+    sends whoever reads the job log to the wrong one.
+    """
+    with pytest.raises(WheelDeployError, match="Wheel directory does not exist"):
+        wheel_deploy(wheel_dir=str(tmp_path / "never-downloaded"), url="https://x/",
+                     username="u", password="p")
+
+    mock_run.assert_not_called()
+
+
+@patch_env(clear=True)
+@patch("xmsconan.ci_tools.wheel_deploy.find_uv_bin", return_value=UV)
+@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
+def test_wheel_dir_holding_glob_metacharacters_is_read(mock_run, mock_uv, tmp_path):
+    """``[`` in the directory name is part of the path, not a pattern to match with.
+
+    Under ``glob.glob`` such a wheelhouse matched nothing and was reported as
+    empty, which is the one failure a deploy job cannot tell from success.
+    """
+    wheel_dir = _wheelhouse(tmp_path / "build [1]", "a-1.0-py3-none-any.whl")
+
+    wheel_deploy(wheel_dir=wheel_dir, url="https://x/", username="u", password="p")
+
+    argv, _ = _publish_call(mock_run)
+    assert argv[-1] == str(Path(wheel_dir) / "a-1.0-py3-none-any.whl")
 
 
 @patch_env(clear=True)
@@ -206,16 +286,14 @@ def test_devpi_client_keeps_the_previous_sequence(mock_run, tmp_path, capsys):
     wheel_deploy(wheel_dir=wheel_dir, url="https://example.com/dev/", username="user", password="pass",
                  client="devpi")
 
-    assert mock_run.call_count == 3
-    mock_run.assert_any_call(
-        ["devpi", "use", "https://example.com/dev/"], check=True,
-    )
-    mock_run.assert_any_call(
-        ["devpi", "login", "user", "--password", "pass"], check=True,
-    )
-    mock_run.assert_any_call(
-        ["devpi", "upload", "--from-dir", wheel_dir], check=True,
-    )
+    # In sequence, not assert_any_call: `use` selects the index `login`
+    # authenticates against and `upload` writes to, so the order is the
+    # behavior, and three order-free assertions would pass on any permutation.
+    assert mock_run.mock_calls == [
+        call(["devpi", "use", "https://example.com/dev/"], check=True),
+        call(["devpi", "login", "user", "--password", "pass"], check=True),
+        call(["devpi", "upload", "--from-dir", wheel_dir], check=True),
+    ]
     assert "--client devpi" in capsys.readouterr().err
 
 
@@ -337,10 +415,23 @@ def test_main_exits_with_the_upload_tools_code(mock_deploy, monkeypatch):
 # --- documentation drift ---
 
 
+def _slice_between(text, start, end, source):
+    """The text of *source* from heading *start* up to heading *end*.
+
+    Both headings are asserted before they are used as offsets. ``str.index``
+    alone answers a renamed or renumbered heading with ``ValueError:
+    substring not found``, which says nothing about which document moved --
+    and the whole point of these tests is to name the drift.
+    """
+    assert start in text, f"{source} no longer contains {start!r}"
+    assert end in text, f"{source} no longer contains {end!r}"
+    return text[text.index(start):text.index(end)]
+
+
 def _usage_section(number):
     """The text of ``docs/USAGE.md`` section *number*."""
     usage = (Path(__file__).parent.parent / "docs" / "USAGE.md").read_text(encoding="utf-8")
-    return usage[usage.index(f"\n## {number}."):usage.index(f"\n## {number + 1}.")]
+    return _slice_between(usage, f"\n## {number}.", f"\n## {number + 1}.", "docs/USAGE.md")
 
 
 def test_docs_describe_the_uv_publish_upload():
@@ -354,6 +445,8 @@ def test_docs_describe_the_uv_publish_upload():
     assert "find_uv_bin" in section
 
     readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
-    wheel_deploy_section = readme[readme.index("#### Wheel Deploy"):readme.index("#### Conan Deploy")]
+    wheel_deploy_section = _slice_between(
+        readme, "#### Wheel Deploy", "#### Conan Deploy", "README.md",
+    )
     assert "uv publish" in wheel_deploy_section
     assert "--password-file" in wheel_deploy_section
