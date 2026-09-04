@@ -3,13 +3,23 @@
 #   CONAN2_PASSWORD_SECRET - Conan remote login password
 #   AQUAPI_USERNAME_SECRET - devpi username for wheel uploads
 #   AQUAPI_PASSWORD_SECRET - devpi password for wheel uploads
-#   AQUAPI_URL_DEV         - devpi index URL for wheel uploads
 #   AQUAVEO_GITHUB_TOKEN   - GitHub token for release asset uploads
+# Optional repository variable (Settings > Secrets and variables > Variables):
+#   AQUAPI_URL_DEV         - devpi index URL for wheel uploads; defaults to the
+#                            public dev index. A variable, not a secret: the
+#                            URL is public, and masking it only turns the
+#                            upload target into `***` in the log.
+#
+# Each secret is set on the steps that use it, never on the job. Job-level
+# env is inherited by every step, including the one that runs the library's
+# own test suite inside `conan create` and the pinned third-party actions;
+# none of those has a use for a deploy credential.
 #
 # Third-party actions are pinned to a commit SHA with the tag in a trailing
 # comment. A tag is a movable ref in someone else's repository: whoever owns
-# it can retarget it at new code, which then runs here with this workflow's
-# secrets in its environment. Update a pin by resolving the new tag
+# it can retarget it at new code, which then runs here on a runner that has
+# already logged in to Conan and can write GITHUB_ENV for every later step.
+# Update a pin by resolving the new tag
 # (`gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`) and editing the
 # template -- not the generated file.
 #
@@ -116,13 +126,7 @@ jobs:
       CONAN_USERNAME: aquaveo
       CONAN_CHANNEL: testing
       CONAN_STABLE_BRANCH_PATTERN: 'we_should_never_use_this_string_for_a_branch_name'
-      CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
-      CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       CONAN_REMOTE_URL: https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
-      # Aquapi Variables
-      AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
-      AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-      AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
       # Python Variables
       PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
@@ -151,12 +155,15 @@ jobs:
           # conan is pinned to a patch series on purpose: a minor bump can change
           # package_id computation and silently detach builds from the binaries
           # already published to the remote. Bump this deliberately.
-          pip install "conan~=2.31.0" devpi-client wheel
+          pip install "conan~=2.31.0" wheel
           python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Setup Conan
       - name: Setup Conan
         run: xmsconan_conan_setup --remote-url ${{ env.CONAN_REMOTE_URL }} --login --remove-conancenter
         shell: bash
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       # Get Tag Name
       - name: Get Tag
         id: gitTag
@@ -175,11 +182,10 @@ jobs:
       - name: Get Branch Name
         id: gitBranch
         uses: nelonoel/branch-name@1ea5c86cb559a8c4e623da7f188496208232e49f  # v1.0.1
-      - name: Change Channel and URL if Release Branch
+      - name: Change Channel if Release Branch
         uses: allenevans/set-env@b68e0a75c99b96b43963b54bc2be13e2f103ad87  # v2.0.0
         with:
           CONAN_CHANNEL: stable
-          AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV}}
         if: ${{ startsWith(github.ref, 'refs/tags/') && startsWith(env.BRANCH_NAME, env.XMS_VERSION) }}
       # Generate XMS Conan
       - name: Generate XMS Conan
@@ -215,12 +221,21 @@ jobs:
       - name: Upload wheel to Aquapi
         run: xmsconan_wheel_deploy --wheel-dir wheelhouse
         shell: bash
+        env:
+          AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
+          AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan
       - name: Upload Releases to Conan
         run: "python build.py --skip-build --upload --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\""
         shell: bash
+        # The login Setup Conan persisted normally carries the upload; the
+        # credentials stay on this step until a tag pipeline shows it does.
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
       # Get the Release Data
       - name: Get Release
@@ -278,13 +293,7 @@ jobs:
       CONAN_USERNAME: aquaveo
       CONAN_CHANNEL: testing
       CONAN_STABLE_BRANCH_PATTERN: 'we_should_never_use_this_string_for_a_branch_name'
-      CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
-      CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       CONAN_REMOTE_URL: https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
-      # Aquapi Variables
-      AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
-      AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-      AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
       # Python Variables
       PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
@@ -300,12 +309,15 @@ jobs:
           # conan is pinned to a patch series on purpose: a minor bump can change
           # package_id computation and silently detach builds from the binaries
           # already published to the remote. Bump this deliberately.
-          pip install "conan~=2.31.0" devpi-client wheel
+          pip install "conan~=2.31.0" wheel
           pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Setup Conan
       - name: Setup Conan
         run: xmsconan_conan_setup --remote-url ${{ env.CONAN_REMOTE_URL }} --login
         shell: bash
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       # Get Tag Name
       - name: Get Tag
         id: gitTag
@@ -324,11 +336,10 @@ jobs:
       - name: Get Branch Name
         id: gitBranch
         uses: nelonoel/branch-name@1ea5c86cb559a8c4e623da7f188496208232e49f  # v1.0.1
-      - name: Change Channel and URL if Release Branch
+      - name: Change Channel if Release Branch
         uses: allenevans/set-env@b68e0a75c99b96b43963b54bc2be13e2f103ad87  # v2.0.0
         with:
           CONAN_CHANNEL: stable
-          AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
         if: ${{ startsWith(github.ref, 'refs/tags/') && startsWith(env.BRANCH_NAME, env.XMS_VERSION) }}
       # Generate XMS Conan
       - name: Generate XMS Conan
@@ -364,12 +375,21 @@ jobs:
       - name: Upload wheel to Aquapi
         run: xmsconan_wheel_deploy --wheel-dir wheelhouse
         shell: bash
+        env:
+          AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
+          AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan
       - name: Upload Releases to Conan
         run: "python build.py --skip-build --upload --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\""
         shell: bash
+        # The login Setup Conan persisted normally carries the upload; the
+        # credentials stay on this step until a tag pipeline shows it does.
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
       # Get the Release Data
       - name: Get Release
@@ -428,13 +448,7 @@ jobs:
       CONAN_USERNAME: aquaveo
       CONAN_CHANNEL: testing
       CONAN_STABLE_BRANCH_PATTERN: 'we_should_never_use_this_string_for_a_branch_name'
-      CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
-      CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       CONAN_REMOTE_URL: https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
-      # Aquapi Variables
-      AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
-      AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-      AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
       # Python Variables
       PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
@@ -450,12 +464,15 @@ jobs:
           # conan is pinned to a patch series on purpose: a minor bump can change
           # package_id computation and silently detach builds from the binaries
           # already published to the remote. Bump this deliberately.
-          pip install "conan~=2.31.0" devpi-client wheel
+          pip install "conan~=2.31.0" wheel
           pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Setup Conan
       - name: Setup Conan
         run: xmsconan_conan_setup --remote-url ${{ env.CONAN_REMOTE_URL }} --login
         shell: bash
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       # Get Tag Name
       - name: Get Tag
         id: gitTag
@@ -474,11 +491,10 @@ jobs:
       - name: Get Branch Name
         id: gitBranch
         uses: nelonoel/branch-name@1ea5c86cb559a8c4e623da7f188496208232e49f  # v1.0.1
-      - name: Change Channel and URL if Release Branch
+      - name: Change Channel if Release Branch
         uses: allenevans/set-env@b68e0a75c99b96b43963b54bc2be13e2f103ad87  # v2.0.0
         with:
           CONAN_CHANNEL: stable
-          AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
         if: ${{ startsWith(github.ref, 'refs/tags/') && startsWith(env.BRANCH_NAME, env.XMS_VERSION) }}
       # Generate XMS Conan
       - name: Generate XMS Conan
@@ -514,12 +530,21 @@ jobs:
       - name: Upload wheel to Aquapi
         run: xmsconan_wheel_deploy --wheel-dir wheelhouse
         shell: bash
+        env:
+          AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
+          AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan
       - name: Upload Releases to Conan
         run: "python build.py --skip-build --upload --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\""
         shell: bash
+        # The login Setup Conan persisted normally carries the upload; the
+        # credentials stay on this step until a tag pipeline shows it does.
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
       # Get the Release Data
       - name: Get Release
@@ -572,13 +597,7 @@ jobs:
       CONAN_USERNAME: aquaveo
       CONAN_CHANNEL: testing
       CONAN_STABLE_BRANCH_PATTERN: 'we_should_never_use_this_string_for_a_branch_name'
-      CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
-      CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       CONAN_REMOTE_URL: https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-stable
-      # Aquapi Variables
-      AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
-      AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-      AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
       # Python Variables
       PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
       RELEASE_PYTHON: 'False'
@@ -605,7 +624,7 @@ jobs:
           # conan is pinned to a patch series on purpose: a minor bump can change
           # package_id computation and silently detach builds from the binaries
           # already published to the remote. Bump this deliberately.
-          pip install "conan~=2.31.0" devpi-client wheel
+          pip install "conan~=2.31.0" wheel
           python -m pip install --upgrade "xmsconan>=<< xmsconan_version >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Setup Visual Studio
       - name: Setup Visual Studio
@@ -614,6 +633,9 @@ jobs:
       - name: Setup Conan
         run: xmsconan_conan_setup --remote-url ${{ env.CONAN_REMOTE_URL }} --login
         shell: cmd
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
       # Get Tag Name
       - name: Get Tag
         id: gitTag
@@ -632,11 +654,10 @@ jobs:
       - name: Get Branch Name
         id: gitBranch
         uses: nelonoel/branch-name@1ea5c86cb559a8c4e623da7f188496208232e49f  # v1.0.1
-      - name: Change Channel and URL if Release Branch
+      - name: Change Channel if Release Branch
         uses: allenevans/set-env@b68e0a75c99b96b43963b54bc2be13e2f103ad87  # v2.0.0
         with:
           CONAN_CHANNEL: stable
-          AQUAPI_URL: ${{ secrets.AQUAPI_URL_DEV }}
         if: ${{ startsWith(github.ref, 'refs/tags/') && startsWith(env.BRANCH_NAME, env.XMS_VERSION) }}
       # Generate XMS Conan
       - name: Generate XMS Conan
@@ -685,12 +706,21 @@ jobs:
       - name: Upload wheel to Aquapi
         run: xmsconan_wheel_deploy --wheel-dir wheelhouse
         shell: bash
+        env:
+          AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
+          AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan
       - name: Upload Releases to Conan
         run: "python build.py --skip-build --upload --filter=\"{\\\"build_type\\\": \\\"${{ matrix.build_type }}\\\"}\""
         shell: cmd
+        # The login Setup Conan persisted normally carries the upload; the
+        # credentials stay on this step until a tag pipeline shows it does.
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
       # Get the Release Data
       - name: Get Release

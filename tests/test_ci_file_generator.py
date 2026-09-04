@@ -1,5 +1,6 @@
 """Tests for generator_tools.ci_file_generator."""
 import logging
+from pathlib import Path
 import re
 
 import pytest
@@ -2270,9 +2271,9 @@ def test_github_ci_pins_third_party_actions_to_a_sha(ci_toml, tmp_path):
     """Third-party actions are referenced by commit SHA, not by tag.
 
     A tag is a movable ref in a repository we do not control: its owner can
-    retarget it at new code, which then runs in this job with the workflow's
-    Conan and devpi secrets in its environment. The tag stays in a trailing
-    comment so the reference is still readable.
+    retarget it at new code, which then runs in this job on a runner that has
+    logged in to Conan and can write GITHUB_ENV for every later step. The tag
+    stays in a trailing comment so the reference is still readable.
     """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
@@ -3298,3 +3299,160 @@ def test_coverage_omits_needs_when_the_filter_instruments_nothing(tmp_path):
     assert "needs" not in coverage, (
         f"needs: rendered with nothing under it -> {coverage.get('needs')!r}"
     )
+
+
+# --- secrets scope ---
+
+
+def _workflow(path):
+    """The parsed document of an already rendered workflow file."""
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _steps_running(job, command):
+    """The steps of one job whose ``run:`` line invokes *command*."""
+    return [step for step in job["steps"] if command in step.get("run", "")]
+
+
+CONAN_LOGIN_STEP_ENV = {
+    "CONAN_LOGIN_USERNAME": "${{ secrets.CONAN2_USER_SECRET }}",
+    "CONAN_PASSWORD": "${{ secrets.CONAN2_PASSWORD_SECRET }}",
+}
+
+AQUAPI_STEP_ENV = {
+    "AQUAPI_USERNAME": "${{ secrets.AQUAPI_USERNAME_SECRET }}",
+    "AQUAPI_PASSWORD": "${{ secrets.AQUAPI_PASSWORD_SECRET }}",
+    "AQUAPI_URL": "${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}",
+}
+
+#: Every step allowed to carry a secret, by name. A new entry here is a review
+#: question -- what does the step do with it -- not a formality.
+SECRET_BEARING_STEPS = frozenset({
+    "Setup Conan",
+    "Upload Releases to Conan",
+    "Upload wheel to Aquapi",
+    "Get Release",
+    "Upload Zipped Conan Packages",
+})
+
+
+@pytest.mark.parametrize("workflow", ["XmsCore-CI.yaml", "Coverage.yaml"])
+def test_github_workflows_keep_secrets_off_the_job_environment(tmp_path, workflow):
+    """No workflow-level or job-level ``env:`` value references ``secrets.``.
+
+    Both are inherited by every step: the pinned third-party actions, and
+    ``conan create``, which builds a venv, installs the test dependencies
+    from PyPI and runs the library's own suite. Log masking hides a secret
+    that is printed; it does nothing about a step that reads ``os.environ``
+    and sends it elsewhere. A credential goes on the step that uses it.
+    """
+    toml_file = write_github_toml(tmp_path, coverage=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    document = _workflow(output_dir / ".github" / "workflows" / workflow)
+
+    leaks = {
+        f"env.{key}": value
+        for key, value in (document.get("env") or {}).items()
+        if "secrets." in str(value)
+    }
+    leaks.update({
+        f"{name}.env.{key}": value
+        for name, job in document["jobs"].items()
+        for key, value in (job.get("env") or {}).items()
+        if "secrets." in str(value)
+    })
+
+    assert leaks == {}
+
+
+def test_github_ci_gives_each_secret_only_to_the_step_that_uses_it(ci_toml, tmp_path):
+    """The Conan login reaches setup and upload; the index credentials reach the wheel upload.
+
+    The upload step keeps the login until a tag pipeline shows that the token
+    ``Setup Conan`` persisted carries ``conan upload`` on its own.
+    """
+    jobs = _github_jobs(ci_toml, tmp_path)
+
+    build_jobs = {
+        name: job for name, job in jobs.items() if _steps_running(job, "xmsconan_conan_setup")
+    }
+    assert build_jobs
+    for name, job in build_jobs.items():
+        (setup,) = _steps_running(job, "xmsconan_conan_setup")
+        (upload,) = _steps_running(job, "build.py --skip-build --upload")
+        assert setup["env"] == CONAN_LOGIN_STEP_ENV, name
+        assert upload["env"] == CONAN_LOGIN_STEP_ENV, name
+
+    deploy_steps = [
+        step for job in jobs.values() for step in _steps_running(job, "xmsconan_wheel_deploy")
+    ]
+    assert deploy_steps
+    assert all(step["env"] == AQUAPI_STEP_ENV for step in deploy_steps)
+
+    # The whole step mapping, not just its env: the reset this diff removed
+    # handed a secret to an action through `with:`.
+    holders = {
+        step["name"]
+        for job in jobs.values()
+        for step in job["steps"]
+        if "secrets." in str(step)
+    }
+    assert holders <= SECRET_BEARING_STEPS
+    assert holders >= {"Setup Conan", "Upload Releases to Conan", "Upload wheel to Aquapi"}
+
+
+def test_github_ci_reads_the_index_url_from_a_variable(ci_toml, tmp_path):
+    """``AQUAPI_URL_DEV`` is a repository *variable* with a public default.
+
+    The URL is public -- the GitLab template and every ``pip install -i`` line
+    carry it in clear -- so storing it as a secret only turned the upload
+    target into ``***`` in the log. The default keeps a repository that never
+    defined the variable uploading to the dev index, and the old secret is
+    referenced nowhere, so it can be deleted.
+    """
+    output_dir = tmp_path / "output"
+    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
+        encoding="utf-8",
+    )
+
+    assert "secrets.AQUAPI_URL_DEV" not in content
+    assert f"AQUAPI_URL: {AQUAPI_STEP_ENV['AQUAPI_URL']}" in content
+
+
+@pytest.mark.parametrize("ci_type, ci_flags, workflow", [
+    ("github", {"coverage": True}, ".github/workflows/XmsCore-CI.yaml"),
+    ("github", {"coverage": True}, ".github/workflows/Coverage.yaml"),
+    ("gitlab", {"windows": True}, ".gitlab-ci.yml"),
+])
+def test_generated_ci_installs_no_devpi_client(tmp_path, ci_type, ci_flags, workflow):
+    """No install line names ``devpi-client`` or ``toml``.
+
+    ``xmsconan wheel-deploy`` uploads with the ``uv`` that xmsconan depends
+    on, so nothing a generated job runs calls ``devpi`` any more. xmsconan
+    itself still depends on ``devpi-client`` for one release, for
+    ``--client devpi``, so the runner keeps receiving it through
+    ``pip install xmsconan`` until that goes; the install lines just stop
+    asking for it by name. ``toml`` lost its reader when xmsconan moved to
+    ``tomli`` and was still on the Windows install line.
+    """
+    writer = {"github": write_github_toml, "gitlab": write_gitlab_toml}[ci_type]
+    toml_file = writer(tmp_path, **ci_flags)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    content = (output_dir / workflow).read_text(encoding="utf-8")
+
+    install_lines = [line for line in content.splitlines() if "pip install" in line]
+    assert install_lines
+    assert [line for line in install_lines if "devpi" in line] == []
+    assert [line for line in install_lines if "toml" in line.split()] == []
+
+
+def test_usage_documents_step_scoped_github_secrets():
+    """USAGE section 10.1 names the variable and the steps that carry a secret."""
+    usage = (Path(__file__).parent.parent / "docs" / "USAGE.md").read_text(encoding="utf-8")
+    section = usage[usage.index("### 10.1 GitHub specifics"):usage.index("### 10.2 GitLab specifics")]
+
+    for needle in ("AQUAPI_URL_DEV", "Setup Conan", "Upload Releases to Conan", "Upload wheel to Aquapi"):
+        assert needle in section, needle

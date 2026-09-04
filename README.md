@@ -222,8 +222,10 @@ The password reaches Conan through the child process's environment
 (`CONAN_LOGIN_USERNAME_<REMOTE>` / `CONAN_PASSWORD_<REMOTE>`), never on a
 command line. `--password-file` falls back to `$CONAN_PASSWORD` and then the
 `[conan]` section of `~/.xmsconan.toml`; there is deliberately no `--password`
-flag. In CI, nothing is passed at all — the job's `CONAN_LOGIN_USERNAME` /
-`CONAN_PASSWORD` variables are read by Conan itself.
+flag. In CI, nothing is passed at all — `CONAN_LOGIN_USERNAME` /
+`CONAN_PASSWORD` are read by Conan itself, from the `Setup Conan` step's own
+`env:` on GitHub (the job holds no secrets; see `docs/USAGE.md` §10.1) and
+from the project's CI/CD variables on GitLab.
 
 #### Wheel Repair
 
