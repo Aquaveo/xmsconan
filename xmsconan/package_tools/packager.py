@@ -4,7 +4,6 @@ import copy
 import functools
 import itertools
 import json
-import logging
 import os
 import platform
 import re
@@ -24,7 +23,6 @@ from xmsconan.constants import (
 )
 from xmsconan.package_tools.printer import Printer
 
-LOGGER = logging.getLogger(__name__)
 
 #: Suffix `_run_sharded_tests` appends to a label when the runner was never
 #: built, so `run` can keep that fault out of the failed-shard count. The two
@@ -58,22 +56,25 @@ class ProfilePlan(NamedTuple):
     variant: Optional[str]
 
 
-# Build-environment keys allowed into a profile written into a repository.
+# Build-environment keys a generated profile may carry.
 #
-# This is an ALLOW-list, not a deny-list, and deliberately so: buildenv is
-# assembled from the process environment, so a deny-list fails OPEN -- a
-# credential added later under a new name is written to disk until somebody
-# remembers to update the list. Anything not named here is dropped, so a new
-# variable has to be consciously admitted before it can be persisted.
+# Every profile xmsconan produces is public. The ones `write_profiles` writes
+# are committed to a repository, and the ephemeral one `create_build_profile`
+# hands to `conan create` is printed to the job log in full -- and conan then
+# echoes whatever profile it is given under "Input profiles" at the start of
+# every build. A job log outlives the temporary file and is readable by anyone
+# with project access. So there is no such thing as a private [buildenv]
+# entry: a secret must never reach `combination['buildenv']` at all, and
+# `generate_configurations` is where credentials are kept out of it.
 #
-# This list is the second line of defense, not the first. A secret must never
-# reach `combination['buildenv']` at all, because the ephemeral build profile
-# is serialized unfiltered and conan echoes whatever profile it is given to
-# stdout under "Input profiles" at the start of every `conan create`. Deleting
-# the temporary file afterwards does nothing about that: the value is already
-# in the CI job log, which outlives it and is readable by anyone with project
-# access. See `generate_configurations`, which is where credentials are kept
-# out of buildenv in the first place.
+# This set is therefore not a filter applied on the way to disk. It was one,
+# and a filter that guards only the committed profile leaves the printed one
+# unguarded -- and fails OPEN for it, since buildenv is assembled from the
+# process environment and a name nobody thought to list goes straight
+# through. It is the ALLOW-list that `test_every_generated_buildenv_key_is_public`
+# holds every configuration to: a new [buildenv] name fails that test until it
+# is consciously admitted here, which is the moment to ask whether it belongs
+# in a log.
 PUBLIC_BUILDENV_KEYS = frozenset({
     'XMS_VERSION',
     'PYTHON_TARGET_VERSION',
@@ -82,6 +83,9 @@ PUBLIC_BUILDENV_KEYS = frozenset({
     'MACOSX_DEPLOYMENT_TARGET',
     '_PYTHON_HOST_PLATFORM',
     'XMS_TEST_ARTIFACTS_DIR',
+    # Added per configuration by run(), not generate_configurations, so the
+    # profile conan is handed carries one name the matrix itself does not.
+    'XMS_TEST_ARTIFACTS_LABEL',
 })
 
 # Default [conf] for generated profiles. Ninja Multi-Config matches what the
@@ -1708,19 +1712,21 @@ class XmsConanPackager(object):
         subprocess.run(cmd, check=True)
         self.printer.print_message('Wheel repair completed successfully.')
 
-    def _serialize_profile(self, configuration, path, public_only=False, skip_empty=False, conf=None):
+    def _serialize_profile(self, configuration, path, skip_empty=False, conf=None):
         """Write one configuration to a Conan profile file.
 
         Single serialization path shared by the ephemeral build profile and the
-        profiles written into a repository by :meth:`write_profiles`.
+        profiles written into a repository by :meth:`write_profiles`. It writes
+        ``[buildenv]`` as it finds it, on purpose: every profile is public --
+        the committed one obviously, and the ephemeral one because
+        :meth:`create_build_profile` prints it and conan echoes it under
+        "Input profiles" -- so the keys are held to ``PUBLIC_BUILDENV_KEYS``
+        where the configurations are generated, not filtered here. A filter at
+        this point would protect the file on disk and not the log.
 
         Args:
             configuration: One entry from :attr:`configurations`.
             path: Destination file path.
-            public_only: Keep only ``PUBLIC_BUILDENV_KEYS``. Required for any
-                profile that lands on disk; the temporary build profile keeps
-                the full environment because the build needs it and the file is
-                discarded with its temporary directory.
             skip_empty: Drop buildenv entries whose value is None. Without this
                 an unset variable serializes as the literal string ``None``,
                 which Conan would faithfully export into the build.
@@ -1743,21 +1749,10 @@ class XmsConanPackager(object):
                     f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
 
             f.write('\n[buildenv]\n')
-            dropped = []
             for k, v in configuration['buildenv'].items():
-                if public_only and k not in PUBLIC_BUILDENV_KEYS:
-                    # Names only: the value is the part that may be a secret.
-                    dropped.append(k)
-                    continue
                 if skip_empty and v is None:
                     continue
                 f.write(f'{k}={v}\n')
-            if dropped:
-                LOGGER.debug(
-                    'Omitted %d buildenv key(s) from %s: %s. Add a name to '
-                    'PUBLIC_BUILDENV_KEYS to persist it.',
-                    len(dropped), path, ', '.join(sorted(dropped)),
-                )
 
             if conf:
                 f.write('\n[conf]\n')
@@ -1863,8 +1858,7 @@ class XmsConanPackager(object):
         written = []
         for entry in self.plan_profiles(system_platform):
             path = os.path.join(output_dir, entry.filename)
-            self._serialize_profile(entry.configuration, path, public_only=True, skip_empty=True,
-                                    conf=entry.conf)
+            self._serialize_profile(entry.configuration, path, skip_empty=True, conf=entry.conf)
             written.append(path)
 
         return sorted(written)

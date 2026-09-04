@@ -39,7 +39,7 @@ COMMANDS = {
     "vs2019": Command("Build/publish the manual VS2019 (msvc 192) matrix", "xmsconan.build_tools.vs2019_build", "main"),
     "conan-setup": Command("Set up Conan profile and remotes", "xmsconan.ci_tools.conan_setup", "main"),
     "wheel-repair": Command("Repair Python wheels for the current platform", "xmsconan.ci_tools.wheel_repair", "main"),
-    "wheel-deploy": Command("Upload repaired wheels to devpi", "xmsconan.ci_tools.wheel_deploy", "main"),
+    "wheel-deploy": Command("Upload repaired wheels to devpi with uv publish", "xmsconan.ci_tools.wheel_deploy", "main"),
     "conan-deploy": Command("Save, restore, or upload Conan packages", "xmsconan.ci_tools.conan_deploy", "main"),
     "test-shards": Command("Run staged gtest tests as parallel shards in one container",
                            "xmsconan.ci_tools.test_shards", "main"),

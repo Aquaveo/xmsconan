@@ -73,7 +73,7 @@ All commands live under the `xmsconan` umbrella:
 | `xmsconan vs2019` | Drive the manual Visual Studio 2019 (msvc 192) build and publish it to the `aquaveo-vs2019` remote (see §16). Never runs in CI itself; GitLab reaches the same matrix through `[ci].windows_vs2019` and `build.py --platform` instead. |
 | `xmsconan conan-setup` | Detect a Conan profile, add the aquaveo remote, optionally login. `--remote-name` / `--remote-url` name a different remote, and `--append` adds it *after* the remotes already configured rather than first — which is what a special-purpose remote such as `aquaveo-vs2019` needs, so it does not become the first stop for every `conan install` on a shared machine. The password comes from `--password-file`, `$CONAN_PASSWORD`, or `~/.xmsconan.toml` — there is no `--password` flag (§17). |
 | `xmsconan wheel-repair` | Run platform-appropriate wheel repair (auditwheel / delocate / delvewheel). |
-| `xmsconan wheel-deploy` | Upload repaired wheels to devpi. |
+| `xmsconan wheel-deploy` | Upload repaired wheels to devpi with `uv publish`. The password comes from `--password-file`, `$AQUAPI_PASSWORD`, or `~/.xmsconan.toml`, and reaches `uv` through its environment — never a command line (§13). |
 | `xmsconan conan-deploy` | Save / restore / upload Conan packages between CI stages. `--remote` picks the destination; `--package-query` restricts **both** the save and the upload to matching binaries (e.g. `compiler.version=192`). The query is required when publishing to a toolchain-specific remote from a shared runner: `conan cache save` and `conan upload` match by *reference*, and a CI runner's Conan cache is per machine, not per job. |
 | `xmsconan publish` | The full release pipeline (gen → build → repair → deploy). |
 
@@ -619,18 +619,24 @@ The generated jobs follow the pattern:
   - Every deploy step carries `--package-query compiler.version=192`. The Conan cache on a runner is per machine, not per job, so both `conan cache save` and `conan upload` — which match by *reference* — would otherwise carry a concurrent msvc 194 job's binaries onto the remote whose only purpose is to keep the two toolchains apart, and exit 0 having done it. **The mitigation is symmetric:** the msvc 194 jobs carry `--package-query compiler.version=194` on their own save and upload, unconditionally, whether or not `[ci].windows_vs2019` is set. The mirror leak is the worse of the two — it puts msvc 192 binaries on the production `aquaveo` remote — and a guard present only in the configuration that needs it is one refactor from being dropped from the one that does. Both values are read from the packager's own matrix rather than written into the template, so a toolchain bump cannot leave a query that matches nothing behind (which would publish nothing, greenly).
   - **No wheels.** A wheel's tags (`cp310-cp310-win_amd64`) say nothing about which MSVC built it, so an msvc 192 wheel and an msvc 194 wheel are the same devpi filename and publishing both would have them overwrite each other by upload order. The VS2019 wheels the desktop products consume are still produced deliberately, by hand (§16.8).
 - Wheel-repair always runs `cp313-cp313`'s `xmsconan_wheel_repair` inside the manylinux container; auditwheel itself doesn't care about the host Python.
-- Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy).
-  They are read from the process environment by `xmsconan_wheel_deploy` and are deliberately **not** placed in any
-  profile's `[buildenv]`: conan echoes the profile it is handed to stdout under "Input profiles" before every
-  `conan create`, so a credential put there is printed to the job log in cleartext. Nothing in the recipe or the
-  generated CMake reads them, so a build is unaffected. This is why they are absent from the `[filter.buildenv]`
-  names in §5.8 -- they are not names the profiles set.
+- Required CI variables: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD` (for wheel deploy). Set the username
+  and password **Masked** and **Protected** in the project's CI/CD variables: masked keeps the value out of the job
+  log when a command echoes it, protected keeps it off branch pipelines, where anyone who can push a branch can
+  print it. Neither survives `CI_DEBUG_TRACE=true`, which prints every variable the job holds, masked or not --
+  enable it only on a pipeline with no deploy jobs, and rotate anything it printed.
+  They are read from the process environment by `xmsconan_wheel_deploy`, which hands them to `uv publish` through
+  its environment (§13), and are deliberately **not** placed in any profile's `[buildenv]`: conan echoes the
+  profile it is handed to stdout under "Input profiles" before every `conan create`, so a credential put there is
+  printed to the job log in cleartext. Nothing in the recipe or the generated CMake reads them, so a build is
+  unaffected. This is why they are absent from the `[filter.buildenv]` names in §5.8 -- they are not names the
+  profiles set.
 - **Concurrent `conan remote add` on one runner.** Each Windows job adds its remotes at the start, and several jobs share a machine, so they write one `~/.conan2/remotes.json`. Conan writes it as `remotes.json.tmp` plus an `os.replace`, so the file cannot be torn — but there is no lock around the read-modify-write, so two jobs adding remotes in the same instant can lose one of the two additions. The failure is loud (the job that lost its remote fails resolving dependencies; it does not publish to the wrong place) and the fix — a per-job `CONAN_HOME` — would give up the shared package cache these builds depend on, so it is left alone deliberately. Retry the job.
 - Required CI variables with `[ci].windows_vs2019`: `CONAN_LOGIN_USERNAME_AQUAVEO_VS2019` and
   `CONAN_PASSWORD_AQUAVEO_VS2019`, for the upload to `aquaveo-vs2019`. Conan derives those names by uppercasing
   the remote name and replacing hyphens with underscores, and reads them from the environment — the generated job
   adds the remote but never logs in explicitly, exactly as it does for `aquaveo`. Without them the build jobs still
-  pass and only the tag-time deploy fails, so add the variables before the first release rather than after.
+  pass and only the tag-time deploy fails, so add the variables before the first release rather than after. Set
+  both **Masked** and **Protected**, as above.
 - `[ci].linux = false` yields a **Windows-only pipeline**: `Conan Build - Windows`, `Lint`, and (on tags) `Wheel Deploy - Windows` and `Conan Deploy - Windows`. Two combinations are rejected at generation time rather than producing a pipeline that fails opaquely later — `linux = false` together with `windows = false` (nothing would build), and `linux = false` with `coverage = true` (coverage compiles with `--coverage` under gcc, and the generated `CMakeLists.txt` rejects MSVC when `XMS_COVERAGE` is set).
 - **Each platform stages and publishes its own wheel.** Linux builds one, repairs it in the Package-stage `Repair Wheel` job, and uploads it from `Wheel Deploy`. Windows passes `--wheel-dir wheelhouse` and then repairs *in place* inside `Conan Build - Windows`, because `delvewheel` reads the DLL imports of a `win_amd64` `.pyd` and only runs on a Windows host — the manylinux container that repairs the Linux wheel cannot stand in. `Wheel Deploy - Windows` uploads the result on tags from a plain `python:3.13` image, since a devpi upload needs no MSVC toolchain. A Windows-only pipeline therefore publishes wheels, and the manual VS2019 track (§16.8) is no longer the only route. `[ci].windows_wheel_repair = false` drops the Windows repair step for a library that has nothing to vendor — see §12.1; the deploy job is unaffected either way.
 - **The Windows cache snapshot is best-effort, and says so.** `Conan Deploy - Windows` copies the Conan cache into a `conan_packages/` artifact for debugging after the upload has already succeeded. It reads `${HOME}/.conan2/p`, since the Conan home is `~/.conan2`; it used to name `/c/Users/admin` outright, which was an assumption about the retired runner's service account. It also used to end in `|| true`, which made "copied nothing" indistinguishable from "copied everything" — any other account shipped an empty artifact with no line in the log. It now prints a warning instead, and stays non-fatal: nothing consumes the artifact, and the upload it follows fails loudly on its own.
@@ -803,7 +809,7 @@ Confirm what a given wheel actually got by unzipping the repaired output: a vend
 
 ## 13. Wheel deploy (`xmsconan wheel-deploy`)
 
-Uploads `wheelhouse/*.whl` to a devpi index.
+Uploads `wheelhouse/*.whl` to a devpi index with `uv publish`.
 
 ```bash
 xmsconan wheel-deploy --wheel-dir wheelhouse
@@ -811,18 +817,34 @@ xmsconan wheel-deploy --wheel-dir wheelhouse
 
 **Credential resolution order** (first non-empty wins):
 
-1. CLI flags: `--url`, `--username`, `--password`
+1. CLI flags: `--url`, `--username`, `--password-file`
 2. Environment: `AQUAPI_URL`, `AQUAPI_USERNAME`, `AQUAPI_PASSWORD`
 3. `~/.xmsconan.toml` `[aquapi]` section
 
-**Prefer sources 2 and 3 for the password.** `--password` puts it in this
-process's argv, and from there into your shell history, `ps` output, and —
-on a managed Windows box — the Event 4688 / Sysmon record that gets shipped to
-the SIEM in cleartext. This is the one place xmsconan still passes a password
-on a command line: `devpi-client` reads no password environment variable and
-its `getpass` fallback reads the console rather than a pipe, so there is no
-drop-in replacement yet. Everything else (`conan-setup`, `vs2019 setup`,
-`publish --docker`) keeps the secret in an environment variable or a file.
+`AQUAPI_URL` is the index itself (`https://public.aquapi.aquaveo.com/aquaveo/dev/`),
+which is also devpi's upload endpoint — not the `+simple/` page pip reads from it.
+
+**The password never touches a command line, in either direction.** There is
+no `--password` flag — `--password-file` reads it from a file, as `conan-setup`
+and `vs2019 setup` do (§17) — because a process's argv lands in your shell
+history, `ps` output, and, on a managed Windows box, the Event 4688 / Sysmon
+record that gets shipped to the SIEM in cleartext. And the upload runs as
+`uv publish --publish-url <url> <wheels>` with the username and password in
+the child's environment as `UV_PUBLISH_USERNAME` and `UV_PUBLISH_PASSWORD`,
+the same way `conan remote login` gets `CONAN_PASSWORD_<REMOTE>`. The `uv`
+that runs is the one the `uv` package — a dependency of xmsconan — installed
+next to it (`uv.find_uv_bin()`), not whatever `uv` is first on `PATH`, so it
+is present wherever xmsconan is installed, a `uv tool install` or pipx layout
+included; a generated job needs nothing extra.
+
+`--client devpi` keeps the previous `devpi use` / `devpi login --password` /
+`devpi upload` sequence for one release. It is the last place xmsconan passes a
+password on a subprocess's command line, it prints a warning saying so, and it
+is removed in the release after this one.
+
+An empty wheel directory is an error, not a no-op: `uv publish` given no files
+would fall back to `dist/*`, and a deploy job that uploads nothing must not go
+green.
 
 ---
 
@@ -1115,7 +1137,7 @@ username = "your_username"
 password = "your_password"
 ```
 
-Always overridden by CLI flags / env vars when present. The `[conan]` section is the last fallback for `xmsconan conan-setup --login` and for `xmsconan vs2019 setup` (§16.2) — both resolve `--password-file`, then `$CONAN_PASSWORD`, then this file, and neither has a `--password` flag to put the secret on a command line. **Don't commit this file.** It's read-only as far as xmsconan is concerned.
+Always overridden by CLI flags / env vars when present. The `[conan]` section is the last fallback for `xmsconan conan-setup --login` and for `xmsconan vs2019 setup` (§16.2), and `[aquapi]` for `xmsconan wheel-deploy` (§13) — all three resolve `--password-file`, then the environment (`$CONAN_PASSWORD` / `$AQUAPI_PASSWORD`), then this file, and none has a `--password` flag to put the secret on a command line. **Don't commit this file.** It's read-only as far as xmsconan is concerned.
 
 A missing file is fine — credentials can come from flags or the environment instead. A file that exists but is **not valid TOML** raises `Could not parse <path>` rather than being treated as absent, so a mistyped config reports itself instead of surfacing later as "No devpi URL provided (--url, `$AQUAPI_URL`, or `~/.xmsconan.toml`)" — advice to configure the very file that failed to parse.
 

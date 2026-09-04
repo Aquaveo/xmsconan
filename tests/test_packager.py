@@ -17,9 +17,11 @@ from xmsconan.constants import (
     VS2019_REMOTE_NAME,
 )
 from xmsconan.package_tools.packager import (
+    config_label,
     configurations,
     emitted_buildenv_keys,
     get_current_arch,
+    PUBLIC_BUILDENV_KEYS,
     summarize_filter_matches,
     validate_filter_dict,
     XmsConanPackager,
@@ -2010,6 +2012,86 @@ def test_generate_configurations_keeps_credentials_out_of_buildenv():
     for configuration in configurations:
         leaked = [key for key in configuration["buildenv"] if key.startswith("AQUAPI_")]
         assert not leaked, f"credential keys reached buildenv: {leaked}"
+
+
+@patch_env({
+    "AQUAPI_PASSWORD": "s3cret-value",
+    "AQUAPI_USERNAME": "ci-bot",
+    "CONAN_PASSWORD_AQUAVEO": "conan-secret",
+    "GITHUB_TOKEN": "gh-token",
+})
+@pytest.mark.parametrize("system_platform", sorted(configurations))
+def test_every_generated_buildenv_key_is_public(system_platform):
+    """Every [buildenv] name in every configuration is on the allow-list.
+
+    Both profiles are public -- the committed one, and the ephemeral one that
+    `create_build_profile` prints before conan echoes it under "Input
+    profiles" -- so nothing can be filtered out on the way to disk; a secret
+    has to be absent from buildenv altogether. This is the guard for that: a
+    new [buildenv] entry fails here until it is consciously added to
+    PUBLIC_BUILDENV_KEYS, which is the moment to ask whether it belongs in a
+    job log. The credential-shaped variables above are set so a generator that
+    copies its environment into buildenv fails here rather than passes.
+
+    run() adds one more name to the copy it hands conan; the test below
+    covers that profile, since this one never sees it.
+    """
+    generated = _packager_for(system_platform, coverage=True).configurations
+
+    assert generated, "no configurations -- the assertion below would pass vacuously"
+    for configuration in generated:
+        outside = sorted(set(configuration["buildenv"]) - PUBLIC_BUILDENV_KEYS)
+        assert not outside, (
+            f"{config_label(configuration)}: buildenv keys outside PUBLIC_BUILDENV_KEYS: {outside}"
+        )
+
+
+def _buildenv_keys(profile_text):
+    """The names in a serialized profile's ``[buildenv]`` section."""
+    section = profile_text.split("[buildenv]\n", 1)[1].split("\n[", 1)[0]
+    return {line.split("=", 1)[0] for line in section.splitlines() if "=" in line}
+
+
+@patch_env({
+    "AQUAPI_PASSWORD": "s3cret-value",
+    "CONAN_PASSWORD_AQUAVEO": "conan-secret",
+    "GITHUB_TOKEN": "gh-token",
+}, clear=True)
+@patch("xmsconan.package_tools.packager.subprocess.run")
+def test_run_hands_conan_only_public_buildenv_keys(mock_run, tmp_path):
+    """The profile run() prints and hands to conan carries only allow-listed keys.
+
+    run() serializes a copy of each configuration with XMS_TEST_ARTIFACTS_LABEL
+    added, so the profile conan echoes to the log is not the one the
+    generate-time test above inspects. The temp profile is overwritten per
+    configuration, so subprocess.run is replaced with a reader that captures
+    each one at the moment `conan create` would have read it.
+    """
+    captured = []
+
+    def capture(cmd, *args, **kwargs):
+        if cmd[:2] == ["conan", "create"]:
+            profile = Path(cmd[cmd.index("--profile") + 1]).read_text()
+            captured.append(_buildenv_keys(profile))
+        return MagicMock(returncode=0)
+
+    mock_run.side_effect = capture
+    packager = XmsConanPackager("xmscore", artifacts_dir=str(tmp_path))
+    packager.generate_configurations(system_platform="linux")
+
+    packager.run()
+
+    assert captured, "no conan create ran -- the assertions below would pass vacuously"
+    assert all("XMS_TEST_ARTIFACTS_LABEL" in keys for keys in captured), "run()'s own key is under test"
+    for keys in captured:
+        assert keys <= PUBLIC_BUILDENV_KEYS, sorted(keys - PUBLIC_BUILDENV_KEYS)
+
+
+def test_emitted_buildenv_keys_are_all_public():
+    """Every name the matrix can emit, run()'s label included, is on the allow-list."""
+    assert emitted_buildenv_keys() <= PUBLIC_BUILDENV_KEYS, (
+        sorted(emitted_buildenv_keys() - PUBLIC_BUILDENV_KEYS)
+    )
 
 
 # --- generator variants ---

@@ -102,12 +102,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # Install Python Dependencies
+      # Setup uv
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+      # Install xmsconan and its runtime dependencies so the tag check below
+      # can import its version. --no-dev: uv's default groups include `dev`,
+      # and this job has no use for flake8, pytest, or pre-commit.
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install wheel setuptools setuptools-scm devpi
-          pip install .
+          uv sync --no-dev --python ${{ matrix.python-version }}
       # Get Tag Name
       - name: Get Tag
         id: gitTag
@@ -115,13 +118,20 @@ jobs:
       # Check Tag
       - name: Check Tag Against Version
         run: |
-          python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + ' | Tag: ${{ steps.gitTag.outputs.tag }}')"
-          python -c "from xmsconan import __version__; exit(0 if __version__ == '${{ steps.gitTag.outputs.tag }}' else 1)"
+          uv run --no-sync python -c "from xmsconan import __version__; print('Version: ' + str(__version__) + ' | Tag: ${{ steps.gitTag.outputs.tag }}')"
+          uv run --no-sync python -c "from xmsconan import __version__; exit(0 if __version__ == '${{ steps.gitTag.outputs.tag }}' else 1)"
       # Build Wheel
-      - name: Build Wheel and Upload
+      - name: Build Wheel
         run: |
-          python -m pip install --upgrade build
-          python -m build --wheel
-          devpi use https://public.aquapi.aquaveo.com/aquaveo/dev/
-          devpi login ${{ secrets.AQUAPI_USERNAME_SECRET }} --password ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-          devpi upload --from-dir dist
+          uv build --wheel
+      # Upload with `uv publish`. The credentials are scoped to this one step
+      # and travel in its environment, so they are not visible to the steps
+      # above and never appear on a command line -- where `devpi login
+      # --password` used to put them for `ps` and process-creation auditing
+      # to read.
+      - name: Upload Wheel
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+        run: |
+          uv publish --publish-url https://public.aquapi.aquaveo.com/aquaveo/dev/ dist/*.whl

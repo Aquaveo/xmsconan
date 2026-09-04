@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "conan>=2",
+    # Kept for one release, for `xmsconan wheel-deploy --client devpi`.
     "devpi-client",
     "jinja2",
     "setuptools-scm",
@@ -36,6 +37,13 @@ dependencies = [
     # for the one older interpreter still supported. xmsconan/_tomllib.py
     # picks between them, and nothing else imports either directly.
     'tomli; python_version < "3.11"',
+    # `xmsconan wheel-deploy` uploads with `uv publish`, running the binary
+    # this package installs (uv.find_uv_bin()). Listing it here puts that
+    # binary in every environment that installs xmsconan -- including the
+    # generated Wheel Deploy jobs, which install nothing else -- so the switch
+    # needs no consumer regeneration. `uv publish` arrived in the 0.4 series;
+    # 0.5 is the floor.
+    "uv>=0.5",
 ]
 
 [project.scripts]

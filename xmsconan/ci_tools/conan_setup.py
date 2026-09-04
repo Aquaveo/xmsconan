@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from xmsconan.ci_tools.credentials import (
+    add_refused_password_flag,
     CredentialsError,
     load_conan_credentials,
     read_password_file,
@@ -190,21 +191,8 @@ def main():
              "Falls back to $CONAN_PASSWORD, then ~/.xmsconan.toml. There is "
              "deliberately no --password: see the note in _login_environment.",
     )
-    # Kept only to be refused. Dropping it outright would not have removed it:
-    # argparse expands unambiguous prefixes, so `--password secret` would have
-    # bound to --password-file and reported "password file not found: secret",
-    # with the secret in the argv either way and nothing said about the flag
-    # that replaced it.
-    parser.add_argument("--password", default=None, help=argparse.SUPPRESS)
+    add_refused_password_flag(parser, env_var="CONAN_PASSWORD", section="conan")
     args = parser.parse_args()
-    if args.password is not None:
-        parser.error(
-            "--password was removed: its value lands in this process's argv, "
-            "which process-creation auditing copies into the event log in "
-            "cleartext. Use --password-file PATH, $CONAN_PASSWORD, or the "
-            "[conan] section of ~/.xmsconan.toml. Rotate the password you "
-            "just typed."
-        )
     try:
         password = _resolve_password(args.password_file)
     except CredentialsError as exc:  # unusable --password-file

@@ -9,15 +9,57 @@ The file uses TOML format::
 
 Credentials are resolved in order: CLI arguments > environment variables >
 config file.  This module provides the config-file layer, plus the
-``--password-file`` reader shared by ``xmsconan conan-setup`` and
-``xmsconan vs2019 setup`` -- the two commands that take a password from a
-file precisely so it never has to be typed onto a command line.
+``--password-file`` reader shared by ``xmsconan conan-setup``,
+``xmsconan vs2019 setup`` and ``xmsconan wheel-deploy`` -- the commands that
+take a password from a file precisely so it never has to be typed onto a
+command line.
 """
+import argparse
 from pathlib import Path
 
 from xmsconan._tomllib import loads, TOMLDecodeError
 
 CONFIG_FILENAME = ".xmsconan.toml"
+
+
+class _RefusedPasswordFlag(argparse.Action):
+    """The ``--password`` an entry point keeps only to refuse.
+
+    See :func:`add_refused_password_flag`.
+    """
+
+    def __init__(self, option_strings, dest, env_var, section, **kwargs):
+        kwargs.setdefault("help", argparse.SUPPRESS)
+        super().__init__(option_strings, dest, **kwargs)
+        self.env_var = env_var
+        self.section = section
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error(
+            f"{option_string} was removed: its value lands in this process's argv, "
+            "which process-creation auditing copies into the event log in "
+            f"cleartext. Use --password-file PATH, ${self.env_var}, or the "
+            f"[{self.section}] section of ~/.xmsconan.toml. Rotate the password "
+            "you just typed."
+        )
+
+
+def add_refused_password_flag(parser, env_var, section):
+    """Register a ``--password`` on *parser* that exists only to be refused.
+
+    An entry point that takes ``--password-file`` cannot simply omit
+    ``--password``: argparse expands unambiguous prefixes, so ``--password
+    secret`` would bind to ``--password-file``, report "password file not
+    found: secret", and say nothing about the flag that replaced it -- with
+    the secret in the argv either way.  Registering the flag hidden and
+    refusing it by name is the only way to answer with the right advice.
+
+    Args:
+        parser: The ``argparse.ArgumentParser`` to register on.
+        env_var: The environment variable the refusal points to instead.
+        section: The ``~/.xmsconan.toml`` table it points to instead.
+    """
+    parser.add_argument("--password", action=_RefusedPasswordFlag, env_var=env_var, section=section)
 
 
 class CredentialsError(ValueError):
