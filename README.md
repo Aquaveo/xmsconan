@@ -432,10 +432,11 @@ Run those from **Git Bash** — PowerShell strips the inner quotes out of `--fil
 
 `uv` is the toolchain. One sync gives you an editable install plus the
 `dev` dependency group from `pyproject.toml` — flake8 with the plugins
-CI runs, pytest, and pytest-cov:
+CI runs, pytest, pytest-cov, and pre-commit:
 
 ```bash
 uv sync --group dev
+uv run pre-commit install    # flake8 on the staged files at every commit
 ```
 
 `uv run flake8 .` lints the whole tree; `.flake8` holds the configuration.

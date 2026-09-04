@@ -60,7 +60,7 @@ test = ["pytest", "pyyaml"]
 # Everything a contributor -- and xmsconan's own CI -- needs beyond the
 # runtime dependencies: `uv sync --group dev`. The `test` extra above stays
 # for consumers that pip-install it; this group is the superset that also
-# carries the linter and the coverage plugin. `tomli` is here
+# carries the linter, the coverage plugin, and pre-commit. `tomli` is here
 # unconditionally so the < 3.11 fallback in xmsconan/_tomllib.py can be
 # exercised on every interpreter, not only the 3.10 CI leg.
 dev = [
@@ -69,6 +69,7 @@ dev = [
     "flake8-docstrings",
     "flake8-import-order",
     "pep8-naming",
+    "pre-commit",
     "pytest",
     "pytest-cov",
     "pyyaml",
