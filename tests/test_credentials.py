@@ -1,7 +1,10 @@
 """Tests for ci_tools.credentials."""
+from pathlib import Path
+
 import pytest
 
 from xmsconan.ci_tools.credentials import (
+    CredentialsError,
     load_conan_credentials,
     load_credentials,
     read_password_file,
@@ -63,7 +66,7 @@ def test_load_credentials_invalid_toml_raises(tmp_path):
     cfg = tmp_path / ".xmsconan.toml"
     cfg.write_text("this is not valid toml [[[", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=r"Could not parse .*\.xmsconan\.toml"):
+    with pytest.raises(CredentialsError, match=r"Could not parse .*\.xmsconan\.toml"):
         load_credentials(config_path=cfg)
 
 
@@ -72,8 +75,43 @@ def test_load_conan_credentials_invalid_toml_raises(tmp_path):
     cfg = tmp_path / ".xmsconan.toml"
     cfg.write_text("this is not valid toml [[[", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=r"Could not parse .*\.xmsconan\.toml"):
+    with pytest.raises(CredentialsError, match=r"Could not parse .*\.xmsconan\.toml"):
         load_conan_credentials(config_path=cfg)
+
+
+def test_load_credentials_non_utf8_raises(tmp_path):
+    """A config file that is not UTF-8 is reported as unparseable, not as a stray ``UnicodeDecodeError``."""
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_bytes(b'[aquapi]\nusername = "caf\xe9"\n')  # latin-1 e-acute: not valid UTF-8
+
+    with pytest.raises(CredentialsError, match=r"Could not parse .*\.xmsconan\.toml"):
+        load_credentials(config_path=cfg)
+
+
+def test_load_credentials_unreadable_file_raises(tmp_path, monkeypatch):
+    """A config file that exists but cannot be read is reported like a corrupt one, naming the path.
+
+    ``read_password_file`` already maps ``OSError`` this way; the config reader
+    let a ``PermissionError`` escape raw, so an entry point catching
+    ``CredentialsError`` would have crashed on the one source it meant to
+    report. The failure is stubbed on ``Path.read_text`` because ``chmod`` is
+    a no-op on Windows and root on Linux can read anything.
+    """
+    cfg = tmp_path / ".xmsconan.toml"
+    cfg.write_text('[aquapi]\nusername = "user"\n', encoding="utf-8")
+
+    def deny(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "read_text", deny)
+
+    with pytest.raises(CredentialsError, match=r"Could not read .*\.xmsconan\.toml"):
+        load_credentials(config_path=cfg)
+
+
+def test_credentials_error_is_a_value_error():
+    """``CredentialsError`` keeps the ``ValueError`` contract that callers predating it still catch."""
+    assert issubclass(CredentialsError, ValueError)
 
 
 # --- load_conan_credentials ---
@@ -143,7 +181,7 @@ def test_load_section_rejects_a_section_that_is_not_a_table(tmp_path):
     config = tmp_path / ".xmsconan.toml"
     config.write_text('aquapi = "https://example.invalid/"\n', encoding="utf-8")
 
-    with pytest.raises(ValueError, match=r"\[aquapi\] must be a table, got str"):
+    with pytest.raises(CredentialsError, match=r"\[aquapi\] must be a table, got str"):
         load_credentials(config)
 
 
@@ -156,7 +194,7 @@ def test_read_password_file_rejects_a_missing_file(tmp_path):
     another account's password, and the login would fail somewhere with no
     mention of the file that was actually asked for.
     """
-    with pytest.raises(ValueError, match="password file not found"):
+    with pytest.raises(CredentialsError, match="password file not found"):
         read_password_file(str(tmp_path / "absent.txt"))
 
 
@@ -172,5 +210,5 @@ def test_read_password_file_rejects_an_empty_file(contents, tmp_path):
     password_file = tmp_path / "p.txt"
     password_file.write_text(contents, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="password file is empty"):
+    with pytest.raises(CredentialsError, match="password file is empty"):
         read_password_file(str(password_file))

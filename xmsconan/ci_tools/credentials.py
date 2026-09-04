@@ -15,7 +15,7 @@ file precisely so it never has to be typed onto a command line.
 """
 from pathlib import Path
 
-import toml
+from xmsconan._tomllib import loads, TOMLDecodeError
 
 CONFIG_FILENAME = ".xmsconan.toml"
 
@@ -41,7 +41,7 @@ def _load_section(config_path, section):
 
     An absent config file is a normal state -- credentials may come from the
     CLI or the environment instead -- so it yields an empty dict. A file that
-    exists but does not parse is not: swallowing ``TomlDecodeError`` made the
+    exists but does not parse is not: swallowing the decode error made the
     two indistinguishable, so a stray character in ``~/.xmsconan.toml``
     surfaced as ``wheel_deploy``'s "No devpi URL provided (--url,
     $AQUAPI_URL, or ~/.xmsconan.toml)" -- advice to configure the very file
@@ -55,15 +55,21 @@ def _load_section(config_path, section):
         The requested table, or an empty dict when the file or table is absent.
 
     Raises:
-        CredentialsError: The file exists but is not valid TOML, or *section*
-            is present but is not a table.
+        CredentialsError: The file exists but cannot be read or is not valid
+            TOML, or *section* is present but is not a table.
     """
     path = config_path or _config_path()
     if not path.is_file():
         return {}
     try:
-        data = toml.load(path)
-    except toml.TomlDecodeError as exc:
+        data = loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        # Same mapping as read_password_file: an unreadable source is a
+        # CredentialsError, not a PermissionError escaping from deep inside.
+        raise CredentialsError(f"Could not read {path}: {exc}") from exc
+    except (TOMLDecodeError, UnicodeDecodeError) as exc:
+        # TOML is UTF-8 by definition, so a file in another encoding is
+        # as unparseable as one with a syntax error, and gets the same report.
         raise CredentialsError(f"Could not parse {path}: {exc}") from exc
     table = data.get(section, {})
     if not isinstance(table, dict):
@@ -86,8 +92,8 @@ def load_credentials(config_path=None):
         does not exist or has no ``[aquapi]`` section.
 
     Raises:
-        CredentialsError: The file exists but is not valid TOML, or the
-            section is present but is not a table.
+        CredentialsError: The file exists but cannot be read or is not valid
+            TOML, or the section is present but is not a table.
     """
     return _load_section(config_path, "aquapi")
 
@@ -105,8 +111,8 @@ def load_conan_credentials(config_path=None):
         does not exist or has no ``[conan]`` section.
 
     Raises:
-        CredentialsError: The file exists but is not valid TOML, or the
-            section is present but is not a table.
+        CredentialsError: The file exists but cannot be read or is not valid
+            TOML, or the section is present but is not a table.
     """
     return _load_section(config_path, "conan")
 

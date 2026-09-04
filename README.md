@@ -428,12 +428,35 @@ Run those from **Git Bash** — PowerShell strips the inner quotes out of `--fil
 
 ## Development
 
+### Setting up
+
+`uv` is the toolchain. One sync gives you an editable install plus the
+`dev` dependency group from `pyproject.toml` — flake8 with the plugins
+CI runs, pytest, pytest-cov, and pre-commit:
+
+```bash
+uv sync --group dev
+uv run pre-commit install    # flake8 on the staged files at every commit
+```
+
+`uv run flake8 .` lints the whole tree; `.flake8` holds the configuration.
+flake8 is the authoritative linter — when a formatter disagrees with it,
+flake8 wins.
+
 ### Running tests
 
 The default suite runs fast and mocks every external tool:
 
 ```bash
-pytest tests/ -v
+uv run pytest tests/ -v
+```
+
+CI runs the same suite on Python 3.10, 3.13, and 3.14, on Linux and
+Windows, behind the coverage floor declared as `fail_under` in
+`pyproject.toml`. The same gate locally:
+
+```bash
+uv run pytest tests/ --cov=xmsconan
 ```
 
 The repository also ships a no-mock integration test that drives
@@ -444,7 +467,7 @@ the `XMS_INTEGRATION_TESTS` environment variable so it does not run by
 default — wall time is in the multi-minute range:
 
 ```bash
-XMS_INTEGRATION_TESTS=1 pytest -m integration -v
+XMS_INTEGRATION_TESTS=1 uv run pytest -m integration -v
 ```
 
 Prerequisites: `conan` and `gcovr` on `PATH`, plus a working C++

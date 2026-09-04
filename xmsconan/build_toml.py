@@ -9,11 +9,8 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
-# 2. Third party modules
-try:
-    from tomllib import loads as parse_toml_text
-except ModuleNotFoundError:  # Python < 3.11
-    from toml import loads as parse_toml_text
+# 3. Aquaveo modules
+from xmsconan._tomllib import loads as parse_toml_text
 
 
 def _load_toml(toml_path: str | Path):
