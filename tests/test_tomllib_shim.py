@@ -25,20 +25,31 @@ def test_decode_error_is_a_value_error():
     assert isinstance(excinfo.value, ValueError)
 
 
-def test_falls_back_to_tomli_when_tomllib_is_missing(monkeypatch):
-    """Without ``tomllib`` (Python < 3.11) the shim binds the ``tomli`` backport instead.
+@pytest.fixture
+def tomllib_missing():
+    """Reload the shim with ``tomllib`` unimportable; yield the ``tomli`` module it should now be bound to.
 
     A ``None`` entry in ``sys.modules`` makes ``import tomllib`` raise
     ``ModuleNotFoundError`` on any interpreter, which is exactly what the
-    shim's ``except`` clause is written for. The module is reloaded again
-    afterwards so later tests see the binding the interpreter really has.
+    shim's ``except`` clause is written for. The teardown order is this
+    fixture's reason to exist: the entry is removed *before* the restoring
+    reload, or that reload would bind ``tomli`` again and every later test
+    would see the wrong parser. Skips when ``tomli`` is not installed, since
+    the fallback would then have nothing to bind.
     """
     tomli = pytest.importorskip("tomli")
-    monkeypatch.setitem(sys.modules, "tomllib", None)
+    patch = pytest.MonkeyPatch()
+    patch.setitem(sys.modules, "tomllib", None)
     try:
-        reloaded = importlib.reload(_tomllib)
-        assert reloaded.loads is tomli.loads
-        assert reloaded.TOMLDecodeError is tomli.TOMLDecodeError
-    finally:
-        monkeypatch.undo()
         importlib.reload(_tomllib)
+        yield tomli
+    finally:
+        patch.undo()
+        importlib.reload(_tomllib)
+
+
+def test_falls_back_to_tomli_when_tomllib_is_missing(tomllib_missing):
+    """Without ``tomllib`` (Python < 3.11) the shim binds the ``tomli`` backport instead."""
+    tomli = tomllib_missing
+    assert _tomllib.loads is tomli.loads
+    assert _tomllib.TOMLDecodeError is tomli.TOMLDecodeError

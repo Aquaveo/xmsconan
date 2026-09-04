@@ -24,19 +24,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # Setup uv
+      # Setup uv. Third-party actions are pinned by commit SHA with the tag
+      # in a trailing comment; GitHub's own actions (checkout, setup-python)
+      # stay on major tags until plan item 7.1 pins every action.
       - name: Setup uv
-        uses: astral-sh/setup-uv@v10.0.1
-      # Install the `dev` dependency group from pyproject.toml -- flake8 and
-      # its plugins, pytest, pytest-cov -- so CI and `uv sync --group dev` on a
-      # developer machine install the same tools from the same declaration.
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+      # Install only the `dev` dependency group from pyproject.toml -- the
+      # same flake8 and plugins `uv sync --group dev` gives a developer.
+      # flake8 never imports the package (.flake8 classifies xmsconan by
+      # name), so --only-group keeps the runtime dependencies out of this
+      # job, and --no-sync below stops `uv run` from installing them anyway.
       - name: Install Python Dependencies
         run: |
-          uv sync --group dev --python ${{ matrix.python-version }}
+          uv sync --only-group dev --python ${{ matrix.python-version }}
       # Flake Code
       - name: Run Flake
         run: |
-          uv run flake8 .
+          uv run --no-sync flake8 .
 
   unit-tests:
     name: Unit Tests
@@ -63,18 +67,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # Setup uv
       - name: Setup uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
       # Install Python Dependencies (editable xmsconan + the `dev` group)
       - name: Install Python Dependencies
         run: |
           uv sync --group dev --python ${{ matrix.python-version }}
       # Run Unit Tests
-      # --cov-fail-under is the coverage floor for the whole package. Lowering
-      # it needs a reason in the PR; raising it is free once the tree clears
-      # the new bar.
+      # The coverage floor is `fail_under` under [tool.coverage.report] in
+      # pyproject.toml. pytest-cov applies it because no --cov-fail-under is
+      # given here, so CI, the README, and a local run share one number.
       - name: Run Unit Tests
         run: |
-          uv run pytest tests/ -v --cov=xmsconan --cov-report=term-missing:skip-covered --cov-fail-under=90
+          uv run pytest tests/ -v --cov=xmsconan --cov-report=term-missing:skip-covered
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')

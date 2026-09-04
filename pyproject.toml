@@ -60,9 +60,13 @@ test = ["pytest", "pyyaml"]
 # Everything a contributor -- and xmsconan's own CI -- needs beyond the
 # runtime dependencies: `uv sync --group dev`. The `test` extra above stays
 # for consumers that pip-install it; this group is the superset that also
-# carries the linter, the coverage plugin, and pre-commit. `tomli` is here
-# unconditionally so the < 3.11 fallback in xmsconan/_tomllib.py can be
-# exercised on every interpreter, not only the 3.10 CI leg.
+# carries the linter, the coverage plugin, and pre-commit. It restates the
+# extra's two entries instead of listing `xmsconan[test]`: a self-reference
+# makes `uv sync --only-group dev` build and install the package with its
+# runtime dependencies, which is exactly what the lint job's --only-group
+# exists to avoid. `tomli` is here unconditionally so the < 3.11 fallback in
+# xmsconan/_tomllib.py can be exercised on every interpreter, not only the
+# 3.10 CI leg.
 dev = [
     "flake8",
     "flake8-bugbear",
@@ -93,6 +97,14 @@ include = ["xmsconan*"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
+
+[tool.coverage.report]
+# The coverage floor for the whole package. pytest-cov reads it when
+# `--cov-fail-under` is not on the command line, so CI, the README, and a
+# local `uv run pytest tests/ --cov=xmsconan` all enforce this one number.
+# Lowering it needs a reason in the PR; raising it is free once the tree
+# clears the new bar.
+fail_under = 90
 
 [tool.pytest.ini_options]
 # Bare `pytest` collects tests/ and nothing else. Without this it also walks

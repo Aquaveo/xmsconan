@@ -452,10 +452,11 @@ uv run pytest tests/ -v
 ```
 
 CI runs the same suite on Python 3.10, 3.13, and 3.14, on Linux and
-Windows, behind a coverage floor. The same gate locally:
+Windows, behind the coverage floor declared as `fail_under` in
+`pyproject.toml`. The same gate locally:
 
 ```bash
-uv run pytest tests/ --cov=xmsconan --cov-fail-under=90
+uv run pytest tests/ --cov=xmsconan
 ```
 
 The repository also ships a no-mock integration test that drives
