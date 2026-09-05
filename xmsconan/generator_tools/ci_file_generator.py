@@ -3,12 +3,12 @@
 import argparse
 import logging
 from pathlib import Path
-import sys
 
 # 2. Third party modules
 from jinja2 import Environment, StrictUndefined
 
 # 3. Aquaveo modules
+from xmsconan._cli import add_verbosity_args, configure_logging, run_main
 from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, read_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.constants import (
@@ -19,6 +19,7 @@ from xmsconan.constants import (
     VS2019_REMOTE_NAME,
     VS2019_REMOTE_URL,
 )
+from xmsconan.exit_codes import EXIT_GATE_FAILED, EXIT_OK
 from xmsconan.generator_tools.build_filter import (
     ci_build_jobs,
     ci_filter_effects,
@@ -80,17 +81,6 @@ LOGGER = logging.getLogger(__name__)
 RELEASE_ONLY_WHEEL_DIR = (
     "${{ matrix.build_type == 'Release' && ' --wheel-dir wheelhouse' || '' }}"
 )
-
-
-def _configure_logging(args):
-    """Configure logger from CLI verbosity flags."""
-    if args.quiet:
-        level = logging.ERROR
-    elif args.verbose > 0:
-        level = logging.DEBUG
-    else:
-        level = logging.INFO
-    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
 
 def _display_name(library_name: str) -> str:
@@ -501,12 +491,6 @@ def plan_ci(
 
     from xmsconan import __version__ as xmsconan_version
 
-    # Deferred: coverage_generator imports _coverage_context from this module,
-    # so a module-scope import here would close a cycle. The generated job must
-    # forgive exactly the code the tool exits with for a gate miss, so the
-    # template takes the constant rather than repeating the number.
-    from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
-
     # Build template context
     context = {
         "xmsconan_version": xmsconan_version,
@@ -567,6 +551,9 @@ def plan_ci(
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
         "coverage": _coverage_context(config.coverage, library_name),
+        # The generated job must forgive exactly the code the tool exits with
+        # for a gate miss, so the template takes the constant rather than
+        # repeating the number.
         "coverage_gate_exit_code": EXIT_GATE_FAILED,
         "coverage_python_version": _resolve_coverage_python_version(config),
         "ci_build_types": filter_effects["build_types"],
@@ -672,7 +659,12 @@ def generate_ci(
 
 
 def main():
-    """Main function to parse arguments and generate CI configuration."""
+    """Entry point for ``xmsconan ci``: returns the process exit code."""
+    return run_main(_main)
+
+
+def _main():
+    """Parse arguments and generate the CI configuration."""
     parser = argparse.ArgumentParser(description="Generate CI configuration from build.toml.")
     parser.add_argument(
         "--output_dir",
@@ -689,14 +681,7 @@ def main():
         action="store_true",
         help="Exit 1 with a diff if any generated file is out of date. Writes nothing.",
     )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=0,
-        help="Increase output verbosity (use -v for debug details).",
-    )
-    parser.add_argument("-q", "--quiet", action="store_true", help="Only show errors.")
+    add_verbosity_args(parser)
     parser.add_argument(
         "--version", default=None,
         help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
@@ -705,29 +690,26 @@ def main():
                         help="Path to the build.toml file. Defaults to build.toml in the current directory.")
 
     args = parser.parse_args()
-    _configure_logging(args)
+    configure_logging(args)
 
     from xmsconan.generator_tools.version import resolve_version
     version = resolve_version(args.version)
 
-    try:
-        if args.check:
-            plan = plan_ci(
-                toml_file_path=args.toml_file,
-                version=version,
-                output_dir=args.output_dir,
-            )
-            raise SystemExit(check_plan(plan))
-        generate_ci(
+    if args.check:
+        plan = plan_ci(
             toml_file_path=args.toml_file,
             version=version,
             output_dir=args.output_dir,
-            dry_run=args.dry_run,
         )
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        raise SystemExit(1) from e
+        return check_plan(plan)
+    generate_ci(
+        toml_file_path=args.toml_file,
+        version=version,
+        output_dir=args.output_dir,
+        dry_run=args.dry_run,
+    )
+    return EXIT_OK
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

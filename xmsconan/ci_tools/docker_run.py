@@ -134,6 +134,11 @@ def _build_publish_args(args):
         parts.append("--no-wheel")
     if args.no_conan:
         parts.append("--no-conan")
+    # The host process only launches the container; the work, and the logging
+    # worth reading, happens inside it, so the verbosity flags go through.
+    parts.extend(["-v"] * args.verbose)
+    if args.quiet:
+        parts.append("-q")
     return parts
 
 

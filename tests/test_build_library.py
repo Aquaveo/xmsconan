@@ -176,27 +176,17 @@ def test_parse_bool_option_false_values(value):
     assert build_library._parse_bool_option(value) is False
 
 
-def test_resolve_tool_found_on_path():
-    """shutil.which returns a valid path."""
-    with patch("xmsconan.build_tools.build_library.shutil.which", return_value="/usr/bin/cmake"):
-        result = build_library._resolve_tool("cmake")
-        assert result == "/usr/bin/cmake"
+def test_require_tool_returns_the_resolved_path():
+    """A tool resolve_tool finds is handed back as found."""
+    with patch("xmsconan.build_tools.build_library.resolve_tool", return_value="/usr/bin/cmake"):
+        assert build_library._require_tool("cmake") == "/usr/bin/cmake"
 
 
-def test_resolve_tool_found_in_venv():
-    """Fallback to venv Scripts directory when shutil.which fails."""
-    with patch("xmsconan.build_tools.build_library.shutil.which", return_value=None), \
-         patch("xmsconan.build_tools.build_library.os.path.isfile", return_value=True):
-        result = build_library._resolve_tool("conan")
-        assert "conan" in result
-
-
-def test_resolve_tool_not_found_raises():
-    """Raises RuntimeError when tool cannot be found anywhere."""
-    with patch("xmsconan.build_tools.build_library.shutil.which", return_value=None), \
-         patch("xmsconan.build_tools.build_library.os.path.isfile", return_value=False):
-        with pytest.raises(RuntimeError, match="not found"):
-            build_library._resolve_tool("nonexistent_tool")
+def test_require_tool_not_found_raises():
+    """A tool the build cannot run without is a RuntimeError naming it, not a None argv[0]."""
+    with patch("xmsconan.build_tools.build_library.resolve_tool", return_value=None):
+        with pytest.raises(RuntimeError, match="'nonexistent_tool' not found"):
+            build_library._require_tool("nonexistent_tool")
 
 
 def test_is_dir_valid(tmp_path):
@@ -227,7 +217,7 @@ def test_is_file_invalid_raises(tmp_path):
 
 def test_conan_install_returns_command(profile_file, tmp_path):
     """conan_install returns a command list with expected structure."""
-    with patch.object(build_library, "_resolve_tool", return_value="/usr/bin/conan"):
+    with patch.object(build_library, "_require_tool", return_value="/usr/bin/conan"):
         cmd = build_library.conan_install(
             str(profile_file), str(tmp_path), str(tmp_path / "build"), dry_run=True
         )
@@ -239,7 +229,7 @@ def test_conan_install_returns_command(profile_file, tmp_path):
 def test_conan_install_creates_build_dir(profile_file, tmp_path):
     """Non-dry-run creates the build directory."""
     build_dir = tmp_path / "new_build_dir"
-    with patch.object(build_library, "_resolve_tool", return_value="/usr/bin/conan"):
+    with patch.object(build_library, "_require_tool", return_value="/usr/bin/conan"):
         build_library.conan_install(
             str(profile_file), str(tmp_path), str(build_dir), dry_run=False
         )
@@ -248,7 +238,7 @@ def test_conan_install_creates_build_dir(profile_file, tmp_path):
 
 def test_run_cmake_with_generator():
     """run_cmake includes -G flag for non-make generators."""
-    with patch.object(build_library, "_resolve_tool", return_value="/usr/bin/cmake"):
+    with patch.object(build_library, "_require_tool", return_value="/usr/bin/cmake"):
         cmd = build_library.run_cmake(".", "build", "ninja", ["-DFOO=bar"])
     assert "-G" in cmd
     assert "Ninja" in cmd
@@ -256,7 +246,7 @@ def test_run_cmake_with_generator():
 
 def test_run_cmake_without_generator():
     """run_cmake omits -G for make generator."""
-    with patch.object(build_library, "_resolve_tool", return_value="/usr/bin/cmake"):
+    with patch.object(build_library, "_require_tool", return_value="/usr/bin/cmake"):
         cmd = build_library.run_cmake(".", "build", "make", ["-DFOO=bar"])
     assert "-G" not in cmd
 

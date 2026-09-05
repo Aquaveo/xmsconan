@@ -1259,7 +1259,7 @@ class XmsConanPackager(object):
             The number of failed configurations plus failed test shards; 0 when
             everything succeeded.
         """
-        self.printer.print_ascci_art()
+        self.printer.print_ascii_art()
         self.print_configuration_table()
         if log_dir:
             try:
@@ -2175,7 +2175,16 @@ class XmsConanPackager(object):
         """
         self._profile_options.setdefault(package, {})
         if option in self._profile_options[package]:
-            # TODO: Make some sort of warning visible
+            # Through the printer like the rest of the packager's output: a
+            # generated build.py never configures logging, so a log record
+            # from here would be dropped. Not a warning either -- an option
+            # the profile already sets is the developer's choice, and warning
+            # about it on every build would teach them to ignore warnings.
+            existing = self._profile_options[package][option]
+            self.printer.print_message(
+                f"{package}:{option} is already {existing!r} in the profile options",
+                body=f"the default {value!r} was not applied",
+            )
             return
 
         self._profile_options[package][option] = value

@@ -109,6 +109,8 @@ def test_build_publish_args_all_flags():
         no_deploy=True,
         no_wheel=True,
         no_conan=True,
+        verbose=0,
+        quiet=False,
     )
     result = _build_publish_args(args)
     assert "--version" in result
@@ -131,9 +133,28 @@ def test_build_publish_args_defaults_only():
         no_deploy=False,
         no_wheel=False,
         no_conan=False,
+        verbose=0,
+        quiet=False,
     )
     result = _build_publish_args(args)
     assert result == ["--version", "2.0.0"]
+
+
+def test_build_publish_args_forwards_the_verbosity_flags():
+    """-vv and -q reach the publish that runs inside the container, where the work is."""
+    args = argparse.Namespace(
+        version="2.0.0",
+        wheel_dir="wheelhouse",
+        toml="build.toml",
+        build_filter=None,
+        no_deploy=False,
+        no_wheel=False,
+        no_conan=False,
+        verbose=2,
+        quiet=True,
+    )
+    result = _build_publish_args(args)
+    assert result == ["--version", "2.0.0", "-v", "-v", "-q"]
 
 
 # --- docker_publish ---
@@ -167,6 +188,8 @@ def test_docker_publish_builds_correct_command(
         no_deploy=True,
         no_wheel=False,
         no_conan=False,
+        verbose=0,
+        quiet=False,
         docker_image=None,
         xmsconan_dir=None,
     )
@@ -208,6 +231,8 @@ def test_docker_publish_quotes_the_filter(mock_which, mock_config, mock_run, tmp
         no_deploy=False,
         no_wheel=False,
         no_conan=False,
+        verbose=0,
+        quiet=False,
         docker_image=None,
         xmsconan_dir=None,
     )
@@ -247,6 +272,8 @@ def test_docker_publish_mounts_xmsconan_dir(
         no_deploy=False,
         no_wheel=False,
         no_conan=False,
+        verbose=0,
+        quiet=False,
         docker_image=None,
         xmsconan_dir="/home/user/xmsconan",
     )
@@ -280,6 +307,8 @@ def test_docker_publish_propagates_exit_code(
         no_deploy=False,
         no_wheel=False,
         no_conan=False,
+        verbose=0,
+        quiet=False,
         docker_image=None,
         xmsconan_dir=None,
     )

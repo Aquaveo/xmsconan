@@ -78,7 +78,9 @@ All commands live under the `xmsconan` umbrella:
 | `xmsconan conan-deploy` | Save / restore / upload Conan packages between CI stages. `--remote` picks the destination; `--package-query` restricts **both** the save and the upload to matching binaries (e.g. `compiler.version=192`). The query is required when publishing to a toolchain-specific remote from a shared runner: `conan cache save` and `conan upload` match by *reference*, and a CI runner's Conan cache is per machine, not per job. |
 | `xmsconan publish` | The full release pipeline (gen → build → repair → deploy). |
 
-Run `xmsconan <cmd> --help` for the full flag set. The legacy underscored names (`xmsconan_gen`, `xmsconan_ci`, …) still work and are what the generated CI scripts call.
+Run `xmsconan <cmd> --help` for the full flag set, and `xmsconan --version` (or `-V`) for the installed xmsconan version — the first thing a bug report needs. The legacy underscored names (`xmsconan_gen`, `xmsconan_ci`, …) still work and are what the generated CI scripts call.
+
+`gen`, `ci`, `profiles`, `build`, `coverage`, `test-shards`, `publish`, and every `vs2019` verb take `-v` / `--verbose` and `-q` / `--quiet` (after the verb for `xmsconan vs2019 <verb>`); the four CI-only tools (`conan-setup`, `wheel-repair`, `conan-deploy`, `wheel-deploy`) take neither. The default prints progress and warnings; `-q` keeps only errors; `-v` adds debug detail **and** is what turns a one-line failure into a traceback — see §4.2. Report output — the configuration table, `vs2019 build`'s preflight block and summary table, the `--check` diff — goes to stdout regardless; progress and diagnostics go to stderr through logging, so `xmsconan gen --check > drift.txt` captures the diff and nothing else. `coverage` is the exception to watch: its summary and the `Coverage total:` line GitLab scrapes are progress, so `-q` silences the pipeline's coverage number — do not add it to the generated job.
 
 ### 4.1 `--dry-run` and `--check` on the generators
 
@@ -97,6 +99,22 @@ xmsconan gen --check --version 0.0.0 build.toml
 `--check` is the enforcement half of "regenerate after any `build.toml` edit". The generated files are gitignored in the consuming repositories, so a stale one is not a diff anyone reviews — it is a working copy quietly building something the repository no longer describes. Running `xmsconan gen --check` in CI, or from a pre-commit hook, turns that into a red pipeline instead.
 
 Both sides of the comparison are normalized to LF, so a Windows working copy of an LF-committed generated file is not reported as drift. `gen --check` and `profiles --check` also report profiles a real run would *delete* — a dropped `[matrix]` entry leaves a profile behind that an IDE will still configure from, and a check that only compared the files it renders would call that tree clean.
+
+### 4.2 Exit codes and failure reporting
+
+One vocabulary across every command, defined in `xmsconan/exit_codes.py`. One number means one thing because the generated CI keys off the numbers: GitLab's `allow_failure: exit_codes:` forgives the coverage gate and nothing else (§11.6), and any wrapper script or `&&` chain reads every nonzero code as "stop".
+
+| Code | Meaning | Produced by |
+|---|---|---|
+| `0` | The command did what it was asked. | all |
+| `1` | The tool failed: an unhandled exception, a file that could not be written; for `gen`/`ci`/`profiles --check`, drift (§4.1); for `vs2019 build`, a failed library (§16.4). | all |
+| `2` | A bad request or a machine that cannot honour it. argparse produces it for a bad flag; `vs2019` for a missing `--root`, a failed preflight, or a `conan` that is not on `PATH`. | all |
+| `3` | A gate the run was asked to enforce did not clear while the tool itself worked: a coverage layer below its threshold. The one code CI forgives, and only under `[ci].split_tests`. | `coverage` |
+| `4` | The run completed but produced nothing: every selected library was skipped. | `vs2019 build` |
+
+A child process that ran and failed — `conan`, `cmake`, `build.py` — is reported with **its own** exit code, so a `conan create` that failed with 6 is exit 6 from `xmsconan build`, `publish`, or `vs2019 setup` too. A child killed by a signal is `1` from `build` (and from `gen`, `ci`, and `profiles`, which spawn nothing); the other commands hand the negative code to `sys.exit`, which the shell reports as `256` minus the signal number.
+
+How a failure is *reported* is one contract for `gen`, `ci`, `profiles`, and `build`: one `ERROR:` line on stderr with the exception's message, and no traceback. Pass `-v` for the traceback: the same failure is then reported with the full stack, and a child's full command line — which without `-v` is reduced to the program name, so a credential that reaches a command line by mistake does not reach the log by contract. `xmsconan coverage` always prints the traceback: its failures are read from a CI job log, where `-v` cannot be added after the fact. `vs2019`, `test-shards`, `publish`, and the four CI-only tools report the failures they anticipate — a child that failed, a missing tool, a bad request — in one line and let anything unexpected out as a Python traceback; bringing them under the same contract is planned cleanup.
 
 ---
 
@@ -587,7 +605,7 @@ The full list is §20. You can also pass any explicit profile path with `--profi
 - `--allow-missing-test-files` — Build even when `./test_files/` doesn't exist.
 - `-DXMS_GTEST_DISCOVER_TESTS=ON` — Register every gtest case as its own ctest test. Off by default: `gtest_discover_tests` makes `ctest` spawn one process per `TEST_F`, and for a suite of a few hundred cases the process starts cost more than the tests. The default registers the runner as a single ctest entry that runs the whole suite in one process; parallelism comes from `--test-shards` instead. Turn it on when you want `ctest -R` to select an individual case by name.
 - `--dry-run` — Print the Conan and CMake commands without running them.
-- `-v` / `-q` — Verbose / quiet output.
+- `-v` / `-q` — Verbose / quiet output; `-v` also turns a one-line failure into a traceback (§4.2).
 
 ---
 
@@ -768,7 +786,7 @@ Beyond the CI scheduling this buys testability. The gate used to be reachable on
 
 ### 11.6 Exit codes
 
-`xmsconan coverage` distinguishes the coverage **gate** failing from the **tool** failing, because the generated CI treats them differently.
+`xmsconan coverage` distinguishes the coverage **gate** failing from the **tool** failing, because the generated CI treats them differently. The codes are the shared vocabulary of §4.2; this is the one command that produces `3`.
 
 | Code | Meaning |
 |---|---|
@@ -1052,7 +1070,7 @@ A single failing configuration does not stop the library — the packager runs t
 | `0` | At least one library built and none failed. |
 | `1` | A library failed, **or** `--wheel-dir` was given and no complete set of wheels came out (§16.8). The second case reuses code 1 rather than adding a fourth: the run was asked for an artifact, it ran, and the artifact isn't there — and the `xmsconan_wheel_repair` you'd run next would be handed an empty directory. |
 | `2` | The request or the machine was wrong: an unknown `--only`/`--from` name, a `--filter` that isn't a JSON object, a `--python-versions` entry the packager rejects, a `--root` that doesn't exist, a selection that matches no library at all (`--only xmscore --from xmsgrid`, or a `--from` past the last enabled library), a failed preflight — including the interpreter check in §16.8 — `conan` or `xmsconan_gen` not on `PATH`, or a file the run needed that could not be read or written. The last two are told apart in the message: only an executable that would not start is reported as a `PATH` problem, and a `xmsconan_gen` that is missing stops the run here rather than being counted as one failed library (exit 1) — it would fail identically for every library after it. |
-| `3` | The run completed but **nothing was built** — every selected library was skipped (no checkout, no `build.toml`, or `--filter` matched nothing). Not success: a typo in `--root` used to print a table of skips and exit 0, which any `&&` chain or wrapper script read as "the stack is built". |
+| `4` | The run completed but **nothing was built** — every selected library was skipped (no checkout, no `build.toml`, or `--filter` matched nothing). Not success: a typo in `--root` used to print a table of skips and exit 0, which any `&&` chain or wrapper script read as "the stack is built". Not `3` either, since that is the coverage gate the generated CI forgives (§4.2); this track exited `3` for it before the vocabulary was shared. |
 
 ### 16.5 The library list
 
@@ -1242,7 +1260,7 @@ Wheels are tagged `cp310-cp310-...` or `cp313-cp313-...`; pip picks the right on
 - **Binaries from the wrong toolchain turned up on a remote.** Something published without its `--package-query compiler.version=...`. Both `conan cache save` and `conan upload` match by reference, and a runner's Conan cache is shared across the jobs on that machine, so an unqueried publish from the msvc 192 job carries whatever the msvc 194 job left behind. The generated pipeline passes the matching query on every Windows deploy step, in both directions; a hand-run `xmsconan_conan_deploy` without `--package-query`, or a `build.py --upload` whose `--platform` does not match the binaries in the cache, does not.
 - **A tag pipeline went green but the remote has the recipe and no packages (`No packages found for this revision`).** Fixed in the release carrying this note; if you are on an older one, republish by hand. `xmsconan_conan_deploy --save --package-query ...` resolved its package list with `conan list "<ref>:*"`, which reports each binary as an `info` block with no package revision. `conan cache save` archives a package *revision* folder, so it saved the recipe and skipped every binary -- exit 0, tarball written, nothing in it -- and the deploy stage faithfully uploaded a lone recipe, also exit 0. The list now asks for revisions (`"<ref>:*#*"`). Two things made it hard to notice: only the queried path was affected, so the unqueried Linux deploys published correctly, and branch pipelines never upload, so it could only ever surface on a tag. Check a release with `conan list "<ref>#<rrev>:*" -r aquaveo` rather than trusting a green pipeline.
 - **VS2019 packages don't show up for consumers.** They go to `aquaveo-vs2019`, not `aquaveo` — the consuming machine needs that remote configured too. Note that `xmsconan_vs2019 setup` *appends* the remote rather than putting it first (§16.2), so it does not shadow `aquaveo` for your other work.
-- **`xmsconan vs2019 build` exits 3 with a table of `skipped` rows.** Nothing was built. Almost always a typo in `--root` (each library is looked for at `<root>/<library>`), a `--filter` that matches no configuration, or a library that has no `build.toml` yet. See the exit-code table in §16.4.
+- **`xmsconan vs2019 build` exits 4 with a table of `skipped` rows.** Nothing was built. Almost always a typo in `--root` (each library is looked for at `<root>/<library>`), a `--filter` that matches no configuration, or a library that has no `build.toml` yet. See the exit-code table in §16.4.
 - **`Could NOT find Python3: Found unsuitable version "3.12.0", but required is exact version "3.10"`.** The interpreter running conan *is* the target Python for a pybind build (§16.8). Re-run from a 3.10 virtual environment, or build the version you're running with `--python-versions 3.12`. `xmsconan vs2019 build` now catches this at preflight and exits 2 before compiling anything — but only when the filtered matrix actually contains a pybind configuration.
 - **`--filter is not valid JSON` in PowerShell.** PowerShell strips the inner double quotes from `'{"options": {"pybind": true}}'`. Run it from Git Bash, or escape them: `'{\"options\": {\"pybind\": true}}'`.
 - **`xmsconan vs2019 build` exits 1 with "no complete set of wheels".** `--wheel-dir` was given but the run produced no wheel, or only part of the `--python-versions` fan-out. Usual causes: the matrix had no pybind configuration (add `--filter '{"options": {"pybind": true}}'`), or `--python-versions` listed a version the run never built. See §16.8.

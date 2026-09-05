@@ -22,7 +22,7 @@ class Printer(object):
         """Initialize the printer."""
         self.printer = printer or sys.stdout.write
 
-    def print_ascci_art(self):
+    def print_ascii_art(self):
         """Print the ascii art."""
         text = r"""
    ____ ____ _____    __   ____                          ____            _                      _____           _      __
@@ -34,6 +34,12 @@ class Printer(object):
 """
         self.printer(text)
         self.printer("\nVersion: %s" % version)
+
+    #: The misspelled name the method shipped under, kept for one release for
+    #: any caller outside this package that used it. A generated build.py is
+    #: not one: it calls ``builder.run()``, which reaches the printer inside
+    #: the same installed xmsconan.
+    print_ascci_art = print_ascii_art
 
     def print_message(self, title, body=""):
         """Print a message."""

@@ -1,4 +1,6 @@
 """Shared pytest fixtures for xmsconan tests."""
+import logging
+
 import pytest
 
 
@@ -7,6 +9,35 @@ import pytest
 # to run inside the recipe's pytest invocation under conan create, not at
 # the xmsconan top-level pytest run, where ``xms.stub`` is not importable.
 collect_ignore = ["fixtures"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_root_logging():
+    """Undo what a ``main()`` under test did to the root logger.
+
+    ``xmsconan._cli.configure_logging`` runs ``basicConfig(force=True)``,
+    which replaces the root handlers with a ``StreamHandler`` bound to
+    whatever ``sys.stderr`` was at the time -- under ``capsys``, a buffer
+    that is closed when the test ends -- and sets the root level. Left in
+    place, the next test's log records go to a closed stream and INFO
+    records nobody asked for reach its ``caplog``.
+
+    What it cannot undo: ``force=True`` also removes and closes pytest's
+    session-scoped ``--log-file`` and ``log_cli`` handlers, so after the
+    first ``main()`` under test those outputs are dead for the rest of the
+    run, and within such a test ``caplog`` sees nothing logged after the
+    ``main()`` returned. Neither option is set in ``pyproject.toml``; read a
+    ``main()``'s output through ``capsys`` rather than ``caplog``.
+    """
+    root = logging.getLogger()
+    level = root.level
+    yield
+    for handler in root.handlers[:]:
+        # basicConfig installs a plain StreamHandler; pytest's are subclasses.
+        if handler.__class__ is logging.StreamHandler:
+            root.removeHandler(handler)
+            handler.close()
+    root.setLevel(level)
 
 
 def pytest_addoption(parser):

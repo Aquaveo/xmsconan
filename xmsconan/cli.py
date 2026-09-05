@@ -9,6 +9,8 @@ import importlib
 import sys
 from typing import NamedTuple
 
+import xmsconan
+
 
 class Command(NamedTuple):
     """One dispatchable ``xmsconan`` subcommand.
@@ -51,7 +53,8 @@ def _print_usage(file=sys.stdout):
     """Print top-level usage listing all subcommands."""
     prog = "xmsconan"
     lines = [
-        f"usage: {prog} <command> [args...]\n",
+        f"usage: {prog} <command> [args...]",
+        f"       {prog} --version\n",
         "Available commands:\n",
     ]
     max_name = max(len(name) for name in COMMANDS)
@@ -62,9 +65,17 @@ def _print_usage(file=sys.stdout):
 
 
 def main():
-    """Dispatch ``xmsconan <subcommand>`` to the appropriate module."""
+    """Dispatch ``xmsconan <subcommand>`` to the appropriate module.
+
+    Raises:
+        SystemExit: Always, carrying the subcommand's exit code -- what its
+            ``main()`` returned, or the code it raised itself.
+    """
     if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
         _print_usage()
+        sys.exit(0)
+    if sys.argv[1] in ("--version", "-V"):
+        print(f"xmsconan {xmsconan.__version__}")
         sys.exit(0)
 
     subcmd = sys.argv[1]
@@ -79,4 +90,7 @@ def main():
     sys.argv = [f"xmsconan {subcmd}"] + sys.argv[2:]
 
     module = importlib.import_module(command.module)
-    getattr(module, command.function)()
+    # sys.exit rather than a bare call: a main() that returns its exit code
+    # (gen, ci, profiles, build) would otherwise exit 0 whatever it returned.
+    # One that raises SystemExit itself (coverage, vs2019, ...) never gets here.
+    sys.exit(getattr(module, command.function)())

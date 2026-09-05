@@ -1275,10 +1275,7 @@ def test_gen_exits_nonzero_when_profile_generation_fails(tmp_path, monkeypatch):
         lambda **kwargs: (_ for _ in ()).throw(ValueError("no library_name")),
     )
 
-    with pytest.raises(SystemExit) as excinfo:
-        build_file_generator_module.main()
-
-    assert excinfo.value.code == 1
+    assert build_file_generator_module.main() == 1
 
 
 def test_gen_keeps_build_files_when_profile_generation_fails(tmp_path, monkeypatch):
@@ -1291,8 +1288,7 @@ def test_gen_keeps_build_files_when_profile_generation_fails(tmp_path, monkeypat
         lambda **kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
 
-    with pytest.raises(SystemExit):
-        build_file_generator_module.main()
+    assert build_file_generator_module.main() == 1
 
     assert (tmp_path / "CMakeLists.txt").exists()
     assert (tmp_path / "conanfile.py").exists()

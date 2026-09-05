@@ -96,6 +96,7 @@ they are hard-coded here:
 import argparse
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -106,6 +107,7 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
+from xmsconan._cli import add_verbosity_args, configure_logging
 from xmsconan.build_toml import read_optional_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
@@ -114,7 +116,10 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION, version_sort_key, VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME,
     VS2019_REMOTE_URL,
 )
+from xmsconan.exit_codes import EXIT_NOTHING_BUILT, EXIT_USAGE
 from xmsconan.package_tools.packager import XmsConanPackager
+
+LOGGER = logging.getLogger(__name__)
 
 #: Username used to log in to :data:`VS2019_REMOTE_NAME` when neither the
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
@@ -140,11 +145,6 @@ VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 #: what makes the verified 14-configuration VS2019 matrix (4 base + 4
 #: ``wchar_t=typedef`` + 4 testing + 2 pybind).
 DEFAULT_PYTHON_VERSIONS = ("3.10", "3.13")
-
-#: Process exit code for "the run completed but produced nothing".
-EXIT_NOTHING_BUILT = 3
-#: Process exit code for a bad request or an unusable machine.
-EXIT_USAGE = 2
 
 
 class ToolNotFoundError(OSError):
@@ -618,7 +618,7 @@ def setup(password_file=None, username=None,
         ToolNotFoundError: When ``conan`` itself would not start.
     """
     credentials = resolve_credentials(password_file, username)
-    print(f"==> Adding conan remote {remote_name} -> {remote_url} (appended)")
+    LOGGER.info("Adding conan remote %s -> %s (appended)", remote_name, remote_url)
     try:
         conan_setup(
             remote_url=remote_url,
@@ -914,9 +914,9 @@ def extract_wheels(packager, configurations, wheel_dir, version=None, repair=Tru
         True when a wheel was extracted for every requested Python version.
     """
     if not _pybind_python_versions(configurations):
-        print(
-            f"==> no pybind configuration was built, so there is no wheel to "
-            f"extract into {wheel_dir}"
+        LOGGER.info(
+            "no pybind configuration was built, so there is no wheel to extract into %s",
+            wheel_dir,
         )
         return False
     if not packager.extract_wheel(wheel_dir, version=version or "*"):
@@ -924,8 +924,8 @@ def extract_wheels(packager, configurations, wheel_dir, version=None, repair=Tru
     if repair:
         packager.collect_dependency_libs(os.path.join(wheel_dir, "libs"))
     else:
-        print(
-            "==> [ci].windows_wheel_repair is false: not staging dependency "
+        LOGGER.info(
+            "[ci].windows_wheel_repair is false: not staging dependency "
             "libraries, and the wheel should not be repaired."
         )
     return True
@@ -981,7 +981,7 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
         if version:
             command += ["--version", version]
         command.append("build.toml")
-        print(f"==> {name}: generating build files")
+        LOGGER.info("%s: generating build files", name)
         try:
             subprocess.run(command, cwd=library_dir, check=True)
         except FileNotFoundError as exc:
@@ -1003,7 +1003,7 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
             name, "skipped", elapsed=time.monotonic() - start,
             message="no configurations matched --filter",
         )
-    print(f"==> {name}: building {attempted} configuration(s)")
+    LOGGER.info("%s: building %d configuration(s)", name, attempted)
     failed = packager.run(log_dir=log_dir)
     wheels = None
     if wheel_dir and not failed:
@@ -1057,9 +1057,9 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
             log_dir=log_dir, wheel_dir=wheel_dir,
         ))
         if results[-1].status == "failed" and not continue_on_error:
-            print(
-                f"==> Stopping after {library.name} failed "
-                f"(pass --continue-on-error to keep going)."
+            LOGGER.info(
+                "Stopping after %s failed (pass --continue-on-error to keep going).",
+                library.name,
             )
             break
     return results
@@ -1110,14 +1110,13 @@ def print_wheel_summary(results, wheel_dir):
         print(f"\n==> Wheels: none in {location}")
     missing = [result.name for result in results if result.wheels is False]
     if missing:
-        print(
-            f"error: --wheel-dir was given but no complete set of wheels came "
-            f"out of {', '.join(missing)}. Either the matrix built no pybind "
-            f"configuration -- select it with --filter "
-            f"'{{\"options\": {{\"pybind\": true}}}}' -- or only part of the "
-            f"--python-versions fan-out produced one; pass exactly the version "
-            f"this interpreter is running.",
-            file=sys.stderr,
+        LOGGER.error(
+            "--wheel-dir was given but no complete set of wheels came out of %s. "
+            "Either the matrix built no pybind configuration -- select it with "
+            "--filter '{\"options\": {\"pybind\": true}}' -- or only part of the "
+            "--python-versions fan-out produced one; pass exactly the version "
+            "this interpreter is running.",
+            ", ".join(missing),
         )
         return False
     return True
@@ -1159,10 +1158,9 @@ def print_summary(results, wheel_dir=None):
     if any(r.status == "failed" for r in results):
         return 1
     if not any(r.status == "ok" for r in results):
-        print(
-            "error: nothing was built -- every library was skipped. Check "
-            "--root, --only/--from, and --filter.",
-            file=sys.stderr,
+        LOGGER.error(
+            "nothing was built -- every library was skipped. Check "
+            "--root, --only/--from, and --filter."
         )
         return EXIT_NOTHING_BUILT
     return 0 if wheels_ok else 1
@@ -1406,6 +1404,10 @@ def _build_parser():
     _add_setup_parser(subparsers)
     _add_build_parser(subparsers)
     _add_upload_parser(subparsers)
+    # On every subcommand rather than the top level, so the flag goes where a
+    # reader puts it: `xmsconan vs2019 build -v`, not `xmsconan vs2019 -v build`.
+    for subparser in subparsers.choices.values():
+        add_verbosity_args(subparser)
     return parser
 
 
@@ -1424,7 +1426,7 @@ def _os_failure(exc):
     Returns:
         The process exit code to use.
     """
-    print(f"error: {exc}", file=sys.stderr)
+    LOGGER.error("%s", exc)
     return EXIT_USAGE
 
 
@@ -1438,15 +1440,15 @@ def _run_setup(args):
             remote_name=args.remote_name,
         )
     except ValueError as exc:  # unusable --password-file
-        print(f"error: {exc}", file=sys.stderr)
+        LOGGER.error("%s", exc)
         return EXIT_USAGE
     except OSError as exc:
         return _os_failure(exc)
     except subprocess.CalledProcessError as exc:
-        # Deliberately not printing `exc`: its .cmd is the full conan argv.
+        # Deliberately not logging `exc`: its .cmd is the full conan argv.
         # The password is no longer in there, but there is no reason to make
         # the next credential added to that command line a leak either.
-        print(f"error: conan setup failed (exit {exc.returncode}).", file=sys.stderr)
+        LOGGER.error("conan setup failed (exit %d).", exc.returncode)
         return exc.returncode
 
 
@@ -1460,10 +1462,9 @@ def _run_build(args):
             # library selects nothing.  Either way the developer asked for a
             # build that cannot happen; exiting 0 would tell a wrapper script
             # the stack is built.
-            print(
-                "error: no libraries selected -- --only and --from together "
-                "match nothing, or nothing after --from is enabled.",
-                file=sys.stderr,
+            LOGGER.error(
+                "no libraries selected -- --only and --from together "
+                "match nothing, or nothing after --from is enabled."
             )
             return EXIT_USAGE
         if not os.path.isdir(args.root):
@@ -1474,10 +1475,7 @@ def _run_build(args):
             # Checked before --preview, not after: the preview reads each
             # library's [matrix] from under --root, so a mistyped root would
             # otherwise print a confident unrestricted fan-out and exit 0.
-            print(
-                f"error: --root directory not found: {args.root}",
-                file=sys.stderr,
-            )
+            LOGGER.error("--root directory not found: %s", args.root)
             return EXIT_USAGE
         if args.preview:
             return preview(
@@ -1494,10 +1492,7 @@ def _run_build(args):
             )
         )]
         if not all(check.ok for check in checks):
-            print(
-                "error: preflight failed; fix the items above and re-run.",
-                file=sys.stderr,
-            )
+            LOGGER.error("preflight failed; fix the items above and re-run.")
             return EXIT_USAGE
         results = build(
             libraries, args.root, version=args.version,
@@ -1509,7 +1504,7 @@ def _run_build(args):
     except ValueError as exc:
         # Bad --only / --from / --filter, or a malformed --python-versions
         # entry rejected by the packager.
-        print(f"error: {exc}", file=sys.stderr)
+        LOGGER.error("%s", exc)
         return EXIT_USAGE
     except OSError as exc:
         return _os_failure(exc)
@@ -1523,7 +1518,7 @@ def _run_upload(args):
             allow_other_remote=args.allow_other_remote,
         )
     except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        LOGGER.error("%s", exc)
         return EXIT_USAGE
     except OSError as exc:
         return _os_failure(exc)
@@ -1548,4 +1543,5 @@ def main(argv=None):
             console script and the ``xmsconan vs2019`` dispatcher propagate it.
     """
     args = _build_parser().parse_args(argv)
+    configure_logging(args)
     sys.exit(_HANDLERS[args.command](args))

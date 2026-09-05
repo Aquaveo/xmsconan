@@ -33,12 +33,12 @@ def test_custom_printer_captures_output(printer, captured):
     assert captured == ["hello"]
 
 
-# --- print_ascci_art ---
+# --- print_ascii_art ---
 
 
 def test_print_ascii_art_contains_version(printer, captured):
     """Version string appears in output."""
-    printer.print_ascci_art()
+    printer.print_ascii_art()
     output = "".join(captured)
     assert "Version:" in output
 
@@ -51,7 +51,7 @@ def test_print_ascii_art_contains_banner(printer, captured):
     never spells them -- so the whole check rested on the right side, which any
     run of underscores satisfies. A banner truncated to one row passed it.
     """
-    printer.print_ascci_art()
+    printer.print_ascii_art()
     output = "".join(captured)
     art = [
         line for line in output.splitlines()
@@ -61,6 +61,11 @@ def test_print_ascii_art_contains_banner(printer, captured):
     assert len(art) == 6
     assert art[0].lstrip().startswith("____ ____ _____")
     assert art[-1].rstrip().endswith("/_/")
+
+
+def test_print_ascci_art_is_the_same_method(printer):
+    """The misspelled name is kept for one release, bound to the very same method."""
+    assert printer.print_ascci_art.__func__ is printer.print_ascii_art.__func__
 
 
 # --- print_message ---

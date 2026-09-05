@@ -12,6 +12,8 @@ import subprocess
 import sys
 import sysconfig
 
+from xmsconan._cli import resolve_tool
+
 
 def _pip_install_cmd(*packages):
     """Return a pip install command list, using uv if available."""
@@ -45,7 +47,7 @@ def _repair_env(**overrides):
     return env
 
 
-def _resolve_tool(tool, env):
+def _tool_argv0(tool, env):
     """Return an absolute path to *tool*, falling back to the bare name.
 
     Prepending the script directory to *env* is not enough on its own. Windows
@@ -63,7 +65,7 @@ def _resolve_tool(tool, env):
         -- in which case the invocation fails with the same ``FileNotFoundError``
         it would have raised anyway.
     """
-    return shutil.which(tool, path=env["PATH"]) or tool
+    return resolve_tool(tool, path=env["PATH"]) or tool
 
 
 def _detect_platform():
@@ -107,7 +109,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
         env = _repair_env(LD_LIBRARY_PATH=libs_path)
         for whl in wheels:
             subprocess.run(
-                [_resolve_tool("auditwheel", env), "repair", whl, "-w", repaired_dir],
+                [_tool_argv0("auditwheel", env), "repair", whl, "-w", repaired_dir],
                 check=True,
                 env=env,
             )
@@ -116,7 +118,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
         env = _repair_env(DYLD_LIBRARY_PATH=libs_path)
         for whl in wheels:
             subprocess.run(
-                [_resolve_tool("delocate-wheel", env), "-w", repaired_dir, "-v", whl],
+                [_tool_argv0("delocate-wheel", env), "-w", repaired_dir, "-v", whl],
                 check=True,
                 env=env,
             )
@@ -126,7 +128,7 @@ def wheel_repair(wheel_dir="wheelhouse", platform=None):
         for whl in wheels:
             subprocess.run(
                 [
-                    _resolve_tool("delvewheel", env), "repair", whl,
+                    _tool_argv0("delvewheel", env), "repair", whl,
                     "--add-path", libs_path,
                     "--namespace-pkg", "xms",
                     "-w", repaired_dir,

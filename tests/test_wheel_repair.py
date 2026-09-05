@@ -68,7 +68,7 @@ def test_pip_install_cmd_falls_back_to_pip(mock_which):
 # --- wheel_repair ---
 
 
-@patch("xmsconan.ci_tools.wheel_repair._resolve_tool", side_effect=lambda tool, env: tool)
+@patch("xmsconan.ci_tools.wheel_repair.resolve_tool", return_value=None)
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
 @patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
@@ -114,7 +114,7 @@ def test_linux_repair_absolutizes_relative_wheel_dir(mock_glob, mock_run, mock_r
     assert os.path.isabs(expected)
 
 
-@patch("xmsconan.ci_tools.wheel_repair._resolve_tool", side_effect=lambda tool, env: tool)
+@patch("xmsconan.ci_tools.wheel_repair.resolve_tool", return_value=None)
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
 @patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
@@ -133,7 +133,7 @@ def test_macos_repair(mock_glob, mock_run, mock_rmtree, mock_move, mock_resolve)
     assert Path(repair_call[1]["env"]["DYLD_LIBRARY_PATH"]) == Path(os.path.abspath("/tmp/wh/libs"))
 
 
-@patch("xmsconan.ci_tools.wheel_repair._resolve_tool", side_effect=lambda tool, env: tool)
+@patch("xmsconan.ci_tools.wheel_repair.resolve_tool", return_value=None)
 @patch("xmsconan.ci_tools.wheel_repair.shutil.move")
 @patch("xmsconan.ci_tools.wheel_repair.shutil.rmtree")
 @patch("xmsconan.ci_tools.wheel_repair.subprocess.run")
