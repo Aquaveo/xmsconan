@@ -1,0 +1,3 @@
+library_name = "xmssnap"
+description = "Snap"
+ci_type = "gitlab"

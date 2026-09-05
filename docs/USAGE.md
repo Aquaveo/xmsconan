@@ -67,6 +67,7 @@ All commands live under the `xmsconan` umbrella:
 |---|---|
 | `xmsconan gen` | Render build files (`conanfile.py`, `build.py`, `CMakeLists.txt`, `_package/pyproject.toml`, …) from `build.toml`. |
 | `xmsconan ci` | Render `.github/workflows/<Lib>-CI.yaml` or `.gitlab-ci.yml`. |
+| `xmsconan profiles` | Render `conan_profiles/` and `CMakePresets.json` from `build.toml`. Run automatically by `xmsconan gen`; useful on its own after a `[matrix]` or `[filter]` edit. |
 | `xmsconan build` | Run `conan install` + `cmake configure` against a single profile. Used by the generated `build.py`; also useful for one-off configures. |
 | `xmsconan coverage` | Run the unified C++/Python coverage pipeline and enforce the `[coverage]` thresholds (see §11). `--phase collect` stops after producing the reports; `--phase report` gates an existing set of them (§11.4). |
 | `xmsconan test-shards` | Run a staged gtest runner as N parallel shards inside the current container and merge their JUnit reports into one. What the generated GitLab `Run C++ Tests - <label>` jobs call (see §10.2). |
@@ -78,6 +79,24 @@ All commands live under the `xmsconan` umbrella:
 | `xmsconan publish` | The full release pipeline (gen → build → repair → deploy). |
 
 Run `xmsconan <cmd> --help` for the full flag set. The legacy underscored names (`xmsconan_gen`, `xmsconan_ci`, …) still work and are what the generated CI scripts call.
+
+### 4.1 `--dry-run` and `--check` on the generators
+
+`gen`, `ci`, and `profiles` each decide their whole output as one plan — the same set of files a real run writes — and `--check` compares that plan with the tree instead of keeping a list of its own:
+
+| Flag | What it does | Exit code |
+|---|---|---|
+| *(none)* | Write every file in the plan. | 0, or 1 on error |
+| `--dry-run` | Log what a real run would write. Writes nothing. | 0, or 1 on error |
+| `--check` | Print a unified diff for every file that is missing or differs, and name any stale profile `gen` or `profiles` would delete. Writes nothing. | 0 when the tree is up to date, 1 otherwise |
+
+```bash
+xmsconan gen --check --version 0.0.0 build.toml
+```
+
+`--check` is the enforcement half of "regenerate after any `build.toml` edit". The generated files are gitignored in the consuming repositories, so a stale one is not a diff anyone reviews — it is a working copy quietly building something the repository no longer describes. Running `xmsconan gen --check` in CI, or from a pre-commit hook, turns that into a red pipeline instead.
+
+Both sides of the comparison are normalized to LF, so a Windows working copy of an LF-committed generated file is not reported as drift. `gen --check` and `profiles --check` also report profiles a real run would *delete* — a dropped `[matrix]` entry leaves a profile behind that an IDE will still configure from, and a check that only compared the files it renders would call that tree clean.
 
 ---
 
@@ -312,6 +331,8 @@ After `xmsconan gen --version X.Y.Z build.toml` you will have (alongside `build.
 ```
 
 **Don't hand-edit these.** Treat them like generated code: regenerate from `build.toml` on every change. The exception is `xms_conan2_file.py`, which is *copied* (not rendered) — it's part of xmsconan itself and updates whenever you upgrade the `xmsconan` Python package.
+
+`xmsconan gen --check` verifies that, over every file above plus `conan_profiles/` and `CMakePresets.json` (§4.1).
 
 ---
 
@@ -577,6 +598,8 @@ xmsconan ci --version 0.0.0 build.toml
 ```
 
 Emits `.github/workflows/<Lib>-CI.yaml` (when `ci_type = "github"`) or `.gitlab-ci.yml` (when `ci_type = "gitlab"`). **Commit the result** — CI runs against the committed file.
+
+Unlike the build files, the CI file *is* committed, so a stale one is a diff someone could notice. `xmsconan ci --check` (§4.1) is what notices it: it exits 1 with a diff when the committed pipeline no longer matches what `build.toml` and the current xmsconan would render — which is the state a repository ends up in after a `[ci]` edit, or after an xmsconan upgrade nobody regenerated against.
 
 The generated jobs follow the pattern:
 

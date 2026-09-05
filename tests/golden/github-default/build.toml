@@ -1,0 +1,3 @@
+library_name = "xmscore"
+description = "Core"
+ci_type = "github"

@@ -26,6 +26,7 @@ from xmsconan.generator_tools.build_filter import (
     empty_ci_jobs,
     load_build_filter,
 )
+from xmsconan.generator_tools.output_plan import check_plan, describe_plan, write_plan
 from xmsconan.package_tools.packager import configurations as _platform_configurations
 
 
@@ -90,13 +91,6 @@ def _configure_logging(args):
     else:
         level = logging.INFO
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
-
-
-def _write_text_lf(path: Path, content: str, encoding: str = "utf-8") -> None:
-    """Write text using LF line endings on all platforms."""
-    content = content.replace("\r\n", "\n")
-    with open(path, "w", encoding=encoding, newline="\n") as f:
-        f.write(content)
 
 
 def _display_name(library_name: str) -> str:
@@ -334,20 +328,23 @@ def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, 
         )
 
 
-def generate_ci(
+def plan_ci(
     toml_file_path: str,
     version: str,
     output_dir: str,
-    dry_run: bool = False,
 ):
     """
-    Generate CI configuration file from build.toml.
+    Render the CI configuration from build.toml without writing anything.
 
     Args:
         toml_file_path (str): Path to the build.toml file.
         version (str): The build version.
         output_dir (str): Root directory for CI file output.
-        dry_run (bool): If True, only log output files without writing them.
+
+    Returns:
+        Mapping of output path to rendered content. Every caller acts on this
+        one plan -- write, ``--dry-run``, ``--check`` -- so the three cannot
+        disagree about which files a run produces.
     """
     toml_file = Path(toml_file_path)
     output_dir = Path(output_dir)
@@ -644,17 +641,34 @@ def generate_ci(
         undefined=StrictUndefined,
     )
 
+    plan = {}
     for template_file, output_path in renders:
         template_content = template_file.read_text(encoding="utf-8")
         template = env.from_string(template_content)
-        rendered = template.render(context)
+        plan[output_path] = template.render(context)
+    return plan
 
-        if dry_run:
-            LOGGER.info("[DRY-RUN] Would write CI file: %s", output_path)
-        else:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_text_lf(output_path, rendered)
-            LOGGER.info("Generated CI file: %s", output_path)
+
+def generate_ci(
+    toml_file_path: str,
+    version: str,
+    output_dir: str,
+    dry_run: bool = False,
+):
+    """
+    Generate CI configuration file from build.toml.
+
+    Args:
+        toml_file_path (str): Path to the build.toml file.
+        version (str): The build version.
+        output_dir (str): Root directory for CI file output.
+        dry_run (bool): If True, only log output files without writing them.
+    """
+    plan = plan_ci(toml_file_path, version, output_dir)
+    if dry_run:
+        describe_plan(plan, "CI file")
+        return
+    write_plan(plan, "CI file")
 
 
 def main():
@@ -669,6 +683,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="Show files that would be generated without writing them.",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit 1 with a diff if any generated file is out of date. Writes nothing.",
     )
     parser.add_argument(
         "-v",
@@ -692,6 +711,13 @@ def main():
     version = resolve_version(args.version)
 
     try:
+        if args.check:
+            plan = plan_ci(
+                toml_file_path=args.toml_file,
+                version=version,
+                output_dir=args.output_dir,
+            )
+            raise SystemExit(check_plan(plan))
         generate_ci(
             toml_file_path=args.toml_file,
             version=version,
