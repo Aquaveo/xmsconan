@@ -4,9 +4,10 @@ Build library from source.
 import argparse
 import logging
 import os
-import shutil
 import subprocess
-import sys
+
+from xmsconan._cli import add_verbosity_args, configure_logging, MissingToolError, resolve_tool, run_main
+from xmsconan.exit_codes import EXIT_OK
 
 GENERATORS = {
     'make': None,
@@ -17,18 +18,6 @@ GENERATORS = {
 }
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _configure_logging(args):
-    """Configure logger from CLI verbosity flags."""
-    if args.quiet:
-        level = logging.ERROR
-    elif args.verbose > 0:
-        level = logging.DEBUG
-    else:
-        level = logging.INFO
-
-    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
 
 def _parse_bool_option(value):
@@ -95,43 +84,28 @@ def _parse_profile_options(profile_path, visited=None):
     return options
 
 
-def _resolve_tool(tool_name):
+def _require_tool(tool_name):
     """
-    Resolve a tool executable path.
-
-    Checks in order:
-    1. System PATH via shutil.which()
-    2. Current Python venv Scripts directory
-    3. Raises helpful error if not found
+    Resolve a tool this build cannot run without.
 
     Args:
         tool_name (str): Name of the tool (e.g., 'conan', 'cmake')
 
     Returns:
-        str: Resolved path to the tool
+        str: Resolved path to the tool, from :func:`xmsconan._cli.resolve_tool`
 
     Raises:
-        RuntimeError: If tool cannot be found
+        MissingToolError: If tool cannot be found on PATH or in this interpreter's environment;
+            :func:`xmsconan._cli.run_main` reports it as ``EXIT_USAGE``
     """
-    # Try system PATH first
-    tool_path = shutil.which(tool_name)
-    if tool_path:
-        return tool_path
-
-    # Try current venv Scripts directory
-    scripts_dir = 'Scripts' if os.name == 'nt' else 'bin'
-    exe_name = f'{tool_name}.exe' if os.name == 'nt' else tool_name
-    venv_scripts = os.path.join(sys.prefix, scripts_dir, exe_name)
-
-    if os.path.isfile(venv_scripts):
-        return venv_scripts
-
-    # Not found - provide helpful error
-    raise RuntimeError(
-        f"Tool '{tool_name}' not found. "
-        f"Please ensure it's installed and available on PATH or in your Python environment.\n"
-        f"Install via: pip install {tool_name} (if available) or download from official site."
-    )
+    tool_path = resolve_tool(tool_name)
+    if tool_path is None:
+        raise MissingToolError(
+            f"Tool '{tool_name}' not found. "
+            f"Please ensure it's installed and available on PATH or in your Python environment.\n"
+            f"Install via: pip install {tool_name} (if available) or download from official site."
+        )
+    return tool_path
 
 
 def is_dir(_dir_name):
@@ -224,14 +198,7 @@ def get_args():
         '--dry-run', action='store_true',
         help='Show commands and options without executing Conan/CMake'
     )
-    arguments.add_argument(
-        '-v', '--verbose', action='count', default=0,
-        help='Increase output verbosity (use -v for debug details)'
-    )
-    arguments.add_argument(
-        '-q', '--quiet', action='store_true',
-        help='Only show errors'
-    )
+    add_verbosity_args(arguments)
     parsed_args = arguments.parse_args()
 
     # Profiles
@@ -270,11 +237,13 @@ def conan_install(_profile, _cmake_dir, _build_dir, dry_run=False):
     LOGGER.info(" Generating conan info")
     LOGGER.info("------------------------------------------------------------------")
     LOGGER.info(_profile)
+    # Before the build directory: a conan the machine lacks is a refusal,
+    # and a refusal leaves nothing behind.
+    conan_exe = _require_tool('conan')
     if not dry_run and not os.path.isdir(_build_dir):
         LOGGER.info("Creating build directory: %s", _build_dir)
         os.makedirs(_build_dir)
 
-    conan_exe = _resolve_tool('conan')
     cmd = [
         conan_exe, 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'
@@ -379,7 +348,7 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
     LOGGER.info("------------------------------------------------------------------")
     LOGGER.info(" Running cmake")
     LOGGER.info("------------------------------------------------------------------")
-    cmake_exe = _resolve_tool('cmake')
+    cmake_exe = _require_tool('cmake')
     cmd = [cmake_exe]
     gen = GENERATORS[_generator]
     if gen:
@@ -391,9 +360,14 @@ def run_cmake(_cmake_dir, _build_dir, _generator, _cmake_options):
 
 
 def main():
-    """Main function."""
+    """Entry point for ``xmsconan build``: returns the process exit code."""
+    return run_main(_main)
+
+
+def _main():
+    """Configure the build: ``conan install`` and then ``cmake``."""
     args = get_args()
-    _configure_logging(args)
+    configure_logging(args)
     conan_cmd = conan_install(args.profile, args.cmake_dir, args.build_dir, args.dry_run)
     my_cmake_options = get_cmake_options(args)
     cmake_cmd = run_cmake(args.cmake_dir, args.build_dir, args.generator, my_cmake_options)
@@ -401,15 +375,12 @@ def main():
     if args.dry_run:
         LOGGER.info("[DRY-RUN] Conan command: %s", ' '.join(conan_cmd))
         LOGGER.info("[DRY-RUN] CMake command: %s", ' '.join(cmake_cmd))
-        return
+        return EXIT_OK
 
     subprocess.run(conan_cmd, check=True)
     subprocess.run(cmake_cmd, check=True)
+    return EXIT_OK
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+    raise SystemExit(main())

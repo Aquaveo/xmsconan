@@ -44,7 +44,13 @@ import traceback
 from typing import NamedTuple, Optional
 
 # 3. Aquaveo modules
+from xmsconan._cli import add_verbosity_args, configure_logging
 from xmsconan.build_toml import read_build_toml
+from xmsconan.exit_codes import (
+    EXIT_ERROR as _EXIT_ERROR,
+    EXIT_GATE_FAILED as _EXIT_GATE_FAILED,
+    EXIT_OK as _EXIT_OK,
+)
 from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
@@ -66,10 +72,12 @@ LOGGER = logging.getLogger(__name__)
 # own and everything else stays fatal.
 #
 # 3 rather than 2: argparse exits 2 on a usage error, and a mistyped invocation
-# must not read as an advisory coverage miss.
-EXIT_OK = 0
-EXIT_ERROR = 1
-EXIT_GATE_FAILED = 3
+# must not read as an advisory coverage miss. The values live in
+# xmsconan.exit_codes, shared with every other command, and are re-exported
+# here because this module is where the coverage contract is documented.
+EXIT_OK = _EXIT_OK
+EXIT_ERROR = _EXIT_ERROR
+EXIT_GATE_FAILED = _EXIT_GATE_FAILED
 
 #: The two halves of a coverage run, and the default that does both in one
 #: process.
@@ -108,19 +116,6 @@ COVERAGE_LEGS = (LEG_CPP, LEG_PYTHON)
 COVERAGE_STATUS_FILE = "coverage-status.json"
 
 _XVFB_REEXEC_FLAG = "XMSCONAN_COVERAGE_XVFB_REEXEC"
-
-
-def _configure_logging(args):
-    """Configure logger from CLI verbosity flags."""
-    if args.quiet:
-        level = logging.ERROR
-    elif args.verbose > 0:
-        level = logging.DEBUG
-    else:
-        level = logging.INFO
-    # force=True so reconfiguration works when basicConfig has already been
-    # called (e.g., by the xmsconan dispatcher or an earlier subcommand).
-    logging.basicConfig(level=level, format='%(levelname)s: %(message)s', force=True)
 
 
 def _opt_is_truthy(value) -> bool:
@@ -1566,11 +1561,7 @@ def main():
         "--output_dir", default=".",
         help="Workspace directory the coverage artifacts are written into.",
     )
-    parser.add_argument(
-        "-v", "--verbose", action="count", default=0,
-        help="Increase output verbosity (use -v for debug details).",
-    )
-    parser.add_argument("-q", "--quiet", action="store_true", help="Only show errors.")
+    add_verbosity_args(parser)
     parser.add_argument(
         "--version", default=None,
         help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
@@ -1602,7 +1593,7 @@ def main():
     )
 
     args = parser.parse_args()
-    _configure_logging(args)
+    configure_logging(args)
 
     from xmsconan.generator_tools.version import resolve_version
     version = resolve_version(args.version)

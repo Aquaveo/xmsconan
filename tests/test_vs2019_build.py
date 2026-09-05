@@ -1,5 +1,6 @@
 """Tests for build_tools.vs2019_build (the manual msvc 192 driver)."""
 import json
+import logging
 import os
 import re
 import subprocess
@@ -743,7 +744,7 @@ PLAIN_CONFIG = {"options": {"pybind": False}}
     ([PLAIN_CONFIG, PYBIND_CONFIG], False, None, False, 1),
     ([PLAIN_CONFIG, PYBIND_CONFIG], True, "7.0.0", True, 1),
 ], ids=["no-pybind-configuration", "incomplete-fan-out", "extracted"])
-def test_extract_wheels(configurations, extracted, version, expected, calls, capsys):
+def test_extract_wheels(configurations, extracted, version, expected, calls, caplog):
     """A wheel is only claimed when this run built one for every version asked for.
 
     Three things have to hold, and each one is a way to publish the wrong
@@ -760,6 +761,7 @@ def test_extract_wheels(configurations, extracted, version, expected, calls, cap
       and fills the ``libs`` directory that ``xmsconan_wheel_repair --platform
       windows`` passes to ``delvewheel --add-path`` unconditionally.
     """
+    caplog.set_level(logging.INFO)
     packager = fake_packager()
     packager.extract_wheel.return_value = extracted
 
@@ -772,7 +774,7 @@ def test_extract_wheels(configurations, extracted, version, expected, calls, cap
             "wheelhouse", version=version or "*",
         )
     else:
-        assert "no pybind configuration was built" in capsys.readouterr().out
+        assert "no pybind configuration was built" in caplog.text
     if expected:
         packager.collect_dependency_libs.assert_called_once_with(
             os.path.join("wheelhouse", "libs")
@@ -816,7 +818,7 @@ def test_build_library_extracts_wheels(mock_run, mock_packager_cls, wheel_dir,
     (False, 1, ["==> Wheels: none in"]),
 ], ids=["staged", "nothing-extracted"])
 def test_print_summary_reports_the_wheel_directory(wheels, expected_code, expected_out,
-                                                   tmp_path, capsys):
+                                                   tmp_path, capsys, caplog):
     """A build asked for a wheel that produced none has not done what was asked.
 
     That is a build failure (exit 1), not a new exit code: the run was asked
@@ -840,16 +842,17 @@ def test_print_summary_reports_the_wheel_directory(wheels, expected_code, expect
     )
 
     assert exit_code == expected_code
-    captured = capsys.readouterr()
-    assert all(text in captured.out for text in expected_out)
-    assert ("no complete set of wheels" in captured.err) is not wheels
+    out = capsys.readouterr().out
+    assert all(text in out for text in expected_out)
+    assert ("no complete set of wheels" in caplog.text) is not wheels
 
 
 # --- build ---------------------------------------------------------------
 
 
-def test_build_stops_after_a_failure(capsys):
+def test_build_stops_after_a_failure(caplog):
     """Without --continue-on-error, a failed library ends the run."""
+    caplog.set_level(logging.INFO)
     results = [
         vs.LibraryResult("xmscore", "failed"),
         vs.LibraryResult("xmsgrid", "ok"),
@@ -863,7 +866,7 @@ def test_build_stops_after_a_failure(capsys):
     # LibrarySpec.name itself now
     assert build_library.call_args[0][0] is XMSCORE
     assert [r.name for r in built] == ["xmscore"]
-    assert "Stopping after xmscore failed" in capsys.readouterr().out
+    assert "Stopping after xmscore failed" in caplog.text
 
 
 def test_build_continue_on_error():
@@ -904,8 +907,8 @@ def test_print_summary_reports_counts_and_exit_code(capsys):
     assert vs.print_summary([vs.LibraryResult("xmscore", "failed", failed=2)]) == 1
 
 
-def test_print_summary_exits_nonzero_when_nothing_was_built(capsys):
-    """Every library skipped is exit 3, not exit 0.
+def test_print_summary_exits_nonzero_when_nothing_was_built(caplog):
+    """Every library skipped is EXIT_NOTHING_BUILT, not exit 0.
 
     A typo'd --root skips every library and used to exit 0, so any wrapper
     script or ``&&`` chain read "nothing happened" as "the stack is built".
@@ -914,8 +917,8 @@ def test_print_summary_exits_nonzero_when_nothing_was_built(capsys):
         vs.LibraryResult("xmscore", "skipped", message="no checkout at E:\\typo\\xmscore"),
     ])
 
-    assert exit_code == vs.EXIT_NOTHING_BUILT
-    assert "nothing was built" in capsys.readouterr().err
+    assert exit_code == vs.EXIT_NOTHING_BUILT == 4
+    assert "nothing was built" in caplog.text
 
 
 # --- upload --------------------------------------------------------------
@@ -1073,6 +1076,18 @@ def test_main_setup_remote_name_is_reachable(mock_setup):
 
 #: A complete `upload` invocation; both flags are required, never defaulted.
 UPLOAD_ARGV = ["upload", "--library", "xmscore", "--version", "7.0.0"]
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["setup", "-v"], (1, False)),
+    (["build", "-q"], (0, True)),
+    (UPLOAD_ARGV + ["-v"], (1, False)),
+], ids=["setup", "build", "upload"])
+def test_every_verb_takes_the_verbosity_flags(argv, expected):
+    """-v/-q go after the verb, where a reader puts them, on every subcommand."""
+    args = vs._build_parser().parse_args(argv)
+
+    assert (args.verbose, args.quiet) == expected
 
 
 @pytest.mark.parametrize("verb,exception,argv,exit_code,message", [
@@ -1278,7 +1293,7 @@ def test_main_rejects_incomplete_invocations(argv):
     assert run_main(argv) == 2
 
 
-def test_extract_wheels_skips_the_libs_staging_when_repair_is_off(capsys):
+def test_extract_wheels_skips_the_libs_staging_when_repair_is_off(caplog):
     """A library that does not repair its wheel does not stage the repair libs.
 
     collect_dependency_libs copies every DLL in the Conan cache purely so
@@ -1286,6 +1301,7 @@ def test_extract_wheels_skips_the_libs_staging_when_repair_is_off(capsys):
     pure cost, and staging them invites someone to run the repair anyway -- which
     is what the option exists to prevent on this track.
     """
+    caplog.set_level(logging.INFO)
     packager = fake_packager()
     packager.extract_wheel.return_value = True
 
@@ -1294,7 +1310,7 @@ def test_extract_wheels_skips_the_libs_staging_when_repair_is_off(capsys):
     ) is True
 
     packager.collect_dependency_libs.assert_not_called()
-    assert "windows_wheel_repair is false" in capsys.readouterr().out
+    assert "windows_wheel_repair is false" in caplog.text
 
 
 def test_library_repairs_wheel_follows_the_libraries_own_build_toml(tmp_path):

@@ -1254,11 +1254,16 @@ def _minimal_build_toml(tmp_path):
 
 
 def _run_gen(tmp_path, monkeypatch, *extra_args):
-    """Run xmsconan_gen's main() against a build.toml in tmp_path."""
+    """Run xmsconan_gen's main() against a build.toml in tmp_path, and assert it succeeded.
+
+    main() returns its exit code rather than raising, so a run that failed
+    outright would otherwise leave a test whose assertions are all negative
+    (this file is *not* there) passing for the wrong reason.
+    """
     _minimal_build_toml(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", ["xmsconan_gen", "build.toml", *extra_args])
-    build_file_generator_module.main()
+    assert build_file_generator_module.main() == 0
 
 
 def test_gen_exits_nonzero_when_profile_generation_fails(tmp_path, monkeypatch):
@@ -1275,10 +1280,7 @@ def test_gen_exits_nonzero_when_profile_generation_fails(tmp_path, monkeypatch):
         lambda **kwargs: (_ for _ in ()).throw(ValueError("no library_name")),
     )
 
-    with pytest.raises(SystemExit) as excinfo:
-        build_file_generator_module.main()
-
-    assert excinfo.value.code == 1
+    assert build_file_generator_module.main() == 1
 
 
 def test_gen_keeps_build_files_when_profile_generation_fails(tmp_path, monkeypatch):
@@ -1291,8 +1293,7 @@ def test_gen_keeps_build_files_when_profile_generation_fails(tmp_path, monkeypat
         lambda **kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
 
-    with pytest.raises(SystemExit):
-        build_file_generator_module.main()
+    assert build_file_generator_module.main() == 1
 
     assert (tmp_path / "CMakeLists.txt").exists()
     assert (tmp_path / "conanfile.py").exists()

@@ -45,6 +45,7 @@ from xml.etree import ElementTree
 # 2. Third party modules
 
 # 3. Aquaveo modules
+from xmsconan._cli import add_verbosity_args, configure_logging
 
 LOGGER = logging.getLogger(__name__)
 
@@ -768,10 +769,7 @@ def main():
         "--timeout", type=int, default=DEFAULT_SHARD_TIMEOUT,
         help=f"Seconds a single shard may run (default: {DEFAULT_SHARD_TIMEOUT}).",
     )
-    parser.add_argument(
-        "-v", "--verbose", action="count", default=0,
-        help="Increase output verbosity.",
-    )
+    add_verbosity_args(parser)
     parser.add_argument(
         "runner_args", nargs="*",
         help="Extra arguments passed through to every shard, e.g. "
@@ -779,10 +777,7 @@ def main():
     )
 
     args = parser.parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s: %(message)s", force=True,
-    )
+    configure_logging(args)
 
     try:
         shards = resolve_shard_count(args.shards)

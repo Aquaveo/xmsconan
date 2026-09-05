@@ -24,12 +24,14 @@ environment variables, or ``~/.xmsconan.toml`` (see
 """
 import argparse
 from dataclasses import dataclass, field
+import logging
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
+from xmsconan._cli import add_verbosity_args, configure_logging
 from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
@@ -37,6 +39,8 @@ from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
 from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _repairs_wheel(config) -> bool:
@@ -71,11 +75,7 @@ def _check_xvfb(config):
     if not config.ci.xvfb:
         return False
     if not shutil.which("xvfb-run"):
-        print(
-            "WARNING: ci.xvfb=true but xvfb-run not found on PATH. "
-            "VTK tests may segfault.",
-            file=sys.stderr,
-        )
+        LOGGER.warning("ci.xvfb=true but xvfb-run not found on PATH. VTK tests may segfault.")
         return False
     return True
 
@@ -156,18 +156,18 @@ def publish(
     xvfb = _xvfb_prefix() if use_xvfb else []
 
     # 1. Setup Conan
-    print("==> Setting up Conan...")
+    LOGGER.info("Setting up Conan...")
     steps.conan_setup(login=True)
 
     # 2. Generate build files
-    print("==> Generating build files...")
+    LOGGER.info("Generating build files...")
     steps.subprocess_run(
         ["xmsconan_gen", "--version", version, toml_path],
         check=True,
     )
 
     # 3. Build (wrapped with xvfb-run if needed)
-    print("==> Building...")
+    LOGGER.info("Building...")
     repair_wheel = _repairs_wheel(config)
     build_cmd = xvfb + [
         sys.executable, "build.py",
@@ -184,14 +184,14 @@ def publish(
 
     # 4. Repair wheel
     if repair_wheel:
-        print("==> Repairing wheel...")
+        LOGGER.info("Repairing wheel...")
         steps.wheel_repair(wheel_dir=wheel_dir)
     else:
-        print("==> Skipping wheel repair ([ci].windows_wheel_repair = false)")
+        LOGGER.info("Skipping wheel repair ([ci].windows_wheel_repair = false)")
 
     # 5. Deploy wheel
     if deploy_wheel:
-        print("==> Uploading wheel...")
+        LOGGER.info("Uploading wheel...")
         steps.wheel_deploy(
             wheel_dir=wheel_dir,
             url=url,
@@ -199,16 +199,16 @@ def publish(
             password=password,
         )
     else:
-        print("==> Skipping wheel upload (--no-wheel)")
+        LOGGER.info("Skipping wheel upload (--no-wheel)")
 
     # 6. Deploy Conan package
     if deploy_conan:
-        print("==> Uploading Conan package...")
+        LOGGER.info("Uploading Conan package...")
         steps.conan_deploy(library_name, version, upload=True)
     else:
-        print("==> Skipping Conan upload (--no-conan)")
+        LOGGER.info("Skipping Conan upload (--no-conan)")
 
-    print("==> Done.")
+    LOGGER.info("Done.")
 
 
 def main():
@@ -261,7 +261,9 @@ def main():
         "--xmsconan-dir", default=None,
         help="Path to local xmsconan source to install inside the container.",
     )
+    add_verbosity_args(parser)
     args = parser.parse_args()
+    configure_logging(args)
 
     if args.docker:
         from xmsconan.ci_tools.docker_run import docker_publish

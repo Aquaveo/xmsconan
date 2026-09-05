@@ -23,6 +23,7 @@ All tools are available under the `xmsconan` command:
 ```bash
 xmsconan <command> [args...]
 xmsconan --help              # list all commands
+xmsconan --version           # the installed xmsconan version
 xmsconan gen --help          # help for a specific command
 ```
 
@@ -42,6 +43,8 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan publish` | Build, repair, and deploy a library |
 
 Legacy entry points (`xmsconan_gen`, `xmsconan_ci`, `xmsconan_build`, `xmsconan_coverage`, `xmsconan_vs2019`, etc.) remain available for backwards compatibility.
+
+Every command except the four CI-only tools (`conan-setup`, `wheel-repair`, `conan-deploy`, `wheel-deploy`) takes `-v` / `-q`. For `gen`, `ci`, `profiles`, and `build` a failure is one `ERROR:` line, and `-v` turns it into a traceback. Exit codes are shared across commands — `0` ok, `1` failed, `2` bad request, `3` coverage gate, `4` nothing built — and a `conan` or `cmake` that failed exits with its own code (see `docs/USAGE.md` §4.2).
 
 ## build.toml Schema Reference
 
@@ -212,7 +215,7 @@ xmsconan build --cmake_dir . --build_dir ../builds/xmscore --profile VS2022_TEST
 
 - `--allow-missing-test-files`: Continue when test data path is missing
 - `--dry-run`: Print Conan/CMake commands and options without executing
-- `-v` / `-q`: Increase debug output or suppress informational logs
+- `-v` / `-q`: Increase debug output (and report failures with a traceback) or suppress informational logs
 
 ### CI Tools
 
@@ -427,7 +430,7 @@ xmsconan_vs2019 upload --library xmscore --version 7.0.0
 
 The recipe forks its third-party dependency *versions* automatically when it sees msvc 192 — the same packages as the modern stack, resolved to the legacy builds the `aquaveo-vs2019` remote publishes msvc 192 binaries for (boost `1.74.0.3`, zlib `1.2.11`). A library whose *sister* dependencies are pinned to a different line on VS2019 declares that itself with the `[vs2019_dependency_overrides]` table in `build.toml` — see `docs/USAGE.md` §7.4 for the recipe attributes and §16 for the full flag reference.
 
-`upload` publishes only `compiler.version=192` binaries and refuses any remote other than `aquaveo-vs2019` unless `--allow-other-remote` is passed, so a mixed local cache can't leak msvc 194 packages onto the legacy remote and a one-word typo can't push legacy packages into the CI remote. It exits nonzero when `conan upload` fails, so a failed publish is never reported as success. `build` exits `1` if a library failed or a requested wheel never appeared, `2` for a bad request or a machine that can't build, and `3` when nothing was built at all (`docs/USAGE.md` §16.4).
+`upload` publishes only `compiler.version=192` binaries and refuses any remote other than `aquaveo-vs2019` unless `--allow-other-remote` is passed, so a mixed local cache can't leak msvc 194 packages onto the legacy remote and a one-word typo can't push legacy packages into the CI remote. It exits nonzero when `conan upload` fails, so a failed publish is never reported as success. `build` exits `1` if a library failed or a requested wheel never appeared, `2` for a bad request or a machine that can't build, and `4` when nothing was built at all (`docs/USAGE.md` §16.4).
 
 ### VS2019 Python wheels — one run per Python version
 

@@ -239,11 +239,7 @@ def generator_dir(tmp_path, monkeypatch):
 def _run(module, monkeypatch, argv):
     """Run a generator's main() with *argv*, returning its exit code."""
     monkeypatch.setattr("sys.argv", argv)
-    try:
-        module.main()
-    except SystemExit as exit_request:
-        return exit_request.code
-    return 0
+    return module.main()
 
 
 def test_ci_check_fails_before_anything_is_generated(generator_dir, monkeypatch, capsys):
