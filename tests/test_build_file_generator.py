@@ -1747,14 +1747,14 @@ def test_dependency_options_for_declared_package_is_accepted(template_dir, tmp_p
     _render(toml_file, template_dir, tmp_path)  # must not raise
 
 
-def test_generated_build_py_defaults_version_to_the_ci_env_var(tmp_path):
-    """--version falls back to $XMS_VERSION, and --upload refuses the glob.
+def test_generated_build_py_resolves_the_version_it_is_not_given(tmp_path):
+    """--version defaults to the resolver, with $XMS_VERSION honoured as an override.
 
-    The generated GitHub CI omits --version on its upload step, so the default
-    used to be the glob '*' -- which `conan upload <lib>/** -r aquaveo
-    --confirm` expanded to every version of the library in the local cache.
-    XMS_VERSION is job-level env in every GitHub leg, so the env default needs
-    no CI change; the guard is what catches a hand-run upload.
+    The generated CI passes no --version any more: the tag comes from the
+    host's own variables, through the same resolve_version every other tool
+    reads, so build.py uploads and stages the version xmsconan_gen built.
+    XMS_VERSION stays honoured for one release for anyone still exporting it,
+    and the guard below is what catches a hand-run upload.
     """
     tpl_dir = tmp_path / "templates"
     tpl_dir.mkdir()
@@ -1771,18 +1771,30 @@ def test_generated_build_py_defaults_version_to_the_ci_env_var(tmp_path):
     )
 
     content = (output_dir / "build.py").read_text(encoding="utf-8")
-    assert 'default=os.environ.get("XMS_VERSION", "*")' in content
-    assert "--upload needs a concrete version" in content
+    # Both names on the same line. Over the whole file the second assertion
+    # would hold on a build.py that had stopped reading the override: the
+    # name also appears in a comment above the flag and in its help text.
+    wiring = [line for line in content.splitlines() if "resolve_version(" in line]
+    assert wiring, content
+    assert any("XMS_VERSION" in line for line in wiring), wiring
+    assert "--upload needs a release version" in content
 
 
-@pytest.mark.parametrize("xms_version", ["", "*"])
-def test_generated_build_py_refuses_to_upload_without_a_version(xms_version, tmp_path):
+@pytest.mark.parametrize("xms_version, rejected", [
+    pytest.param("", "0.0.0", id="exported-but-empty"),
+    pytest.param("*", "*", id="glob"),
+    pytest.param("0.0.0", "0.0.0", id="fallback"),
+])
+def test_generated_build_py_refuses_to_upload_without_a_release_version(xms_version, rejected, tmp_path):
     """The guard is executed, not just rendered.
 
-    An exported-but-empty XMS_VERSION makes `os.environ.get("XMS_VERSION", "*")`
-    return "" -- not the sentinel -- so the original `== "*"` test slipped past
-    and `conan upload` was handed the ref `<lib>/`. The neighbouring test only
-    asserts the guard's text appears in the file; this one runs it.
+    Three ways to reach --upload with nothing publishable: an exported-but-empty
+    XMS_VERSION, which resolves through setuptools-scm to the fallback because
+    the rendered tree is no git checkout; the glob the flag once defaulted to,
+    which `conan upload <lib>/** -r aquaveo --confirm` expanded to every
+    version in the cache; and the fallback itself, passed by hand. The
+    neighbouring test only asserts the guard's text appears in the file; this
+    one runs it.
     """
     import os
     import subprocess
@@ -1805,8 +1817,18 @@ def test_generated_build_py_refuses_to_upload_without_a_version(xms_version, tmp
     result = subprocess.run(
         [sys.executable, "build.py", "--skip-build", "--upload"],
         cwd=str(output_dir), capture_output=True, text=True,
-        env={**os.environ, "XMS_VERSION": xms_version},
+        # The empty leg resolves through setuptools-scm, which runs the scm
+        # from the rendered tree and walks upward until it finds a checkout.
+        # tmp_path is outside one on every machine this runs on today, which
+        # makes the fallback an accident of where pytest puts its temporary
+        # directories; the ceiling below makes it the test's own doing.
+        env={**os.environ, "XMS_VERSION": xms_version, "GIT_CEILING_DIRECTORIES": str(tmp_path)},
     )
 
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "--upload needs a concrete version" in result.stdout
+    assert "--upload needs a release version" in result.stdout
+    # The value the guard actually saw. Without it the three legs are one
+    # test run three times: any change that stopped the override reaching
+    # the resolver would send all three down the fallback path, still
+    # exiting 1 with the same first line.
+    assert f"not {rejected!r}" in result.stdout, result.stdout

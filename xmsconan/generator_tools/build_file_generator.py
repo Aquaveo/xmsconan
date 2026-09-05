@@ -341,6 +341,8 @@ def main():
 def _main():
     """Parse arguments and render the build files from the TOML data."""
     default_template_dir = Path(__file__).parent / "templates"
+    from xmsconan.generator_tools.version import resolve_version, VERSION_FLAG_HELP
+
     parser = argparse.ArgumentParser(description="Render templates using a single TOML file.")
     parser.add_argument("--template_dir", default=default_template_dir, help="Directory containing template files.")
     parser.add_argument(
@@ -366,7 +368,7 @@ def _main():
     add_verbosity_args(parser)
     parser.add_argument(
         "--version", default=None,
-        help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
+        help=f"The build version. {VERSION_FLAG_HELP}",
     )
     parser.add_argument("toml_file", nargs="?", default="build.toml",
                         help="Path to the TOML file. Defaults to build.toml in the current directory.")
@@ -374,7 +376,6 @@ def _main():
     args = parser.parse_args()
     configure_logging(args)
 
-    from xmsconan.generator_tools.version import resolve_version
     version = resolve_version(args.version)
 
     if args.check:

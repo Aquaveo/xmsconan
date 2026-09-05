@@ -8,6 +8,8 @@ Methods and Modules used to aid in xmsconan projects.
 
 ```bash
 pip install xmsconan
+# with the toolchain the generated CI jobs run: conan, cmake, gcovr and the flake8 plugins
+pip install "xmsconan[ci]" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
 ```
 
 ## Usage

@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from xmsconan.ci_tools.conan_deploy import conan_deploy, main
+from xmsconan.ci_tools.conan_deploy import conan_deploy, fill_version, main
+from xmsconan.constants import DEFAULT_REMOTE_NAME
 
 
 @patch("xmsconan.ci_tools.conan_deploy.subprocess.run")
@@ -315,3 +316,93 @@ def test_main_exits_with_conan_return_code(mock_deploy, monkeypatch):
         main()
 
     assert exc_info.value.code == 3
+
+
+@patch("xmsconan.ci_tools.conan_deploy.resolve_version", return_value="7.0.0")
+@patch("xmsconan.ci_tools.conan_deploy.conan_deploy")
+def test_main_resolves_the_version_it_is_not_given(mock_deploy, mock_resolve, monkeypatch):
+    """Without a positional version, main() asks the resolver and fills the tarball names with its answer.
+
+    The generated jobs stopped exporting a version, so the tool has to find
+    the same one ``xmsconan_gen`` and ``build.py`` did -- and the
+    ``{version}`` a job writes into its tarball path is filled from that same
+    answer, so a save in one job and a restore in another cannot spell
+    different names.
+    """
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_deploy", "xmscore",
+        "--save", ".export/xmscore-linux-{version}.tar.gz",
+        "--restore", ".export/xmscore-windows-py3.13-{version}.tar.gz",
+    ])
+
+    main()
+
+    mock_resolve.assert_called_once_with(None)
+    mock_deploy.assert_called_once_with(
+        library="xmscore",
+        version="7.0.0",
+        save=".export/xmscore-linux-7.0.0.tar.gz",
+        restore=".export/xmscore-windows-py3.13-7.0.0.tar.gz",
+        upload=False,
+        remote=DEFAULT_REMOTE_NAME,
+        package_query=None,
+    )
+
+
+@patch("xmsconan.ci_tools.conan_deploy.conan_deploy")
+def test_main_prefers_a_positional_version_to_the_environment(mock_deploy, monkeypatch):
+    """A version on the command line wins over the CI tag, and it is what fills the placeholder."""
+    monkeypatch.setenv("CI_COMMIT_TAG", "8.0.0")
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_deploy", "xmscore", "7.0.0", "--save", "xmscore-{version}.tar.gz",
+    ])
+
+    main()
+
+    assert mock_deploy.call_args.kwargs["version"] == "7.0.0"
+    assert mock_deploy.call_args.kwargs["save"] == "xmscore-7.0.0.tar.gz"
+
+
+@pytest.mark.parametrize("argv, environ", [
+    pytest.param([], {"GITLAB_CI": "true"}, id="untagged-job"),
+    pytest.param(["*"], {}, id="glob"),
+])
+@patch("xmsconan.ci_tools.conan_deploy.conan_deploy")
+def test_main_refuses_to_upload_without_a_release_version(mock_deploy, argv, environ, monkeypatch, capsys):
+    """An untagged CI job resolves 0.0.0 and a glob matches every version in the cache; --upload takes neither."""
+    for name, value in environ.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["xmsconan_conan_deploy", "xmscore", *argv, "--upload"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 2
+    assert "--upload needs a release version" in capsys.readouterr().err
+    mock_deploy.assert_not_called()
+
+
+@patch("xmsconan.ci_tools.conan_deploy.conan_deploy")
+def test_main_saves_the_fallback_version(mock_deploy, monkeypatch):
+    """A branch pipeline moves its 0.0.0 packages between stages: only --upload is refused."""
+    monkeypatch.setenv("GITLAB_CI", "true")
+    monkeypatch.setattr(sys, "argv", [
+        "xmsconan_conan_deploy", "xmscore", "--save", "xmscore-{version}.tar.gz",
+    ])
+
+    main()
+
+    assert mock_deploy.call_args.kwargs["version"] == "0.0.0"
+    assert mock_deploy.call_args.kwargs["save"] == "xmscore-0.0.0.tar.gz"
+
+
+@pytest.mark.parametrize("path, expected", [
+    pytest.param(None, None, id="absent"),
+    pytest.param("plain.tar.gz", "plain.tar.gz", id="no-placeholder"),
+    pytest.param(".export/x-{version}.tar.gz", ".export/x-7.0.0.tar.gz", id="placeholder"),
+    pytest.param("{version}/{version}.tar.gz", "7.0.0/7.0.0.tar.gz", id="every-occurrence"),
+    pytest.param("x-{ver}-{version}.tar.gz", "x-{ver}-7.0.0.tar.gz", id="other-braces-untouched"),
+])
+def test_fill_version(path, expected):
+    """``{version}`` is replaced wherever it appears, and nothing else in the path is."""
+    assert fill_version(path, "7.0.0") == expected

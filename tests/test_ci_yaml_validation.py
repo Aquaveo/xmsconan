@@ -255,7 +255,7 @@ def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
 
 
 def test_both_templates_reference_same_xmsconan_version(tmp_path):
-    """Verify GitHub and GitLab templates reference the same xmsconan version."""
+    """Verify GitHub and GitLab templates install the same xmsconan requirement."""
     (tmp_path / "gh").mkdir()
     (tmp_path / "gl").mkdir()
     github_toml = write_build_toml(
@@ -274,10 +274,10 @@ def test_both_templates_reference_same_xmsconan_version(tmp_path):
     ).read_text(encoding="utf-8")
     gl_content = (gl_out / ".gitlab-ci.yml").read_text(encoding="utf-8")
 
-    # Extract all xmsconan>=X.Y.Z references
+    # Extract every specifier an install line attaches to xmsconan[ci].
     import re
-    gh_versions = set(re.findall(r"xmsconan>=([\d.]+)", gh_content))
-    gl_versions = set(re.findall(r"xmsconan>=([\d.]+)", gl_content))
+    gh_versions = set(re.findall(r'"xmsconan\[ci\]([^"]+)"', gh_content))
+    gl_versions = set(re.findall(r'"xmsconan\[ci\]([^"]+)"', gl_content))
 
     assert len(gh_versions) == 1, f"GitHub has multiple versions: {gh_versions}"
     assert len(gl_versions) == 1, f"GitLab has multiple versions: {gl_versions}"
@@ -303,6 +303,10 @@ def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
     version that already satisfied the floor, so pip skipped the install on
     every run. ``--upgrade`` is what makes the floor actually resolve to the
     newest release on devpi.
+
+    The ``[ci]`` extra is part of the same line: it is what brings conan,
+    cmake, gcovr and the flake8 plugins along, so a bare ``xmsconan>=``
+    would float the client and leave the job without a toolchain.
     """
     toml_file = write_build_toml(tmp_path, ci_type, library_name='xmscore', description='Core library', **options)
     output_dir = tmp_path / "output"
@@ -321,7 +325,7 @@ def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
 
     for line in install_lines:
         assert "xmsconan==" not in line, f"pinned rather than floored: {line}"
-        assert "xmsconan>=" in line, f"no version floor: {line}"
+        assert "xmsconan[ci]>=" in line, f"no version floor, or no [ci] extra: {line}"
         assert "--upgrade" in line, (
             f"floor without --upgrade is a no-op when the runner image "
             f"already carries a satisfying xmsconan: {line}"

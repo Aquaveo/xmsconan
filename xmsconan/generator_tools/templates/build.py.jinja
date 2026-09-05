@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 
+from xmsconan.generator_tools.version import FALLBACK_VERSION, is_release_version, resolve_version
 from xmsconan.package_tools import packager
 
 import conanfile
@@ -27,14 +28,17 @@ VS2019_MSVC_VERSION = "{{ vs2019_msvc_version }}"
 parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
 parser.add_argument("--upload", help="Complete the conan upload.", action="store_true")
-# Defaults to $XMS_VERSION -- the variable every generated CI leg already sets --
-# rather than to '*'. As a *glob*, '*' silently widened `conan upload
-# <lib>/** -r aquaveo --confirm` to every version of this library sitting in
-# the local cache, and made --wheel-dir stage whichever wheel it found. Not
-# required=True, though: the generated GitHub CI omits --version on six
-# invocations per repo, and args.version also feeds extract_wheel.
-parser.add_argument("--version", help="Version to upload (default: $XMS_VERSION)",
-                    default=os.environ.get("XMS_VERSION", "*"))
+# Resolved after parsing: the CI tag when the job runs on one, 0.0.0 on any
+# other CI job, setuptools-scm on a developer's checkout -- the same answer `xmsconan_gen`
+# reached for conanfile.py, so the version this file uploads and stages is
+# the one it built. XMS_VERSION is honoured as an override for one more
+# release; the generated CI stopped exporting it. Never the glob '*' it once
+# defaulted to: that silently widened `conan upload <lib>/** -r aquaveo
+# --confirm` to every version of this library in the local cache, and made
+# --wheel-dir stage whichever wheel it found.
+parser.add_argument("--version", default=None,
+                    help="Version to upload and stage (default: $XMS_VERSION, else the CI tag, "
+                         "else 0.0.0 on an untagged CI job, else setuptools-scm)")
 parser.add_argument("--preview", help="Preview the configurations that will be build", action="store_true")
 parser.add_argument("--filter", help="Filter dictionary in JSON format")
 parser.add_argument("--ignore-build-filter", action="store_true",
@@ -59,6 +63,7 @@ parser.add_argument("--test-shards", help="Run tests in N parallel shards (use '
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    args.version = resolve_version(args.version or os.environ.get("XMS_VERSION"))
     if args.test_shards == "auto":
         test_shards = max((os.cpu_count() or 4) // 2, 2)
     else:
@@ -132,14 +137,17 @@ if __name__ == "__main__":
             builder.repair_linux_wheel(args.wheel_dir)
 
     if args.upload:
-        # `not args.version` as well as the sentinel: an exported-but-empty
-        # XMS_VERSION makes os.environ.get return "", which is not "*" and
-        # would have uploaded the ref `<lib>/`.
-        if not args.version or args.version == "*":
-            # Publishing is the one step where the glob is not recoverable:
-            # whatever it matched is on the shared remote afterwards.
-            print("error: --upload needs a concrete version. Pass --version, or set "
-                  "XMS_VERSION (every generated CI leg does).")
+        # Publishing is the one step where a wrong version is not recoverable:
+        # whatever went up is on the shared remote afterwards. The fallback is
+        # what an untagged pipeline resolves to, and what a tree setuptools-scm
+        # reads no version from falls back to; a glob is what this flag once
+        # defaulted to, and `conan upload <lib>/*` matched every version of
+        # the library in the local cache.
+        if not is_release_version(args.version):
+            print(f"error: --upload needs a release version, not {args.version!r}: "
+                  f"{FALLBACK_VERSION} is what an untagged build resolves to, and a glob "
+                  "would publish every version in the cache. Pass --version, or run from "
+                  "a tag pipeline.")
             exit(1)
         # msvc 192 binaries belong on their own remote, and `conan upload`
         # matches by reference only -- so without the query an --upload from a

@@ -1014,7 +1014,10 @@ class XmsConanPackager(object):
         ci_commit_tag = os.environ.get('CI_COMMIT_TAG', 'False')  # Gitlab
         release_python = os.getenv('RELEASE_PYTHON', 'False')
 
-        if ci_commit_tag != 'False':
+        # A tag pipeline on either host is a release. GitHub Actions reports
+        # its ref through GITHUB_REF_TYPE; the generated workflow used to
+        # translate that into RELEASE_PYTHON with a third-party action.
+        if ci_commit_tag != 'False' or os.environ.get('GITHUB_REF_TYPE') == 'tag':
             release_python = 'True'
 
         for combination in combinations:

@@ -1046,6 +1046,24 @@ def test_create_build_profile_not_confused_by_new_combination_keys(tmp_path):
     assert content == expected
 
 
+@patch_env({"GITHUB_REF_TYPE": "tag"}, clear=True)
+def test_create_build_profile_marks_a_github_tag_as_a_release():
+    """RELEASE_PYTHON is True on a GitHub tag build, read from GITHUB_REF_TYPE.
+
+    The GitHub workflow used to set it through a third-party action that
+    wrote GITHUB_ENV on ``refs/tags/*``; the packager reads the host's own
+    variable now, the way it has always read CI_COMMIT_TAG on GitLab.
+    """
+    p = XmsConanPackager("xmscore")
+    p.generate_configurations(system_platform="linux")
+
+    profile_path = p.create_build_profile(p.configurations[0])
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    assert "\nCI_COMMIT_TAG=False\nRELEASE_PYTHON=True\n" in content
+
+
 @patch_env(clear=True)
 def test_create_build_profile_writes_profile_options(tmp_path):
     """Per-dependency option overrides result in `pkg/*:opt=value` lines being written to the profile."""

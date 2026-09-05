@@ -3,7 +3,7 @@
 Usage::
 
     xmsconan_publish --version 7.0.0
-    xmsconan_publish                          # version from git tag
+    xmsconan_publish                          # version from the CI tag, else git
     xmsconan_publish --version 7.0.0 --no-deploy
     xmsconan_publish --version 7.0.0 --no-wheel --no-conan
     xmsconan_publish --version 7.0.0 --filter '{"build_type": "Release"}'
@@ -38,7 +38,7 @@ from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
-from xmsconan.generator_tools.version import FALLBACK_VERSION, resolve_version
+from xmsconan.generator_tools.version import FALLBACK_VERSION, is_release_version, resolve_version, VERSION_FLAG_HELP
 
 LOGGER = logging.getLogger(__name__)
 
@@ -130,7 +130,8 @@ def publish(
     """Build, repair, and publish an XMS library.
 
     Args:
-        version: Package version string, or ``None`` to resolve from git tag.
+        version: Package version string, or ``None`` to resolve it the way
+            every command does: the CI tag, else setuptools-scm.
         wheel_dir: Directory for wheel output.
         toml_path: Path to ``build.toml``.
         build_filter: JSON filter string for ``build.py --filter``.
@@ -144,10 +145,11 @@ def publish(
     steps = steps or PublishSteps()
 
     version = resolve_version(version)
-    if version == FALLBACK_VERSION:
+    if not is_release_version(version):
         raise SystemExit(
-            "Error: could not determine version from git tag. "
-            "Pass --version explicitly."
+            f"Error: --version must name a release, not {version!r}: {FALLBACK_VERSION} is what "
+            "an untagged CI job resolves to, and a glob would publish every version in the "
+            "cache. Pass --version explicitly."
         )
 
     config = read_build_toml(toml_path)
@@ -218,7 +220,7 @@ def main():
     )
     parser.add_argument(
         "--version", default=None,
-        help="Package version string (default: from git tag via setuptools-scm).",
+        help=f"Package version string. {VERSION_FLAG_HELP}",
     )
     parser.add_argument(
         "--wheel-dir", default="wheelhouse",

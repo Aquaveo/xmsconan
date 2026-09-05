@@ -3,6 +3,8 @@ import logging
 
 import pytest
 
+from xmsconan.generator_tools import version as version_module
+
 
 # tests/fixtures/coverage_stub/_package/tests/test_stub.py is part of the
 # stub recipe that the coverage integration test stands up — it is meant
@@ -38,6 +40,28 @@ def _reset_root_logging():
             root.removeHandler(handler)
             handler.close()
     root.setLevel(level)
+
+
+# What the version resolver reads, plus the override build.py still honours.
+# xmsconan's own CI runs this suite on tag pushes, where the host sets
+# GITHUB_REF_TYPE=tag and GITHUB_REF_NAME to xmsconan's tag: without this,
+# every test that reaches resolve_version through os.environ -- and every
+# build.py or xmsconan_gen the suite runs as a subprocess -- would take that
+# tag for the version of the library under test, on that one kind of run.
+CI_VERSION_VARIABLES = (
+    version_module.GITLAB_TAG_VARIABLE,
+    version_module.GITHUB_REF_NAME_VARIABLE,
+    version_module.GITHUB_REF_TYPE_VARIABLE,
+    *version_module.CI_MARKER_VARIABLES,
+    "XMS_VERSION",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_ci_version_environment(monkeypatch):
+    """Run every test as if outside CI, as far as the version resolver can tell."""
+    for name in CI_VERSION_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
 
 
 def pytest_addoption(parser):

@@ -1038,8 +1038,8 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
         libraries: :class:`LibrarySpec` list from :func:`select_libraries`.
         root: Directory holding the library checkouts.
         version: Version passed to ``xmsconan_gen``; also exported as
-            ``XMS_VERSION`` so it reaches each profile's ``[buildenv]``, the
-            same way CI supplies it.
+            ``XMS_VERSION`` so it reaches each profile's ``[buildenv]`` ahead
+            of anything the environment would resolve.
         generate: Run ``xmsconan_gen`` before building each library.
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
