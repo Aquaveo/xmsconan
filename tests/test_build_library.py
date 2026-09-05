@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from xmsconan._cli import MissingToolError
 from xmsconan.build_tools import build_library
 
 
@@ -64,33 +65,9 @@ def test_parse_profile_options_with_cyclic_includes(tmp_path):
     assert parsed.get("pybind") == "True"
 
 
-def test_main_dry_run_skips_subprocess():
-    """Dry-run should never execute subprocess commands."""
-    args = Namespace(
-        profile="VS2022_TESTING",
-        cmake_dir=".",
-        build_dir="builds/dry_run",
-        generator="vs2022",
-        python_version=None,
-        xms_version="7.0.0",
-        test_files=None,
-        allow_missing_test_files=True,
-        dry_run=True,
-        verbose=0,
-        quiet=True,
-    )
-
-    with patch.object(build_library, "get_args", return_value=args), \
-         patch.object(build_library, "conan_install", return_value=["conan", "install"]), \
-         patch.object(build_library, "run_cmake", return_value=["cmake"]), \
-         patch("xmsconan.build_tools.build_library.subprocess.run") as mock_run:
-        build_library.main()
-        mock_run.assert_not_called()
-
-
-def test_main_non_dry_run_executes_subprocess():
-    """Normal mode should execute Conan and CMake subprocess commands."""
-    args = Namespace(
+def _main_args(**overrides):
+    """The parsed arguments ``xmsconan build`` runs with, quiet, with *overrides* applied."""
+    args = dict(
         profile="VS2022_TESTING",
         cmake_dir=".",
         build_dir="builds/run",
@@ -103,16 +80,49 @@ def test_main_non_dry_run_executes_subprocess():
         verbose=0,
         quiet=True,
     )
+    args.update(overrides)
+    return Namespace(**args)
+
+
+def test_main_dry_run_skips_subprocess():
+    """Dry-run never executes subprocess commands, and still counts as a success."""
+    args = _main_args(build_dir="builds/dry_run", dry_run=True)
+
+    with patch.object(build_library, "get_args", return_value=args), \
+         patch.object(build_library, "conan_install", return_value=["conan", "install"]), \
+         patch.object(build_library, "run_cmake", return_value=["cmake"]), \
+         patch("xmsconan.build_tools.build_library.subprocess.run") as mock_run:
+        assert build_library.main() == 0
+        mock_run.assert_not_called()
+
+
+def test_main_non_dry_run_executes_subprocess():
+    """Normal mode should execute Conan and CMake subprocess commands."""
+    args = _main_args()
 
     with patch.object(build_library, "get_args", return_value=args), \
          patch.object(build_library, "conan_install", return_value=["conan", "install"]), \
          patch.object(build_library, "run_cmake", return_value=["cmake", "-S", ".", "-B", "build"]), \
          patch("xmsconan.build_tools.build_library.subprocess.run") as mock_run:
-        build_library.main()
+        assert build_library.main() == 0
 
         assert mock_run.call_count == 2
         assert mock_run.call_args_list[0][0][0] == ["conan", "install"]
         assert mock_run.call_args_list[1][0][0] == ["cmake", "-S", ".", "-B", "build"]
+
+
+def test_main_exits_usage_when_a_tool_is_missing(capsys):
+    """A ``conan`` the machine does not have is exit 2, not the 1 of a build that ran and failed.
+
+    The request was fine and the machine cannot honour it, which is the
+    condition ``xmsconan vs2019`` reports with the same code; the message
+    still names the tool, on stderr, as one line.
+    """
+    with patch.object(build_library, "get_args", return_value=_main_args(dry_run=True)), \
+         patch("xmsconan.build_tools.build_library.resolve_tool", return_value=None):
+        assert build_library.main() == 2
+
+    assert "Tool 'conan' not found" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("wchar_t,expected", [
@@ -183,10 +193,24 @@ def test_require_tool_returns_the_resolved_path():
 
 
 def test_require_tool_not_found_raises():
-    """A tool the build cannot run without is a RuntimeError naming it, not a None argv[0]."""
+    """A tool the build cannot run without is a MissingToolError naming it, not a None argv[0].
+
+    The subclass matters: it is what run_main turns into exit 2 rather than 1.
+    """
     with patch("xmsconan.build_tools.build_library.resolve_tool", return_value=None):
-        with pytest.raises(RuntimeError, match="'nonexistent_tool' not found"):
+        with pytest.raises(MissingToolError, match="'nonexistent_tool' not found"):
             build_library._require_tool("nonexistent_tool")
+
+
+def test_conan_install_checks_for_conan_before_creating_the_build_dir(tmp_path):
+    """A refusal leaves nothing behind: no build directory appears for a conan the machine lacks."""
+    build_dir = tmp_path / "build"
+
+    with patch("xmsconan.build_tools.build_library.resolve_tool", return_value=None):
+        with pytest.raises(MissingToolError):
+            build_library.conan_install("profile", str(tmp_path), str(build_dir))
+
+    assert not build_dir.exists()
 
 
 def test_is_dir_valid(tmp_path):

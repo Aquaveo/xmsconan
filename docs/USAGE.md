@@ -108,7 +108,7 @@ One vocabulary across every command, defined in `xmsconan/exit_codes.py`. One nu
 |---|---|---|
 | `0` | The command did what it was asked. | all |
 | `1` | The tool failed: an unhandled exception, a file that could not be written; for `gen`/`ci`/`profiles --check`, drift (§4.1); for `vs2019 build`, a failed library (§16.4). | all |
-| `2` | A bad request or a machine that cannot honour it. argparse produces it for a bad flag; `vs2019` for a missing `--root`, a failed preflight, or a `conan` that is not on `PATH`. | all |
+| `2` | A bad request or a machine that cannot honour it. argparse produces it for a bad flag; `vs2019` for a missing `--root`, a failed preflight, or a `conan` that is not on `PATH`; `build` for a `conan` or `cmake` it cannot find. | all |
 | `3` | A gate the run was asked to enforce did not clear while the tool itself worked: a coverage layer below its threshold. The one code CI forgives, and only under `[ci].split_tests`. | `coverage` |
 | `4` | The run completed but produced nothing: every selected library was skipped. | `vs2019 build` |
 
@@ -999,6 +999,7 @@ Adds the remote, logs in, then runs the preflight checks.
 | `--username NAME` | resolved (see below) | Remote username. |
 | `--remote-url URL` | `https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-vs2019` | Artifactory URL backing the remote. |
 | `--remote-name NAME` | `aquaveo-vs2019` | Conan remote name to add. Pair it with `--remote-url` when pointing at a different Artifactory repo. |
+| `-v` / `-q` | — | Verbose / quiet, after the verb (`xmsconan vs2019 setup -v`). `-q` silences xmsconan's own progress lines and keeps its errors and the preflight table; `conan`'s own output is unaffected. `-v` adds debug detail (§4). |
 
 **Credential resolution order** (first non-empty wins), resolved together so `~/.xmsconan.toml` is read at most once:
 
@@ -1050,6 +1051,7 @@ A VS2019 carrying only, say, the .NET workload used to pass this check and then 
 | `--filter JSON` | — | Restrict the matrix, same shape as `build.py --filter`: `'{"build_type": "Release"}'`. Nested keys are spelled out — `'{"options": {"pybind": true}}'` selects the pybind configurations. |
 | `--version V` | — | Passed to `xmsconan_gen`, and exported as `XMS_VERSION` so it reaches each profile's `[buildenv]` the way CI supplies it. |
 | `--remote-name NAME` | `aquaveo-vs2019` | The remote the preflight check requires. Match it to the `--remote-name` you gave `setup`; a machine set up against a different Artifactory repo otherwise fails preflight (exit 2) on a remote it was never meant to have. |
+| `-v` / `-q` | — | Verbose / quiet, after the verb (`xmsconan vs2019 build -v`). `-q` silences xmsconan's own progress lines and keeps its errors and the report tables (preflight, `--preview`, wheel summary, `==> Summary`); the packager's per-configuration status lines and `conan`'s output are unaffected. `-v` adds debug detail (§4). |
 
 Per library, in dependency order, `build`:
 
@@ -1119,6 +1121,7 @@ xmsconan_vs2019 upload --library xmscore --version 7.0.0
 | `--version V` | **required** | Package version. Every `<library>/<version>*` package in the local cache **whose `compiler.version` is 192** is uploaded. |
 | `--remote NAME` | `aquaveo-vs2019` | Conan remote to upload to. Any other value is refused unless `--allow-other-remote` is also passed. |
 | `--allow-other-remote` | off | Permit a `--remote` other than `aquaveo-vs2019`. |
+| `-v` / `-q` | — | Verbose / quiet, after the verb (`xmsconan vs2019 upload -v`). `-q` silences xmsconan's own progress lines; the packager's upload status lines, including its failure line, print regardless, as does `conan`'s output. `-v` adds debug detail (§4). |
 
 Both `--library` and `--version` are required and there is deliberately **no `*` default** — a shared remote is the wrong place to discover that a wildcard matched more than you meant.
 

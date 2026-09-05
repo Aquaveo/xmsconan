@@ -6,7 +6,7 @@ import logging
 import os
 import subprocess
 
-from xmsconan._cli import add_verbosity_args, configure_logging, resolve_tool, run_main
+from xmsconan._cli import add_verbosity_args, configure_logging, MissingToolError, resolve_tool, run_main
 from xmsconan.exit_codes import EXIT_OK
 
 GENERATORS = {
@@ -95,11 +95,12 @@ def _require_tool(tool_name):
         str: Resolved path to the tool, from :func:`xmsconan._cli.resolve_tool`
 
     Raises:
-        RuntimeError: If tool cannot be found on PATH or in this interpreter's environment
+        MissingToolError: If tool cannot be found on PATH or in this interpreter's environment;
+            :func:`xmsconan._cli.run_main` reports it as ``EXIT_USAGE``
     """
     tool_path = resolve_tool(tool_name)
     if tool_path is None:
-        raise RuntimeError(
+        raise MissingToolError(
             f"Tool '{tool_name}' not found. "
             f"Please ensure it's installed and available on PATH or in your Python environment.\n"
             f"Install via: pip install {tool_name} (if available) or download from official site."
@@ -236,11 +237,13 @@ def conan_install(_profile, _cmake_dir, _build_dir, dry_run=False):
     LOGGER.info(" Generating conan info")
     LOGGER.info("------------------------------------------------------------------")
     LOGGER.info(_profile)
+    # Before the build directory: a conan the machine lacks is a refusal,
+    # and a refusal leaves nothing behind.
+    conan_exe = _require_tool('conan')
     if not dry_run and not os.path.isdir(_build_dir):
         LOGGER.info("Creating build directory: %s", _build_dir)
         os.makedirs(_build_dir)
 
-    conan_exe = _require_tool('conan')
     cmd = [
         conan_exe, 'install', '-of', _build_dir,
         '-pr', _profile, _cmake_dir, '--build=missing'

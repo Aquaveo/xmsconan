@@ -22,7 +22,7 @@ import subprocess
 import sys
 from typing import Callable, Optional
 
-from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
+from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_USAGE
 
 LOGGER = logging.getLogger(__name__)
 
@@ -83,6 +83,16 @@ def tracebacks_wanted() -> bool:
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
 
+class MissingToolError(RuntimeError):
+    """A tool the command cannot run without is on neither ``PATH`` nor in this interpreter's environment.
+
+    Raised by a caller of :func:`resolve_tool` for which None is fatal.
+    :func:`run_main` reports it as ``EXIT_USAGE`` -- the machine cannot
+    honour the request, the code argparse gives a bad flag -- rather than
+    the ``EXIT_ERROR`` of a command that ran and failed.
+    """
+
+
 def run_main(body: Callable[[], Optional[int]]) -> int:
     """Run a console script's body under the shared error contract.
 
@@ -102,13 +112,18 @@ def run_main(body: Callable[[], Optional[int]]) -> int:
         a :class:`subprocess.CalledProcessError`'s own return code, so a
         ``conan`` or ``cmake`` that ran and failed is reported with the code
         it failed with (``EXIT_ERROR`` if a signal killed it, since a
-        negative code is not one a caller can act on); ``EXIT_ERROR`` for
-        any other exception, after logging its message -- and its traceback
-        when :func:`tracebacks_wanted`. :class:`SystemExit`, which argparse
+        negative code is not one a caller can act on); ``EXIT_USAGE`` for a
+        :class:`MissingToolError`, since a tool the machine lacks is the
+        request failing, not the build; ``EXIT_ERROR`` for any other
+        exception. Each is logged as its message -- and its traceback when
+        :func:`tracebacks_wanted`. :class:`SystemExit`, which argparse
         raises for ``--help`` and a usage error, passes through untouched.
     """
     try:
         code = body()
+    except MissingToolError as exc:
+        LOGGER.error("%s", exc, exc_info=tracebacks_wanted())
+        return EXIT_USAGE
     except subprocess.CalledProcessError as exc:
         # The program name, not the argv: a credential that reaches a command
         # line by mistake must not reach the log by contract. -v shows the
@@ -151,9 +166,10 @@ def resolve_tool(tool: str, path: Optional[str] = None) -> Optional[str]:
 
     Returns:
         The absolute path, or None when *tool* is on neither. Callers decide
-        what a missing tool means: a hard error for a build that cannot
-        proceed without it, or the bare name for a child that will fail with
-        the same :class:`FileNotFoundError` either way.
+        what a missing tool means: a :class:`MissingToolError` for a build
+        that cannot proceed without it, which :func:`run_main` reports as
+        ``EXIT_USAGE``, or the bare name for a child that will fail with the
+        same :class:`FileNotFoundError` either way.
     """
     found = shutil.which(tool, path=path)
     if found:

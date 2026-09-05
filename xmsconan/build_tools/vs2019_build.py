@@ -67,15 +67,18 @@ this, so they are distinct:
   the same code), an unusable password file, a file the run needed that
   could not be read or written, or ``conan`` / ``xmsconan_gen`` not on
   ``PATH``.
-* ``3`` -- nothing was built.  Every selected library was skipped (no
+* ``4`` -- nothing was built.  Every selected library was skipped (no
   checkout, no ``build.toml``, or ``--filter`` matched no configuration).
-  This is *not* success: a typo in ``--root`` used to exit 0.
+  This is *not* success: a typo in ``--root`` used to exit 0.  It is not
+  ``3`` either: that is the coverage gate, the one code the generated CI
+  forgives (:mod:`xmsconan.exit_codes`).
 
-Output goes to ``print`` rather than the module ``LOGGER`` its sibling
-:mod:`xmsconan.build_tools.build_library` uses.  This driver is only ever
-run interactively by a developer watching a multi-hour build, so its
-progress lines and summary table are the product, not diagnostics to be
-filtered by level.
+Progress and errors go through the module ``LOGGER``, as in its sibling
+:mod:`xmsconan.build_tools.build_library`, so ``-q`` keeps only the errors
+and ``-v`` adds debug detail.  The report blocks -- the preflight table, the
+``--preview`` matrix, the wheel summary, and ``==> Summary`` -- go to
+``print``: they are the product of a run rather than diagnostics to be
+filtered by level, and redirecting stdout captures them and nothing else.
 
 The VS2019 dependency fork itself lives in
 :mod:`xmsconan.xms_conan2_file` (boost 1.74.0.3 + zlib 1.2.11 instead of
@@ -116,7 +119,7 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION, version_sort_key, VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME,
     VS2019_REMOTE_URL,
 )
-from xmsconan.exit_codes import EXIT_NOTHING_BUILT, EXIT_USAGE
+from xmsconan.exit_codes import EXIT_ERROR, EXIT_NOTHING_BUILT, EXIT_OK, EXIT_USAGE
 from xmsconan.package_tools.packager import XmsConanPackager
 
 LOGGER = logging.getLogger(__name__)
@@ -1131,9 +1134,10 @@ def print_summary(results, wheel_dir=None):
             ``--wheel-dir`` was not passed.
 
     Returns:
-        Process exit code: 1 when any library failed, 3 when the run finished
-        without a single library reaching ``'ok'``, 1 again when a wheel was
-        asked for and none was produced, 0 otherwise.  "Nothing happened" is
+        Process exit code: ``EXIT_ERROR`` (1) when any library failed,
+        ``EXIT_NOTHING_BUILT`` (4) when the run finished without a single
+        library reaching ``'ok'``, 1 again when a wheel was asked for and
+        none was produced, ``EXIT_OK`` otherwise.  "Nothing happened" is
         not success -- a typo'd ``--root`` skips every library, and an ``&&``
         chain or wrapper script reading exit 0 would go on to upload or tag a
         release that was never built.  A missing wheel is the same kind of
@@ -1156,14 +1160,14 @@ def print_summary(results, wheel_dir=None):
     ))
     wheels_ok = print_wheel_summary(results, wheel_dir) if wheel_dir else True
     if any(r.status == "failed" for r in results):
-        return 1
+        return EXIT_ERROR
     if not any(r.status == "ok" for r in results):
         LOGGER.error(
             "nothing was built -- every library was skipped. Check "
             "--root, --only/--from, and --filter."
         )
         return EXIT_NOTHING_BUILT
-    return 0 if wheels_ok else 1
+    return EXIT_OK if wheels_ok else EXIT_ERROR
 
 
 # --- upload --------------------------------------------------------------

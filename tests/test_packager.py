@@ -1138,6 +1138,28 @@ def test_create_build_profile_skips_boost_defaults_when_disabled(tmp_path):
 
 
 @patch_env(clear=True)
+def test_default_option_already_in_the_profile_is_kept_and_reported(capsys):
+    """An option the profile already sets wins over the packager's default, and the run says so.
+
+    Through the printer, like the rest of the packager's output: a generated
+    build.py never configures logging, so a log record from here would be
+    dropped. And not as a warning -- the value is the developer's, written
+    on purpose.
+    """
+    p = XmsConanPackager("xmscore", profile_options={"boost": {"without_stacktrace": False}})
+    p.generate_configurations(system_platform="windows_vs2019")
+
+    profile_path = p.create_build_profile(p.configurations[0])
+    with open(profile_path, "r") as f:
+        content = f.read()
+
+    assert "boost/*:without_stacktrace=False" in content.splitlines()
+    out = capsys.readouterr().out
+    assert "boost:without_stacktrace is already False in the profile options" in out
+    assert "the default True was not applied" in out
+
+
+@patch_env(clear=True)
 def test_boost_defaults_disabled_still_honors_explicit_profile_options(tmp_path):
     """Caller-supplied boost options survive apply_boost_defaults=False."""
     p = XmsConanPackager(

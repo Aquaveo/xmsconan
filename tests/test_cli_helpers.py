@@ -9,7 +9,9 @@ from unittest import mock
 import pytest
 
 from xmsconan import exit_codes
-from xmsconan._cli import add_verbosity_args, configure_logging, resolve_tool, run_main, tracebacks_wanted
+from xmsconan._cli import (
+    add_verbosity_args, configure_logging, MissingToolError, resolve_tool, run_main, tracebacks_wanted,
+)
 
 
 def _parse(*argv):
@@ -19,28 +21,30 @@ def _parse(*argv):
     return parser.parse_args(argv)
 
 
+def _only(items):
+    """The one element of *items*; the failure names what was found instead."""
+    assert len(items) == 1, items
+    return items[0]
+
+
 # --- exit codes ---
 
 
 def test_exit_codes_are_distinct_and_ordered():
-    """One number, one meaning, across every command."""
+    """One number, one meaning, across every command -- and the numbers are already out there.
+
+    The generated GitLab job forgives exactly ``EXIT_GATE_FAILED``. The
+    template renders the constant, so a freshly generated pipeline would
+    follow a change here -- but every consumer pipeline generated so far, and
+    USAGE §11.6, hold the literal 3; and argparse exits 2 on a usage error
+    whatever ``EXIT_USAGE`` says. Changing a value is a coordinated release,
+    not an edit, and this pin is what makes that visible.
+    """
     codes = [
         exit_codes.EXIT_OK, exit_codes.EXIT_ERROR, exit_codes.EXIT_USAGE,
         exit_codes.EXIT_GATE_FAILED, exit_codes.EXIT_NOTHING_BUILT,
     ]
     assert codes == [0, 1, 2, 3, 4]
-
-
-def test_the_gate_code_is_what_the_gitlab_template_forgives():
-    """The generated GitLab job forgives exactly this number, and it is already out there.
-
-    The template renders the constant, so a freshly generated pipeline would
-    follow a change here -- but every consumer pipeline generated so far, and
-    USAGE §11.6, say 3. Changing the value is a coordinated release, not an
-    edit, and this pin is what makes that visible.
-    """
-    assert exit_codes.EXIT_GATE_FAILED == 3
-    assert exit_codes.EXIT_USAGE == 2, "argparse exits 2 on a usage error"
 
 
 # --- verbosity flags and configure_logging ---
@@ -75,7 +79,7 @@ def test_configure_logging_replaces_an_earlier_configuration():
     to replace.
     """
     logging.basicConfig(level=logging.ERROR, force=True)
-    [earlier] = [h for h in logging.getLogger().handlers if h.__class__ is logging.StreamHandler]
+    earlier = _only([h for h in logging.getLogger().handlers if h.__class__ is logging.StreamHandler])
 
     configure_logging(_parse("-v"))
 
@@ -104,7 +108,7 @@ def test_run_main_reports_an_exception_in_one_line(caplog):
 
     assert run_main(body) == exit_codes.EXIT_ERROR
 
-    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    record = _only([r for r in caplog.records if r.levelno == logging.ERROR])
     assert record.getMessage() == "no library_name in build.toml"
     assert not record.exc_info
     assert "Traceback" not in caplog.text
@@ -119,7 +123,7 @@ def test_run_main_attaches_the_traceback_under_verbose(caplog):
 
     assert run_main(body) == exit_codes.EXIT_ERROR
 
-    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    record = _only([r for r in caplog.records if r.levelno == logging.ERROR])
     assert record.exc_info is not None
     assert "ValueError: no library_name in build.toml" in caplog.text
 
@@ -131,6 +135,18 @@ def test_run_main_names_an_exception_that_has_no_message(caplog):
 
     assert run_main(body) == exit_codes.EXIT_ERROR
     assert "RuntimeError" in caplog.text
+
+
+def test_run_main_reports_a_missing_tool_as_a_usage_error(caplog):
+    """A tool the machine lacks is exit 2 -- the request cannot be honoured -- as one line naming it."""
+    def body():
+        raise MissingToolError("Tool 'conan' not found. Please ensure it is installed.")
+
+    assert run_main(body) == exit_codes.EXIT_USAGE
+
+    record = _only([r for r in caplog.records if r.levelno == logging.ERROR])
+    assert record.getMessage().startswith("Tool 'conan' not found")
+    assert not record.exc_info
 
 
 @pytest.mark.parametrize("cmd,returncode,expected", [
