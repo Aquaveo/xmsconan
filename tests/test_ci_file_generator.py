@@ -1,6 +1,5 @@
 """Tests for generator_tools.ci_file_generator."""
 import logging
-from pathlib import Path
 import re
 
 import pytest
@@ -14,10 +13,13 @@ from xmsconan.generator_tools.ci_file_generator import (
 )
 from .ci_helpers import (
     NON_JOB_SHAPE_KEYS,
+    steps_running,
     WHEEL_ONLY,
+    workflow_document,
     write_github_toml,
     write_gitlab_toml,
 )
+from .doc_helpers import slice_between, usage_text
 
 
 @pytest.mark.parametrize("input_name,expected", [
@@ -152,7 +154,7 @@ def _github_jobs(toml_file, tmp_path, name="XmsCore"):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     workflow = output_dir / ".github" / "workflows" / f"{name}-CI.yaml"
-    return yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+    return workflow_document(workflow)["jobs"]
 
 
 def _matrix_pythons(job):
@@ -3304,16 +3306,6 @@ def test_coverage_omits_needs_when_the_filter_instruments_nothing(tmp_path):
 # --- secrets scope ---
 
 
-def _workflow(path):
-    """The parsed document of an already rendered workflow file."""
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def _steps_running(job, command):
-    """The steps of one job whose ``run:`` line invokes *command*."""
-    return [step for step in job["steps"] if command in step.get("run", "")]
-
-
 CONAN_LOGIN_STEP_ENV = {
     "CONAN_LOGIN_USERNAME": "${{ secrets.CONAN2_USER_SECRET }}",
     "CONAN_PASSWORD": "${{ secrets.CONAN2_PASSWORD_SECRET }}",
@@ -3335,74 +3327,173 @@ SECRET_BEARING_STEPS = frozenset({
     "Upload Zipped Conan Packages",
 })
 
+#: What each generated workflow must be handing a credential to, exactly. An
+#: allow-list on its own is only an upper bound, and a workflow that lost every
+#: credential satisfies it -- the coverage workflow in particular has one
+#: secret-bearing step and no wheel or release work, so "no job-level secrets"
+#: is true of a Coverage.yaml with no Conan login at all.
+SECRET_HOLDING_STEPS = {
+    "XmsCore-CI.yaml": SECRET_BEARING_STEPS,
+    "Coverage.yaml": frozenset({"Setup Conan"}),
+}
 
-@pytest.mark.parametrize("workflow", ["XmsCore-CI.yaml", "Coverage.yaml"])
-def test_github_workflows_keep_secrets_off_the_job_environment(tmp_path, workflow):
-    """No workflow-level or job-level ``env:`` value references ``secrets.``.
+#: ``linux_arm`` is opt-in (``build_toml.py``), so the default job set leaves it
+#: out -- and it is a fourth, separately maintained copy of the build job, the
+#: one place a credential can come back on the job with the other three still
+#: clean. Every test below renders both ways.
+LINUX_ARM = [
+    pytest.param(False, id="default-jobs"),
+    pytest.param(True, id="with-linux-arm"),
+]
 
-    Both are inherited by every step: the pinned third-party actions, and
-    ``conan create``, which builds a venv, installs the test dependencies
+GITHUB_WORKFLOWS = ["XmsCore-CI.yaml", "Coverage.yaml"]
+
+
+def _secrets_workflow(tmp_path, workflow, linux_arm):
+    """Render both GitHub workflows for these flags and parse *workflow*."""
+    toml_file = write_github_toml(tmp_path, coverage=True, linux_arm=linux_arm)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    return workflow_document(output_dir / ".github" / "workflows" / workflow)
+
+
+def _secret_env(mapping, label):
+    """``env:`` entries of *mapping* whose value names a secret, keyed by *label*."""
+    return {
+        f"{label}.{key}": value
+        for key, value in (mapping.get("env") or {}).items()
+        if "secrets." in str(value)
+    }
+
+
+def _step_label(step):
+    """A name for *step* that exists even when the step has none."""
+    return step.get("name") or step.get("uses") or step.get("run") or "<unnamed step>"
+
+
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+@pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS)
+def test_github_workflows_keep_secrets_off_the_job_environment(tmp_path, workflow, linux_arm):
+    """No workflow-, job-, or container-level ``env:`` value references ``secrets.``.
+
+    All of them are inherited by every step: the pinned third-party actions,
+    and ``conan create``, which builds a venv, installs the test dependencies
     from PyPI and runs the library's own suite. Log masking hides a secret
     that is printed; it does nothing about a step that reads ``os.environ``
     and sends it elsewhere. A credential goes on the step that uses it.
-    """
-    toml_file = write_github_toml(tmp_path, coverage=True)
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    document = _workflow(output_dir / ".github" / "workflows" / workflow)
 
-    leaks = {
-        f"env.{key}": value
-        for key, value in (document.get("env") or {}).items()
-        if "secrets." in str(value)
-    }
-    leaks.update({
-        f"{name}.env.{key}": value
-        for name, job in document["jobs"].items()
-        for key, value in (job.get("env") or {}).items()
-        if "secrets." in str(value)
-    })
+    ``container`` and ``services`` are scanned alongside the job because the
+    Linux jobs run in a container: GitHub hands ``jobs.<id>.container.env`` to
+    every step exactly as it hands it ``jobs.<id>.env``, so a guard reading
+    only the latter would pass the same leak one key deeper.
+    """
+    document = _secrets_workflow(tmp_path, workflow, linux_arm)
+
+    leaks = _secret_env(document, "env")
+    for name, job in document["jobs"].items():
+        leaks.update(_secret_env(job, f"{name}.env"))
+        container = job.get("container")
+        if isinstance(container, dict):
+            leaks.update(_secret_env(container, f"{name}.container.env"))
+        for service, spec in (job.get("services") or {}).items():
+            if isinstance(spec, dict):
+                leaks.update(_secret_env(spec, f"{name}.services.{service}.env"))
 
     assert leaks == {}
 
 
-def test_github_ci_gives_each_secret_only_to_the_step_that_uses_it(ci_toml, tmp_path):
-    """The Conan login reaches setup and upload; the index credentials reach the wheel upload.
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+@pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS)
+def test_github_workflows_give_the_conan_login_to_every_setup_conan(tmp_path, workflow, linux_arm):
+    """Every ``Setup Conan`` in either workflow carries the login, and carries only it.
 
-    The upload step keeps the login until a tag pipeline shows that the token
-    ``Setup Conan`` persisted carries ``conan upload`` on its own.
+    Both workflows, because the coverage job logs in to the same remote from
+    its own copy of the step. Naming it in ``SECRET_HOLDING_STEPS`` pins only
+    that *something* secret sits on it; this pins *what*, so halving the env
+    block cannot pass on the strength of the surviving key.
     """
-    jobs = _github_jobs(ci_toml, tmp_path)
+    jobs = _secrets_workflow(tmp_path, workflow, linux_arm)["jobs"]
+
+    logins = {
+        name: steps_running(job, "xmsconan_conan_setup")
+        for name, job in jobs.items()
+        if steps_running(job, "xmsconan_conan_setup")
+    }
+    assert logins
+    for name, steps in logins.items():
+        assert len(steps) == 1, f"{name}: {len(steps)} Setup Conan steps"
+        assert steps[0].get("env") == CONAN_LOGIN_STEP_ENV, name
+
+
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+def test_github_ci_gives_the_conan_login_to_every_package_upload(tmp_path, linux_arm):
+    """Every build job's Conan upload carries the login, and carries only it.
+
+    The upload keeps its own copy until a tag pipeline shows that the token
+    ``Setup Conan`` persisted carries ``conan upload`` on its own. There is no
+    counterpart in ``Coverage.yaml``: that workflow builds nothing it publishes.
+    """
+    jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
 
     build_jobs = {
-        name: job for name, job in jobs.items() if _steps_running(job, "xmsconan_conan_setup")
+        name: job for name, job in jobs.items() if steps_running(job, "xmsconan_conan_setup")
     }
     assert build_jobs
     for name, job in build_jobs.items():
-        (setup,) = _steps_running(job, "xmsconan_conan_setup")
-        (upload,) = _steps_running(job, "build.py --skip-build --upload")
-        assert setup["env"] == CONAN_LOGIN_STEP_ENV, name
-        assert upload["env"] == CONAN_LOGIN_STEP_ENV, name
+        upload = steps_running(job, "build.py --skip-build --upload")
+        assert len(upload) == 1, f"{name}: {len(upload)} Conan upload steps"
+        assert upload[0].get("env") == CONAN_LOGIN_STEP_ENV, name
+
+
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+def test_github_ci_gives_the_index_credentials_to_the_wheel_upload(tmp_path, linux_arm):
+    """Every ``xmsconan_wheel_deploy`` step carries the index credentials, and carries only them."""
+    jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
 
     deploy_steps = [
-        step for job in jobs.values() for step in _steps_running(job, "xmsconan_wheel_deploy")
+        (name, step)
+        for name, job in jobs.items()
+        for step in steps_running(job, "xmsconan_wheel_deploy")
     ]
     assert deploy_steps
-    assert all(step["env"] == AQUAPI_STEP_ENV for step in deploy_steps)
+    for name, step in deploy_steps:
+        assert step.get("env") == AQUAPI_STEP_ENV, name
 
-    # The whole step mapping, not just its env: the reset this diff removed
-    # handed a secret to an action through `with:`.
+
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+@pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS)
+def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path, workflow, linux_arm):
+    """Each job's secret-bearing steps are exactly the ones ``SECRET_HOLDING_STEPS`` names.
+
+    The whole step mapping is scanned, not just its ``env:``: the reset this
+    section guards handed a secret to an action through ``with:``. Equality
+    rather than a subset, because ``<=`` alone passes a workflow that lost
+    every credential and ``>=`` alone passes one that grew a new holder.
+
+    Per job, not per workflow. The build job exists in four separately
+    maintained copies, so a union over all of them is satisfied by three:
+    dropping ``GITHUB_TOKEN`` from the linux-arm ``Get Release`` alone leaves
+    a workflow-wide set of names identical, which is the copy-drift this
+    section is here to catch. Whether a job holds credentials at all is keyed
+    on whether it logs in to Conan -- ``flake`` runs no build and must hold
+    nothing, and the same rule decides that without naming it.
+    """
+    document = _secrets_workflow(tmp_path, workflow, linux_arm)
+
     holders = {
-        step["name"]
-        for job in jobs.values()
-        for step in job["steps"]
-        if "secrets." in str(step)
+        name: {_step_label(step) for step in job["steps"] if "secrets." in str(step)}
+        for name, job in document["jobs"].items()
     }
-    assert holders <= SECRET_BEARING_STEPS
-    assert holders >= {"Setup Conan", "Upload Releases to Conan", "Upload wheel to Aquapi"}
+    expected = {
+        name: SECRET_HOLDING_STEPS[workflow] if steps_running(job, "xmsconan_conan_setup") else frozenset()
+        for name, job in document["jobs"].items()
+    }
+
+    assert holders == expected
 
 
-def test_github_ci_reads_the_index_url_from_a_variable(ci_toml, tmp_path):
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+def test_github_ci_reads_the_index_url_from_a_variable(tmp_path, linux_arm):
     """``AQUAPI_URL_DEV`` is a repository *variable* with a public default.
 
     The URL is public -- the GitLab template and every ``pip install -i`` line
@@ -3410,23 +3501,52 @@ def test_github_ci_reads_the_index_url_from_a_variable(ci_toml, tmp_path):
     target into ``***`` in the log. The default keeps a repository that never
     defined the variable uploading to the dev index, and the old secret is
     referenced nowhere, so it can be deleted.
+
+    The expression is spelled out here rather than read from
+    ``AQUAPI_STEP_ENV``: that constant is what the sibling tests compare
+    against, so sharing it would leave the expression pinned in one place
+    only, and the two tests could not cross-check each other.
     """
+    toml_file = write_github_toml(tmp_path, coverage=True, linux_arm=linux_arm)
     output_dir = tmp_path / "output"
-    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
-    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
-        encoding="utf-8",
-    )
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    path = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
 
-    assert "secrets.AQUAPI_URL_DEV" not in content
-    assert f"AQUAPI_URL: {AQUAPI_STEP_ENV['AQUAPI_URL']}" in content
+    assert "secrets.AQUAPI_URL_DEV" not in path.read_text(encoding="utf-8")
+
+    urls = [
+        (name, step["env"]["AQUAPI_URL"])
+        for name, job in workflow_document(path)["jobs"].items()
+        for step in steps_running(job, "xmsconan_wheel_deploy")
+    ]
+    assert urls
+    for name, url in urls:
+        assert url == "${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}", name
 
 
-@pytest.mark.parametrize("ci_type, ci_flags, workflow", [
-    ("github", {"coverage": True}, ".github/workflows/XmsCore-CI.yaml"),
-    ("github", {"coverage": True}, ".github/workflows/Coverage.yaml"),
-    ("gitlab", {"windows": True}, ".gitlab-ci.yml"),
+def _requirement_names(line):
+    """The bare distribution names on one ``pip install`` line, case-folded.
+
+    A substring match over the whole line is wrong in one direction: it also
+    matches ``tomli`` and ``tomlkit``, which are different distributions, and
+    would match a ``build.toml`` path if an install line ever carried one. A
+    bare ``line.split()`` match is wrong in the other -- it misses every
+    decorated form a re-added requirement would arrive in: ``toml==0.10``,
+    ``"toml"``, ``toml>=0.10``, ``toml@https://...``. Names are folded because
+    distribution names are matched case-insensitively.
+    """
+    names = set()
+    for token in line.split():
+        names.add(re.split(r"[=<>!~\[;@]", token.strip("\"'"), maxsplit=1)[0].casefold())
+    return names
+
+
+@pytest.mark.parametrize("writer, ci_flags, workflow", [
+    pytest.param(write_github_toml, {"coverage": True}, ".github/workflows/XmsCore-CI.yaml", id="github-ci"),
+    pytest.param(write_github_toml, {"coverage": True}, ".github/workflows/Coverage.yaml", id="github-coverage"),
+    pytest.param(write_gitlab_toml, {"windows": True}, ".gitlab-ci.yml", id="gitlab"),
 ])
-def test_generated_ci_installs_no_devpi_client(tmp_path, ci_type, ci_flags, workflow):
+def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workflow):
     """No install line names ``devpi-client`` or ``toml``.
 
     ``xmsconan wheel-deploy`` uploads with the ``uv`` that xmsconan depends
@@ -3437,7 +3557,6 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, ci_type, ci_flags, work
     asking for it by name. ``toml`` lost its reader when xmsconan moved to
     ``tomli`` and was still on the Windows install line.
     """
-    writer = {"github": write_github_toml, "gitlab": write_gitlab_toml}[ci_type]
     toml_file = writer(tmp_path, **ci_flags)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
@@ -3446,13 +3565,44 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, ci_type, ci_flags, work
     install_lines = [line for line in content.splitlines() if "pip install" in line]
     assert install_lines
     assert [line for line in install_lines if "devpi" in line] == []
-    assert [line for line in install_lines if "toml" in line.split()] == []
+    assert [line for line in install_lines if "toml" in _requirement_names(line)] == []
+
+
+@pytest.mark.parametrize("deploy", [pytest.param(True, id="deploy"), pytest.param(False, id="no-deploy")])
+def test_gitlab_header_lists_the_conan_login_variables(tmp_path, deploy):
+    """The GitLab header names the Conan pair whether or not the pipeline deploys.
+
+    No generated job sets them -- Conan reads them from the environment
+    itself -- so this header is the only place a repository is told to define
+    them, and every build needs the remote, not just the tag-time deploy the
+    aquapi variables are listed under. Those stay gated, which is what the
+    ``no-deploy`` leg holds: a header that listed everything unconditionally
+    would satisfy the first two assertions and tell a non-deploying
+    repository to create three variables nothing reads.
+    """
+    toml_file = write_gitlab_toml(tmp_path, windows=True, deploy=deploy)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    header = slice_between(
+        (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"),
+        "# Required CI/CD variables:", "# Generated by xmsconan_ci", ".gitlab-ci.yml",
+    )
+
+    assert "CONAN_LOGIN_USERNAME" in header
+    assert "CONAN_PASSWORD" in header
+    assert ("AQUAPI_PASSWORD" in header) is deploy
 
 
 def test_usage_documents_step_scoped_github_secrets():
-    """USAGE section 10.1 names the variable and the steps that carry a secret."""
-    usage = (Path(__file__).parent.parent / "docs" / "USAGE.md").read_text(encoding="utf-8")
-    section = usage[usage.index("### 10.1 GitHub specifics"):usage.index("### 10.2 GitLab specifics")]
+    """USAGE section 10.1 names the variable and every step that carries a secret.
 
-    for needle in ("AQUAPI_URL_DEV", "Setup Conan", "Upload Releases to Conan", "Upload wheel to Aquapi"):
+    ``SECRET_HOLDING_STEPS`` drives the step half: the two are one statement
+    about the same set, and the pair that carries the release token was
+    pinned by the test and left out of the prose until this was keyed off it.
+    """
+    section = slice_between(
+        usage_text(), "### 10.1 GitHub specifics", "### 10.2 GitLab specifics", "docs/USAGE.md",
+    )
+
+    for needle in {"AQUAPI_URL_DEV", "AQUAVEO_GITHUB_TOKEN"} | set(SECRET_BEARING_STEPS):
         assert needle in section, needle

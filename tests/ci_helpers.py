@@ -5,6 +5,7 @@ are about generating and inspecting CI files, and both CI test modules need
 them. Previously each module carried its own copy of the build.toml writer and
 its own idea of which top-level keys are not jobs.
 """
+import yaml
 
 #: Top-level keys in a generated ``.gitlab-ci.yml`` that are not jobs, for
 #: checks that inspect job *shape*.
@@ -69,3 +70,13 @@ WHEEL_ONLY = {"wheel_only": True}
 def write_github_toml(tmp_path, **ci_flags):
     """Write a minimal GitHub build.toml."""
     return write_build_toml(tmp_path, "github", library_name="xmscore", description="Core", **ci_flags)
+
+
+def workflow_document(path):
+    """The parsed document of an already rendered CI file."""
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def steps_running(job, command):
+    """The steps of one job whose ``run:`` line invokes *command*."""
+    return [step for step in job["steps"] if command in step.get("run", "")]
