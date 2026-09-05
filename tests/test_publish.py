@@ -4,15 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_tools.publish import (
-    _check_xvfb,
     main,
     publish,
     PublishSteps,
 )
 from xmsconan.generator_tools.version import FALLBACK_VERSION
-from .utils import patch_env
 
 
 # --- fixtures ---
@@ -270,58 +267,6 @@ def test_publish_rejects_fallback_version(tmp_path):
     ):
         with pytest.raises(SystemExit, match="must name a release"):
             publish(toml_path=str(toml_file))
-
-
-# --- _check_xvfb ---
-
-
-@patch("xmsconan.ci_tools.publish.shutil.which", return_value="/usr/bin/xvfb-run")
-@patch("xmsconan.ci_tools.publish.sys.platform", "linux")
-@patch_env(clear=True)
-def test_check_xvfb_true_on_linux(mock_which, tmp_path):
-    """Returns True on Linux when ci.xvfb=true and no DISPLAY."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nxvfb = true\n',
-        encoding="utf-8",
-    )
-    config = read_build_toml(toml_file)
-    assert _check_xvfb(config) is True
-
-
-@patch("xmsconan.ci_tools.publish.sys.platform", "darwin")
-def test_check_xvfb_false_on_macos(tmp_path):
-    """Returns False on macOS."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nxvfb = true\n',
-        encoding="utf-8",
-    )
-    config = read_build_toml(toml_file)
-    assert _check_xvfb(config) is False
-
-
-@patch("xmsconan.ci_tools.publish.sys.platform", "linux")
-@patch_env({"DISPLAY": ":0"})
-def test_check_xvfb_false_when_display_set(tmp_path):
-    """Returns False when DISPLAY is already set."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nxvfb = true\n',
-        encoding="utf-8",
-    )
-    config = read_build_toml(toml_file)
-    assert _check_xvfb(config) is False
-
-
-@patch("xmsconan.ci_tools.publish.sys.platform", "linux")
-@patch_env(clear=True)
-def test_check_xvfb_false_when_xvfb_not_configured(tmp_path):
-    """Returns False when ci.xvfb is not set."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-    config = read_build_toml(toml_file)
-    assert _check_xvfb(config) is False
 
 
 def test_publish_calls_conan_setup_with_login(mock_steps, tmp_path):

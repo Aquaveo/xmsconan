@@ -29,6 +29,12 @@ from xmsconan.package_tools.packager import XmsConanPackager
 
 LOGGER = logging.getLogger(__name__)
 
+#: Where the top-level templates live. A module constant rather than a default
+#: computed inside the entry point, so a caller that regenerates in-process
+#: (``xmsconan job build``) renders from the same directory ``xmsconan gen``
+#: does without repeating the path arithmetic.
+DEFAULT_TEMPLATE_DIR = Path(__file__).parent / "templates"
+
 
 #: Packages the generated ``CMakeLists.txt`` already finds on its own, keyed by
 #: Conan package name. An ``extra_dependencies`` entry naming one of these is
@@ -333,6 +339,74 @@ def plan_build_files(toml_file_path, version, template_dir, output_dir, with_pro
     return plan, stale
 
 
+def generate_build_files(toml_file_path, version, template_dir=None, output_dir=".",
+                         dry_run=False, with_profiles=True):
+    """Write everything ``xmsconan gen`` produces.
+
+    The write half of :func:`_main`, split out so a caller that already knows
+    the version can regenerate without a subprocess. ``xmsconan job build``
+    does: it is the same command running two steps of its own sequence, and
+    spawning a second interpreter to run it meant the two could resolve
+    different versions and that a failure arrived as a returncode with the
+    reason on another process's stderr.
+
+    Args:
+        toml_file_path: Path to the repository's build.toml.
+        version: The build version, already resolved.
+        template_dir: Directory holding the top-level templates;
+            :data:`DEFAULT_TEMPLATE_DIR` when None.
+        output_dir: Directory the generated files go in.
+        dry_run: Report what would be written and write nothing.
+        with_profiles: Also write conan_profiles/ and CMakePresets.json,
+            matching the default that ``--no-profiles`` turns off.
+
+    Returns:
+        An exit code from :mod:`xmsconan.exit_codes`.
+    """
+    template_dir = DEFAULT_TEMPLATE_DIR if template_dir is None else template_dir
+
+    render_template_with_toml(
+        toml_file_path=toml_file_path,
+        version=version,
+        template_dir=template_dir,
+        output_dir=output_dir,
+        dry_run=dry_run,
+    )
+
+    copy_xms_conan2_file(output_dir=output_dir, dry_run=dry_run)
+
+    package_template_dir = os.path.join(template_dir, "_package")
+    if os.path.isdir(package_template_dir):
+        render_template_with_toml(
+            toml_file_path=toml_file_path,
+            version=version,
+            template_dir=package_template_dir,
+            output_dir=os.path.join(output_dir, "_package"),
+            dry_run=dry_run,
+        )
+
+    if with_profiles:
+        # Conan profiles come from the same build.toml as everything else.
+        # The build files above are already written and stay written, so the
+        # message says what is on disk -- but the command still exits
+        # non-zero, because a warning is invisible to CI. Only configuration
+        # and I/O errors are caught: anything else is a defect in this tool
+        # and is reported by run_main like every other one.
+        from xmsconan.generator_tools.profile_generator import generate_profiles
+        try:
+            generate_profiles(toml_file_path=toml_file_path, dry_run=dry_run)
+        except (OSError, ValueError) as profile_error:
+            LOGGER.error(
+                "Build files were generated, but Conan profile generation failed: %s. "
+                "Profiles are written one at a time, so conan_profiles/ may hold a mix "
+                "of fresh and stale files; re-run `xmsconan_profiles %s` once the error "
+                "above is fixed.",
+                profile_error, toml_file_path, exc_info=tracebacks_wanted(),
+            )
+            return EXIT_ERROR
+    return EXIT_OK
+
+
 def main():
     """Entry point for ``xmsconan gen``: returns the process exit code."""
     return run_main(_main)
@@ -340,7 +414,7 @@ def main():
 
 def _main():
     """Parse arguments and render the build files from the TOML data."""
-    default_template_dir = Path(__file__).parent / "templates"
+    default_template_dir = DEFAULT_TEMPLATE_DIR
     from xmsconan.generator_tools.version import resolve_version, VERSION_FLAG_HELP
 
     parser = argparse.ArgumentParser(description="Render templates using a single TOML file.")
@@ -388,46 +462,14 @@ def _main():
         )
         return check_plan(plan, stale=stale)
 
-    render_template_with_toml(
+    return generate_build_files(
         toml_file_path=args.toml_file,
         version=version,
         template_dir=args.template_dir,
         output_dir=args.output_dir,
         dry_run=args.dry_run,
+        with_profiles=not args.no_profiles,
     )
-
-    copy_xms_conan2_file(output_dir=args.output_dir, dry_run=args.dry_run)
-
-    package_template_dir = os.path.join(args.template_dir, "_package")
-    if os.path.isdir(package_template_dir):
-        render_template_with_toml(
-            toml_file_path=args.toml_file,
-            version=version,
-            template_dir=package_template_dir,
-            output_dir=os.path.join(args.output_dir, "_package"),
-            dry_run=args.dry_run,
-        )
-
-    if not args.no_profiles:
-        # Conan profiles come from the same build.toml as everything else.
-        # The build files above are already written and stay written, so the
-        # message says what is on disk -- but the command still exits
-        # non-zero, because a warning is invisible to CI. Only configuration
-        # and I/O errors are caught: anything else is a defect in this tool
-        # and is reported by run_main like every other one.
-        from xmsconan.generator_tools.profile_generator import generate_profiles
-        try:
-            generate_profiles(toml_file_path=args.toml_file, dry_run=args.dry_run)
-        except (OSError, ValueError) as profile_error:
-            LOGGER.error(
-                "Build files were generated, but Conan profile generation failed: %s. "
-                "Profiles are written one at a time, so conan_profiles/ may hold a mix "
-                "of fresh and stale files; re-run `xmsconan_profiles %s` once the error "
-                "above is fixed.",
-                profile_error, args.toml_file, exc_info=tracebacks_wanted(),
-            )
-            return EXIT_ERROR
-    return EXIT_OK
 
 
 if __name__ == "__main__":

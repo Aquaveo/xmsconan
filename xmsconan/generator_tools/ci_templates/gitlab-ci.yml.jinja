@@ -85,6 +85,12 @@ stages:
 <% endif %>
   variables:
     PYTHON_TARGET_VERSION: '<< coverage_python_version if job.instrumented else (job.python_version or gitlab_linux_single_py) >>'
+<# The half of this job's matrix leg that is not `--leg`. `xmsconan job build`
+   reads it from the environment and turns the pair into the filter this
+   template used to interpolate as a JSON literal into a quoted shell argument
+   -- which meant a leg was described in two places, here and in the tool that
+   had to agree with it. #>
+    BUILD_TYPE: '<< job.build_type >>'
 <# What this job has to hand downstream, decided before the block is opened.
    A library configuration -- no testing, no pybind, not the export job --
    produces nothing any later job reads, and emitting `artifacts: paths:` with
@@ -133,31 +139,22 @@ stages:
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
     - xmsconan_coverage --phase measure --leg << job.coverage_leg >> build.toml
 <% else %>
-    - gcc --version
-    - python --version
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-<# After the install, not before: the extra's cmake lands ahead of the image's
-   on PATH, and the one printed has to be the one that configures. #>
-    - cmake --version
-    - xmsconan_conan_setup
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-<% if ci_split_tests and job.kind == "testing" %>
-    - export XMS_SKIP_CXX_TESTS=1
-<% endif %>
-    - xmsconan_gen build.toml
-<% if ci_xvfb %>
-    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --filter '<< job.filter_json >>' <% if ci_wheel_enabled_linux and job.kind == "pybind" %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
-<% else %>
-    - python build.py --filter '<< job.filter_json >>' <% if ci_wheel_enabled_linux and job.kind == "pybind" %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
-<% endif %>
-<% if job_exports %>
-<# Named for the configuration rather than the ABI. The tarball used to be one
-   per Python version because one build job held every configuration and only
-   the ABI fan-out split it; now a job is a configuration, so the label is what
-   makes two tarballs distinct -- and a library job, which has no ABI, would
-   otherwise collide with the other build type's. #>
-    - xmsconan_conan_deploy << library_name >> --save .export/<< library_name >>-linux-<< job.label >>-{version}.tar.gz
-<% endif %>
+<# One call, where there were eight lines. The tool prints the toolchain
+   versions, sets up Conan, regenerates the build files at the resolved
+   version, builds $BUILD_TYPE's `--leg` configuration behind a virtual
+   display if [ci].xvfb asked for one, stages the wheel if this leg produces
+   one, and -- with --export -- saves the Conan cache tarball the deploy job
+   restores, named `<library>-<platform>-<label>-<version>.tar.gz` from the
+   configuration it actually built.
+
+   Every one of those was a decision this template made and then had to
+   describe to a command that could not check it: the wheel directory, the
+   artifacts directory, ctest's parallelism, the skip-tests variable, the
+   tarball's name. They are facts about build.toml and this job's environment,
+   and reading them where they are used is what keeps the two from drifting.
+   See docs/USAGE.md §10.4; §10.5 is how to replay this job locally. #>
+    - xmsconan job build --leg << job.kind >><< " --export" if job_exports else "" >>
 <% endif %>
 
 <% endfor %>
@@ -203,26 +200,15 @@ Conan Build:
 <% endif %>
       - test_artifacts/
   script:
-    - gcc --version
-    - python --version
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-<# After the install, not before: the extra's cmake lands ahead of the image's
-   on PATH, and the one printed has to be the one that configures. #>
-    - cmake --version
-    - xmsconan_conan_setup
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-<% if ci_split_tests %>
-    - export XMS_SKIP_CXX_TESTS=1
-<% endif %>
-    - xmsconan_gen build.toml
-<% if ci_xvfb %>
-    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py <% if ci_wheel_enabled_linux %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
-<% else %>
-    - python build.py <% if ci_wheel_enabled_linux %>--wheel-dir wheelhouse <% endif %>--artifacts-dir test_artifacts
-<% endif %>
-<% if ci_deploy %>
-    - xmsconan_conan_deploy << library_name >> --save .export/<< library_name >>-linux<< gitlab_linux_py_suffix >>-{version}.tar.gz
-<% endif %>
+<# No `--leg`: this job builds every configuration the platform's matrix
+   produces, which is the shape it has always had. Its tarball is therefore
+   named for the ABI rather than a configuration label -- $PYTHON_TARGET_VERSION
+   is set above either way, by the fan-out or by `variables:`, so the `py<v>`
+   segment is unconditional now where the template used to omit it for a
+   single-version repository. The deploy job's `--restore` below is spelled to
+   match. #>
+    - xmsconan job build<< " --export" if ci_deploy else "" >>
 
 <% endif %>
 <% if ci_wheel_only %>
@@ -283,7 +269,7 @@ Conan Build:
       - TEST-cxxtest.xml
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_test_shards --artifacts-dir test_artifacts --label << test_label >> --shards << ci_test_shards if ci_test_shards > 1 else 1 >><% if ci_xvfb %> --xvfb<% endif %>
+    - xmsconan job test --label << test_label >>
 
 <% endfor %>
 <% endif %>
@@ -343,7 +329,7 @@ Conan Build:
       - TEST-cxxtest.xml
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_test_shards --artifacts-dir test_artifacts --label << test_label >> --shards << ci_test_shards if ci_test_shards > 1 else 1 >><% if ci_xvfb %> --xvfb<% endif %>
+    - xmsconan job test --label << test_label >>
 
 <% endfor %>
 <% endif %>
@@ -376,28 +362,6 @@ Conan Build:
 <% endfor %>
   variables:
     AQUAPI_URL: "https://aquapi.aquaveo.com/aquaveo/dev"
-<% if ci_wheel_only %>
-<# A branch builds the whole matrix; a tag builds only what it publishes. The
-   empty options dict is a filter that matches every configuration, so the
-   script can pass `--filter` unconditionally and quoted -- the alternative,
-   an interpolated flag that is empty on branches, relies on unquoted word
-   splitting to disappear, which is a subtle thing to leave in a release path.
-
-   `rules:` rather than the two mutually exclusive jobs Linux uses. The Linux
-   builds had to become separate jobs anyway, one per configuration; this is
-   still one job, and splitting it would mean either duplicating forty lines or
-   renaming it -- and "Conan Build - Windows" is named by the `needs:` of both
-   Windows deploy jobs. #>
-    BUILD_MATRIX_FILTER: '{"options":{}}'
-  rules:
-    - if: $CI_COMMIT_TAG
-      variables:
-<# Skip the testing configurations. Nothing installs a test runner and no tag
-   pipeline runs one -- the Windows job compiled them on every release, and for
-   a wheel_only repository the testing configurations are most of the matrix. #>
-        BUILD_MATRIX_FILTER: '{"options":{"testing":false}}'
-    - when: on_success
-<% endif %>
   artifacts:
     expire_in: '1d'
     when: always
@@ -411,20 +375,6 @@ Conan Build:
       - wheelhouse/*.whl
 <% endif %>
   script:
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-<# The interpreter every `uv build` in this job's dependency graph builds a
-   wheel with. `uv build` given no interpreter discovers one itself and takes
-   the newest it can see -- 3.14 on GLR-UV, whichever leg is running -- so a
-   3.10 leg produced a cp314 wheel and then could not install it into its own
-   venv. Read by uv itself, so unlike a flag on the recipe's own command it
-   also reaches the recipe copies of dependencies conan builds from source,
-   each of which was exported with whatever xmsconan published it.
-
-   Invisible until GLR-UV: the retired per-ABI images held exactly one
-   interpreter and it was the target ABI, so an unpinned discovery could not
-   be wrong. One image serving every ABI is the point of the migration, and it
-   makes the omission load-bearing. #>
-    - export UV_PYTHON=${PYTHON_TARGET_VERSION}
 <# uv, not pip, and into a venv of the matrix ABI rather than the machine's
    own interpreter. GLR-UV serves every ABI, so there is no longer a `python`
    on PATH that happens to be the right one -- `uv venv --python` is what
@@ -437,7 +387,6 @@ Conan Build:
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
-    - python --version
 <# cmake comes from the venv, not from the image. The GLR-py310 / GLR-py313
    images carried it on PATH; GLR-UV does not, and every configuration failed
    the same way while conan configured the first dependency it built from
@@ -446,46 +395,35 @@ Conan Build:
    CMakeLists declares -- and the wheel is py3-none-win_amd64, so one install
    covers every ABI in the matrix and lands in .venv/Scripts, which the
    activate above already put on PATH. That is what makes the job
-   independent of how the runner snapshot is provisioned.
-
-   The version check sits after the install rather than before it: a
-   resolution failure should read as one instead of surfacing later as a
-   per-configuration build error. #>
+   independent of how the runner snapshot is provisioned. The version check
+   `job build` prints is what confirms which one it resolved to. #>
     - uv pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - cmake --version
-    - xmsconan_conan_setup
-    - xmsconan_gen build.toml
-<% if ci_wheel_only %>
-    - python build.py --filter "${BUILD_MATRIX_FILTER}"<% if ci_wheel_enabled_windows %> --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts
-<% else %>
-    - python build.py<% if ci_wheel_enabled_windows %> --wheel-dir wheelhouse<% if not ci_windows_wheel_repair %> --skip-dependency-libs<% endif %><% endif %> --artifacts-dir test_artifacts
-<% endif %>
-<% if ci_windows_wheel_repair and ci_wheel_enabled_windows %>
-<# Windows repairs in place rather than in a separate Package-stage job the way
-   Linux does: delvewheel resolves the DLL imports of a win_amd64 .pyd and can
-   only run on a Windows host, so a manylinux container cannot stand in. Keeping
-   it here also avoids a second WinVM allocation. This mirrors the GitHub
-   workflow, which repairs inside its windows job.
-
-   [ci].windows_wheel_repair = false removes this step, and with it the
-   dependency-libs staging above that exists only to feed it. delvewheel's
-   ignore list excuses vcruntime140 for a cp3xx wheel but not msvcp140, so a
-   .pyd with no third-party imports still gets a mangled CRT vendored beside
-   it -- which then overrides the runtime XMS supplies to the Python process
-   on purpose. A library with nothing to vendor opts out. #>
-    - xmsconan_wheel_repair --wheel-dir wheelhouse --platform windows
-<% endif %>
-<# Queried, like the VS2019 job's save below and for the same reason in the
-   mirror direction. A runner's Conan cache is per machine, not per job, and
-   `conan cache save <ref>:*` matches by reference -- so with
+<# The whole Windows matrix in one job, unlike Linux's job-per-configuration.
+   `--export` saves the Conan cache tarball the deploy restores, queried to
+   this build's own `compiler.version`: a runner's Conan cache is per machine,
+   not per job, and `conan cache save <ref>:*` matches by reference -- so with
    [ci].windows_vs2019 on, both toolchains build the same reference on the same
-   fleet at the same time, and an unqueried save here would tarball the msvc
-   192 binaries and the deploy below would publish them to the production
-   `aquaveo` remote at exit 0. Emitted unconditionally rather than only under
-   the opt-in: the restriction is a no-op when this is the only toolchain on
-   the machine, and a guard that appears only in the configuration that needs
-   it is one refactor away from being dropped from the one that does. #>
-    - xmsconan_conan_deploy << library_name >> --save .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --package-query compiler.version=<< windows_msvc_version >>
+   fleet at the same time, and an unqueried save would tarball the msvc 192
+   binaries and the deploy would publish them to the production `aquaveo`
+   remote at exit 0. The query is read off the configurations built rather
+   than rendered here, so it cannot name a toolchain the job did not use.
+
+   `job build` also stages and repairs this job's wheel, in place. delvewheel
+   resolves the DLL imports of a win_amd64 .pyd and can only run on a Windows
+   host, so a manylinux container cannot stand in and the alternative is a
+   second WinVM allocation. [ci].windows_wheel_repair = false skips it, and
+   the dependency-libs staging that exists only to feed it, without changing
+   this line. #>
+<% if ci_wheel_only %>
+<# `--release-skips-testing`: on a tag, drop the testing configurations.
+   Nothing installs a test runner and no tag pipeline runs one -- the Windows
+   job compiled them on every release, and for a wheel_only repository they
+   are most of the matrix. A flag rather than an unconditional rule because
+   the Linux jobs publish from builds that must keep theirs. #>
+    - xmsconan job build --release-skips-testing --export
+<% else %>
+    - xmsconan job build --export
+<% endif %>
   tags:
     - WinVM
 
@@ -543,23 +481,28 @@ Conan Build:
 <% endif %>
       - test_artifacts/
   script:
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-<# See "Conan Build - Windows" above. This job needs it more than that one
-   does: --build-missing means the msvc 192 dependencies are compiled from
-   source, each running its own exported recipe, and nothing but an
-   environment variable reaches those. #>
-    - export UV_PYTHON=${PYTHON_TARGET_VERSION}
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
-    - python --version
 <# cmake from the venv, for the reasons given on "Conan Build - Windows"
    above. Same pin: the msvc 192 build runs the same generated CMakeLists on
    the same machines. #>
     - uv pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - cmake --version
-    - xmsconan_conan_setup
-<# Two `conan remote add` calls per job, on a fleet that runs several jobs per
+<# `--platform << vs2019_platform_key >>` carries the other three differences
+   with it, which is why it is the only flag here that the msvc 194 job above
+   does not also pass. The command appends the `<< vs2019_remote_name >>`
+   remote for this platform, builds missing dependencies from source because
+   the legacy graph is not prebuilt, drops the conan-center boost option
+   defaults the legacy recipe does not declare, names its tarball
+   `-windows-vs2019-` and queries the save to msvc << vs2019_msvc_version >>,
+   and stages no wheel -- an msvc 192 wheel and an msvc 194 wheel are the same
+   devpi filename, so publishing both would have them overwrite each other by
+   upload order (USAGE section 16.8).
+
+   Deriving all four from one input is the point: there is no way to set the
+   matrix and the toolchain assumptions to disagree.
+
+   Two `conan remote add` calls per job, on a fleet that runs several jobs per
    machine, all writing one ~/.conan2/remotes.json. Conan 2.31 writes it as
    `remotes.json.tmp` followed by `os.replace` (conan/api/subapi/remotes.py
    `_save`), so the file cannot be torn: a reader sees one complete document or
@@ -571,12 +514,7 @@ Conan Build:
    -- and the alternative, a per-job CONAN_HOME, gives up the shared package
    cache these Windows builds depend on. That is a cache-model change with its
    own blast radius, not a footnote to this one. #>
-    - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
-    - xmsconan_gen build.toml
-    - python build.py --platform << vs2019_platform_key >> --build-missing --artifacts-dir test_artifacts
-<% if ci_deploy %>
-    - xmsconan_conan_deploy << library_name >> --save .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --package-query compiler.version=<< vs2019_msvc_version >>
-<% endif %>
+    - xmsconan job build --platform << vs2019_platform_key >><< " --export" if ci_deploy else "" >>
   tags:
     - WinVM
 
@@ -592,8 +530,7 @@ Lint:
    and an extra that carried the plugin would switch them on there. Whether
    the two hosts should lint alike is `job lint`'s decision. #>
     - pip install -i https://aquapi.aquaveo.com/aquaveo/dev/+simple/ flake8-aquaveo
-    - xmsconan_gen --version 0.0.0 build.toml
-    - flake8 _package
+    - xmsconan job lint
 
 <% if ci_linux and ci_wheel_enabled_linux %>
 Repair Wheel:
@@ -632,7 +569,7 @@ Repair Wheel:
 <% endif %>
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - /opt/python/cp313-cp313/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
+    - /opt/python/cp313-cp313/bin/xmsconan job package
   artifacts:
     expire_in: '1d'
     paths:
