@@ -9,6 +9,28 @@ import pytest
 collect_ignore = ["fixtures"]
 
 
+def pytest_addoption(parser):
+    """Register the golden-file update switch."""
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help="Rewrite tests/golden/ from the current templates instead of comparing against it.",
+    )
+
+
+@pytest.fixture
+def update_golden(request):
+    """Whether this run rewrites the golden files instead of asserting on them.
+
+    A switch rather than an environment variable so that it shows up in
+    ``pytest --help`` next to the suite it belongs to, and so that a CI job
+    cannot inherit it from a stray export and silently accept a template
+    change it was meant to catch.
+    """
+    return request.config.getoption("--update-golden")
+
+
 @pytest.fixture
 def build_toml(tmp_path):
     """Write a minimal build.toml with library_name and description, return path."""

@@ -1721,6 +1721,24 @@ class XmsConanPackager(object):
     def _serialize_profile(self, configuration, path, skip_empty=False, conf=None):
         """Write one configuration to a Conan profile file.
 
+        A thin writer over :meth:`_render_profile`, which holds the format and
+        the allow-list check. The split exists so ``--check`` can compare a
+        profile it has not written against the one on disk; both kinds of
+        write still go through the one renderer, so the refusal below covers
+        them together.
+
+        Rendered before the file is opened, not into it: a refused profile
+        must leave nothing behind, and ``open(path, 'w')`` truncates before
+        the renderer gets to raise.
+        """
+        content = self._render_profile(configuration, path, skip_empty=skip_empty, conf=conf)
+        with open(path, 'w') as f:
+            f.write(content)
+        return path
+
+    def _render_profile(self, configuration, path, skip_empty=False, conf=None):
+        """Render one configuration as Conan profile text.
+
         Single serialization path shared by the ephemeral build profile and the
         profiles written into a repository by :meth:`write_profiles`. Every
         profile is public -- the committed one obviously, and the ephemeral one
@@ -1743,12 +1761,17 @@ class XmsConanPackager(object):
 
         Args:
             configuration: One entry from :attr:`configurations`.
-            path: Destination file path.
+            path: Destination file path. Named in the refusal below, so the
+                message says which profile was rejected even when nothing is
+                being written.
             skip_empty: Drop buildenv entries whose value is None. Without this
                 an unset variable serializes as the literal string ``None``,
                 which Conan would faithfully export into the build.
             conf: Mapping written as a ``[conf]`` section. None omits the
                 section entirely, preserving the ephemeral profile's shape.
+
+        Returns:
+            The profile text.
 
         Raises:
             ValueError: A ``[buildenv]`` name is not in
@@ -1768,31 +1791,30 @@ class XmsConanPackager(object):
                 f'it is safe to print, or keep it out of the configuration.'
             )
 
-        with open(path, 'w') as f:
-            f.write('[settings]\n')
-            for k, v in settings.items():
-                f.write(f'{k}={v}\n')
+        lines = ['[settings]\n']
+        for k, v in settings.items():
+            lines.append(f'{k}={v}\n')
 
-            f.write('\n[options]\n')
-            for k, v in configuration['options'].items():
-                f.write(f'&:{k}={v}\n')
+        lines.append('\n[options]\n')
+        for k, v in configuration['options'].items():
+            lines.append(f'&:{k}={v}\n')
 
-            for dep_name, dep_opts in _profile_order(self._profile_options):
-                for opt_name, opt_value in dep_opts.items():
-                    f.write(f'{dep_name}/*:{opt_name}={opt_value}\n')
+        for dep_name, dep_opts in _profile_order(self._profile_options):
+            for opt_name, opt_value in dep_opts.items():
+                lines.append(f'{dep_name}/*:{opt_name}={opt_value}\n')
 
-            f.write('\n[buildenv]\n')
-            for k, v in buildenv.items():
-                if skip_empty and v is None:
-                    continue
-                f.write(f'{k}={v}\n')
+        lines.append('\n[buildenv]\n')
+        for k, v in buildenv.items():
+            if skip_empty and v is None:
+                continue
+            lines.append(f'{k}={v}\n')
 
-            if conf:
-                f.write('\n[conf]\n')
-                for k, v in conf.items():
-                    f.write(f'{k}={v}\n')
+        if conf:
+            lines.append('\n[conf]\n')
+            for k, v in conf.items():
+                lines.append(f'{k}={v}\n')
 
-        return path
+        return ''.join(lines)
 
     def create_build_profile(self, configuration):
         """Create a temporary build profile."""
@@ -1895,6 +1917,30 @@ class XmsConanPackager(object):
             written.append(path)
 
         return sorted(written)
+
+    def render_profiles(self, output_dir, system_platform=None):
+        """Render every profile :meth:`write_profiles` would write, without writing.
+
+        Same plan and same renderer as the write path, so ``--check`` cannot
+        report a tree as up to date that a real run would change. It does not
+        share :meth:`write_profiles`' loop on purpose: that one serializes
+        each profile as it goes and is documented as not atomic, and folding
+        the two together would quietly make a refusal leave nothing behind
+        rather than leaving the profiles already written.
+
+        Returns:
+            Mapping of profile path under *output_dir* to its text, in plan order.
+        """
+        if self._configurations is None:
+            self.generate_configurations(system_platform)
+
+        rendered = {}
+        for entry in self.plan_profiles(system_platform):
+            path = os.path.join(output_dir, entry.filename)
+            rendered[path] = self._render_profile(
+                entry.configuration, path, skip_empty=True, conf=entry.conf,
+            )
+        return rendered
 
     def plan_profiles(self, system_platform=None):
         """Return a :class:`ProfilePlan` for every profile to write.

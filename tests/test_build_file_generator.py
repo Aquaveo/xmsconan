@@ -13,7 +13,6 @@ import xmsconan
 from xmsconan.build_toml import BuildToml
 from xmsconan.generator_tools import build_file_generator as build_file_generator_module
 from xmsconan.generator_tools.build_file_generator import (
-    _write_text_lf,
     copy_xms_conan2_file,
     render_template_with_toml,
 )
@@ -165,16 +164,6 @@ def test_version_injected_into_context(build_toml, template_dir, tmp_path):
 
     content = (output_dir / "sample.txt").read_text(encoding="utf-8")
     assert content == "version=5.6.7\n"
-
-
-def test_write_text_lf_normalizes_crlf(tmp_path):
-    """_write_text_lf converts CRLF to LF."""
-    out = tmp_path / "lf_test.txt"
-    _write_text_lf(out, "line1\r\nline2\r\n")
-
-    raw = out.read_bytes()
-    assert b"\r\n" not in raw
-    assert raw == b"line1\nline2\n"
 
 
 def test_copy_xms_conan2_file_dry_run(tmp_path):

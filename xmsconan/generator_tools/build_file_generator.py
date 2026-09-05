@@ -19,6 +19,11 @@ from xmsconan.constants import (
     VS2019_REMOTE_NAME,
 )
 from xmsconan.generator_tools.build_filter import load_build_filter
+from xmsconan.generator_tools.output_plan import (
+    check_plan,
+    describe_plan,
+    write_text_lf,
+)
 from xmsconan.package_tools.packager import XmsConanPackager
 
 LOGGER = logging.getLogger(__name__)
@@ -33,16 +38,6 @@ def _configure_logging(args):
     else:
         level = logging.INFO
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
-
-
-def _write_text_lf(path: Path, content: str, encoding: str = "utf-8") -> None:
-    """
-    Write text using LF line endings on all platforms.
-    """
-    # Normalize CRLF -> LF just in case
-    content = content.replace("\r\n", "\n")
-    with open(path, "w", encoding=encoding, newline="\n") as f:
-        f.write(content)
 
 
 #: Packages the generated ``CMakeLists.txt`` already finds on its own, keyed by
@@ -190,22 +185,25 @@ def _render_context(config: BuildToml, version: str) -> dict:
     return context
 
 
-def render_template_with_toml(
+def plan_template_render(
     toml_file_path: str,
     version: str,
     template_dir: str,
     output_dir: str,
-    dry_run: bool = False,
 ):
     """
-    Render templates with the data contained in a single TOML file.
+    Render templates with the data in a single TOML file, without writing them.
 
     Args:
         toml_file_path (str): Path to the TOML file.
         version (str): The build version.
         template_dir (str): Path to the directory containing template files.
-        output_dir (str): Directory to store rendered output files.
-        dry_run (bool): If True, only log output files without writing them.
+        output_dir (str): Directory the rendered files would go in.
+
+    Returns:
+        Mapping of output path to rendered content. Writing, ``--dry-run``
+        and ``--check`` all act on this one plan, so none of them can
+        disagree with the others about what a real run produces.
     """
     toml_file = Path(toml_file_path)
     template_dir = Path(template_dir)
@@ -226,9 +224,6 @@ def render_template_with_toml(
     _validate_vocabularies(config, toml_file)
     context = _render_context(config, version)
 
-    # Ensure the output directory exists
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     # Get all template files in the specified template directory
     template_files = sorted(template_dir.glob("*.jinja"))
     if not template_files:
@@ -243,6 +238,7 @@ def render_template_with_toml(
     )
 
     # Iterate through each template file and render it with TOML data
+    plan = {}
     for template_file in template_files:
         # Read the template content
         template_content = template_file.read_text(encoding="utf-8")
@@ -259,17 +255,38 @@ def render_template_with_toml(
         # Determine the output file name (strip `.jinja` extension)
         output_file_name = template_file.stem
 
-        # Write the rendered content directly to the output directory with LF endings
-        output_file = output_dir / output_file_name
-        if dry_run:
-            LOGGER.info("[DRY-RUN] Would write template output: %s", output_file)
-        else:
-            _write_text_lf(output_file, rendered_content)
+        plan[output_dir / output_file_name] = rendered_content
+
+    return plan
+
+
+def render_template_with_toml(
+    toml_file_path: str,
+    version: str,
+    template_dir: str,
+    output_dir: str,
+    dry_run: bool = False,
+):
+    """
+    Render templates with the data contained in a single TOML file.
+
+    Args:
+        toml_file_path (str): Path to the TOML file.
+        version (str): The build version.
+        template_dir (str): Path to the directory containing template files.
+        output_dir (str): Directory to store rendered output files.
+        dry_run (bool): If True, only log output files without writing them.
+    """
+    plan = plan_template_render(toml_file_path, version, template_dir, output_dir)
 
     if dry_run:
+        describe_plan(plan, "template output")
         LOGGER.info("[DRY-RUN] Completed template rendering simulation for TOML: %s", toml_file_path)
-    else:
-        LOGGER.info("Templates rendered successfully using the TOML file: %s", toml_file_path)
+        return
+
+    for path, content in plan.items():
+        write_text_lf(path, content)
+    LOGGER.info("Templates rendered successfully using the TOML file: %s", toml_file_path)
 
 
 def copy_xms_conan2_file(output_dir: str, dry_run: bool = False) -> None:
@@ -281,6 +298,49 @@ def copy_xms_conan2_file(output_dir: str, dry_run: bool = False) -> None:
     else:
         shutil.copy2(src, dst)
         LOGGER.info("Copied %s -> %s", src, dst)
+
+
+def plan_build_files(toml_file_path, version, template_dir, output_dir, with_profiles=True):
+    """Render everything ``xmsconan gen`` produces, without writing any of it.
+
+    Covers all four kinds of output, because a check that skipped one would
+    call a tree up to date that a real run would change: the top-level
+    templates, the ``_package/`` templates, the copied ``xms_conan2_file.py``
+    -- which is a file the recipe imports, not documentation, and goes stale
+    with every xmsconan release -- and the Conan profiles, which ``gen``
+    writes by default.
+
+    Args:
+        toml_file_path: Path to the repository's build.toml.
+        version: The build version.
+        template_dir: Directory holding the top-level templates.
+        output_dir: Directory the generated files would go in.
+        with_profiles: Include the profiles and presets, matching the
+            default that ``--no-profiles`` turns off.
+
+    Returns:
+        ``(plan, stale)`` -- a mapping of path to content, and the paths a
+        real run would delete.
+    """
+    output_dir = Path(output_dir)
+    plan = dict(plan_template_render(toml_file_path, version, template_dir, output_dir))
+
+    source = Path(__file__).parent.parent / "xms_conan2_file.py"
+    plan[output_dir / "xms_conan2_file.py"] = source.read_text(encoding="utf-8")
+
+    package_template_dir = os.path.join(template_dir, "_package")
+    if os.path.isdir(package_template_dir):
+        plan.update(plan_template_render(
+            toml_file_path, version, package_template_dir, output_dir / "_package",
+        ))
+
+    stale = []
+    if with_profiles:
+        from xmsconan.generator_tools.profile_generator import plan_profile_files
+        profile_plan, stale = plan_profile_files(toml_file_path=toml_file_path)
+        plan.update(profile_plan)
+
+    return plan, stale
 
 
 def main():
@@ -297,6 +357,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="Show files that would be generated without writing them.",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit 1 with a diff if any generated file is out of date. Writes nothing.",
     )
     parser.add_argument(
         "--no-profiles",
@@ -325,6 +390,16 @@ def main():
     version = resolve_version(args.version)
 
     try:
+        if args.check:
+            plan, stale = plan_build_files(
+                toml_file_path=args.toml_file,
+                version=version,
+                template_dir=args.template_dir,
+                output_dir=args.output_dir,
+                with_profiles=not args.no_profiles,
+            )
+            raise SystemExit(check_plan(plan, stale=stale))
+
         render_template_with_toml(
             toml_file_path=args.toml_file,
             version=version,

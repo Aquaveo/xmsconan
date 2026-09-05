@@ -1,0 +1,11 @@
+library_name = "xmssnap"
+description = "Snap"
+ci_type = "gitlab"
+
+[ci]
+coverage = true
+docker_image = "registry.aquaveo.com/xms/custom-builder:latest"
+linux_python_versions = ["3.10", "3.13"]
+
+[matrix]
+wheel_only = true

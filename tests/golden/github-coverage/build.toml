@@ -1,0 +1,8 @@
+library_name = "xmscore"
+description = "Core"
+ci_type = "github"
+
+[ci]
+coverage = true
+linux_arm = true
+python_versions = ["3.10", "3.13", "3.14"]

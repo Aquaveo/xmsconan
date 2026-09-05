@@ -1,0 +1,10 @@
+library_name = "xmssnap"
+description = "Snap"
+ci_type = "gitlab"
+
+[ci]
+windows_vs2019 = true
+coverage = true
+split_tests = true
+test_shards = 4
+xvfb = true

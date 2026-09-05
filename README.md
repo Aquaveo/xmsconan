@@ -183,6 +183,19 @@ xmsconan gen --version 9.0.0 build.toml
 xmsconan gen --dry-run -v --version 9.0.0 build.toml
 ```
 
+#### Example drift check
+
+`--check` writes nothing. It exits 1 with a unified diff when any generated
+file differs from what a real run would write, and 0 otherwise — the shape a
+CI job or a pre-commit hook needs to catch a `build.toml` edit that was never
+regenerated:
+
+```bash
+xmsconan gen --check --version 9.0.0 build.toml
+xmsconan ci --check --version 9.0.0 build.toml
+xmsconan profiles --check build.toml
+```
+
 #### Example build into a shared builds folder
 
 ```bash
@@ -464,6 +477,22 @@ Windows, behind the coverage floor declared as `fail_under` in
 ```bash
 uv run pytest tests/ --cov=xmsconan
 ```
+
+#### Golden CI files
+
+`tests/golden/` holds one `build.toml` per interesting CI shape and the
+whole rendered output beside it. A template edit therefore shows up as a
+diff of the generated pipeline rather than as a scatter of substring
+assertions, which is what a reviewer actually has to judge. When the change
+is intended, rewrite the goldens and put the resulting diff in the PR:
+
+```bash
+uv run pytest tests/test_ci_golden.py --update-golden
+```
+
+The goldens do not replace the targeted assertions in
+`tests/test_ci_file_generator.py`. A golden says *this changed*; only a
+named assertion says *and that is wrong*.
 
 The repository also ships a no-mock integration test that drives
 `xmsconan coverage` end-to-end against a stub recipe (boost, zlib,
