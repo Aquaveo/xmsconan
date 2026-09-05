@@ -2,11 +2,17 @@
 
 Usage::
 
-    xmsconan_conan_deploy <library> <version> --save FILE
-    xmsconan_conan_deploy <library> <version> --restore FILE [--upload]
-    xmsconan_conan_deploy <library> <version> --upload
-    xmsconan_conan_deploy <library> <version> --restore FILE --upload \
+    xmsconan_conan_deploy <library> [<version>] --save FILE
+    xmsconan_conan_deploy <library> [<version>] --restore FILE [--upload]
+    xmsconan_conan_deploy <library> [<version>] --upload
+    xmsconan_conan_deploy <library> [<version>] --restore FILE --upload \
         --remote aquaveo-vs2019 --package-query compiler.version=192
+
+The version is optional: left out, it is the CI tag (``CI_COMMIT_TAG``, or
+``GITHUB_REF_NAME`` on a tag), ``0.0.0`` on an untagged pipeline, and
+setuptools-scm on a checkout -- see :func:`~xmsconan.generator_tools.version.resolve_version`.
+A ``{version}`` in the ``--save`` / ``--restore`` path is replaced with it,
+so a job can name its tarball after the version without exporting one.
 """
 import argparse
 import contextlib
@@ -17,6 +23,20 @@ import sys
 import tempfile
 
 from xmsconan.constants import DEFAULT_REMOTE_NAME
+from xmsconan.generator_tools.version import FALLBACK_VERSION, is_release_version, resolve_version, VERSION_FLAG_HELP
+
+VERSION_PLACEHOLDER = "{version}"
+
+
+def fill_version(path, version):
+    """Return ``path`` with every ``{version}`` replaced by ``version``.
+
+    A plain replace, not ``str.format``: a tarball path is free to contain
+    other braces, and none of them is a field.
+    """
+    if path is None:
+        return None
+    return path.replace(VERSION_PLACEHOLDER, version)
 
 
 @contextlib.contextmanager
@@ -146,16 +166,21 @@ def main():
         description="Save, restore, or upload Conan packages in CI.",
     )
     parser.add_argument("library", help="Library name (e.g. xmscore).")
-    parser.add_argument("version", help="Package version string.")
+    parser.add_argument(
+        "version", nargs="?", default=None,
+        help=f"Package version. {VERSION_FLAG_HELP}",
+    )
     parser.add_argument(
         "--save",
         default=None,
-        help="Save the Conan cache to this tarball path.",
+        help=f"Save the Conan cache to this tarball path. A {VERSION_PLACEHOLDER} in it "
+             "is replaced with the version.",
     )
     parser.add_argument(
         "--restore",
         default=None,
-        help="Restore the Conan cache from this tarball path.",
+        help=f"Restore the Conan cache from this tarball path. A {VERSION_PLACEHOLDER} in "
+             "it is replaced with the version.",
     )
     parser.add_argument(
         "--upload",
@@ -181,12 +206,23 @@ def main():
     if not args.save and not args.restore and not args.upload:
         parser.error("At least one of --save, --restore, or --upload is required.")
 
+    version = resolve_version(args.version)
+    if args.upload and not is_release_version(version):
+        # Uploading is the one step a wrong version cannot be taken back from,
+        # so it gets neither the version an untagged job resolves nor a glob.
+        # --save and --restore take the fallback: a branch pipeline moves its
+        # 0.0.0 packages between stages, and nothing leaves the runner.
+        parser.error(
+            f"--upload needs a release version, not {version!r}: {FALLBACK_VERSION} is what an "
+            "untagged build resolves to, and a glob would publish every version in the cache. "
+            "Pass the version, or run from a tag pipeline."
+        )
     try:
         conan_deploy(
             library=args.library,
-            version=args.version,
-            save=args.save,
-            restore=args.restore,
+            version=version,
+            save=fill_version(args.save, version),
+            restore=fill_version(args.restore, version),
             upload=args.upload,
             remote=args.remote,
             package_query=args.package_query,

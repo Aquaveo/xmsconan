@@ -1556,6 +1556,8 @@ def _report_coverage(toml_file_path: str | Path,
 
 def main():
     """Entry point for ``xmsconan coverage`` (and the legacy ``xmsconan_coverage`` script)."""
+    from xmsconan.generator_tools.version import resolve_version, VERSION_FLAG_HELP
+
     parser = argparse.ArgumentParser(description="Run xmsconan unified coverage workflow.")
     parser.add_argument(
         "--output_dir", default=".",
@@ -1564,7 +1566,7 @@ def main():
     add_verbosity_args(parser)
     parser.add_argument(
         "--version", default=None,
-        help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
+        help=f"The build version. {VERSION_FLAG_HELP}",
     )
     parser.add_argument(
         "--phase", choices=COVERAGE_PHASES, default=PHASE_ALL,
@@ -1595,7 +1597,6 @@ def main():
     args = parser.parse_args()
     configure_logging(args)
 
-    from xmsconan.generator_tools.version import resolve_version
     version = resolve_version(args.version)
 
     try:

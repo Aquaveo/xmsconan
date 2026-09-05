@@ -268,7 +268,7 @@ def test_publish_rejects_fallback_version(tmp_path):
         "xmsconan.ci_tools.publish.resolve_version",
         return_value=FALLBACK_VERSION,
     ):
-        with pytest.raises(SystemExit, match="could not determine version"):
+        with pytest.raises(SystemExit, match="must name a release"):
             publish(toml_path=str(toml_file))
 
 

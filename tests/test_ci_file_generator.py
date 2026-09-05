@@ -10,9 +10,11 @@ from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
 from xmsconan.generator_tools.ci_file_generator import (
     _display_name,
     generate_ci,
+    xmsconan_requirement,
 )
 from .ci_helpers import (
     NON_JOB_SHAPE_KEYS,
+    requirement_names,
     steps_running,
     WHEEL_ONLY,
     workflow_document,
@@ -398,44 +400,44 @@ def test_gitlab_windows_jobs_install_with_uv_not_pip(tmp_path):
             assert step.startswith("uv pip install "), f"{name}: {step!r}"
             # `-i` is pip's spelling for the index; uv takes the long option.
             assert " -i http" not in step, f"{name}: {step!r}"
-        assert any('"conan~=2.31.0"' in step for step in installs), name
-        assert any("xmsconan>=" in step for step in installs), name
+        assert any("xmsconan[ci]>=" in step for step in installs), name
 
 
-def test_gitlab_windows_build_jobs_take_cmake_from_the_venv(tmp_path):
-    """The Windows *build* jobs install cmake; the deploy jobs do not.
+def test_gitlab_build_jobs_check_cmake_after_installing_the_extra(tmp_path):
+    """Each ``Conan Build`` job proves cmake resolves after the install and before the build.
 
-    GLR-py310 / GLR-py313 carried cmake on PATH and GLR-UV does not, so the job
-    has to supply it -- conan shells out to ``cmake`` to configure every
-    configuration, including the dependencies it builds from source.
+    GLR-py310 / GLR-py313 carried cmake on PATH and GLR-UV does not, so the
+    Windows jobs have always had to supply it -- conan shells out to ``cmake``
+    to configure every configuration, including the dependencies it builds
+    from source. The ``[ci]`` extra carries it now, to every job, and on the
+    Linux images it lands ahead of the image's own cmake on PATH. So the
+    ``cmake --version`` each build job prints has to come after the one
+    install line: printed before it, the log names a cmake that built
+    nothing, and a resolution failure resurfaces as a per-configuration build
+    error much later instead of reading as one.
 
-    Split by job rather than asserted over the file: the deploy jobs restore a
-    cache tarball and upload it, never invoking cmake, and installing a
-    compiler-adjacent tool they do not use would be the kind of copied line
-    nobody later dares remove.
+    The instrumented jobs and ``Coverage Build`` are outside this on purpose:
+    they install the same extra, but hand the build to ``xmsconan_coverage``,
+    so there is no ``python build.py`` line for the print to sit in front of.
     """
     toml_file = write_gitlab_toml(tmp_path, windows_vs2019=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    for name in ("Conan Build - Windows", "Conan Build - Windows VS2019"):
+    for name in ("Conan Build", "Conan Build - Windows", "Conan Build - Windows VS2019"):
         script = parsed[name]["script"]
-        installs = [step for step in script if "pip install" in step and "cmake" in step]
-        assert len(installs) == 1, f"{name}: {installs!r}"
-        assert '"cmake>=3.21"' in installs[0], f"{name}: {installs[0]!r}"
-        # Proven present after the install and before the first step that needs
-        # it, so a resolution failure reads as one instead of resurfacing as a
-        # per-configuration build error much later.
+        installs = [step for step in script if "pip install" in step]
+        assert len(installs) == 1 and "xmsconan[ci]" in installs[0], f"{name}: {installs!r}"
+        # Asserted before they are indexed: a job that stopped printing the
+        # version, or stopped building, would otherwise raise ValueError from
+        # index() or min() and name neither the job nor the missing step.
+        assert "cmake --version" in script, f"{name}: {script!r}"
+        builds = [index for index, step in enumerate(script) if "python build.py" in step]
+        assert builds, f"{name}: {script!r}"
         check = script.index("cmake --version")
         assert script.index(installs[0]) < check, name
-        assert check < min(
-            index for index, step in enumerate(script) if step.startswith("python build.py")
-        ), name
-
-    for name in ("Conan Deploy - Windows", "Conan Deploy - Windows VS2019"):
-        script = parsed[name]["script"]
-        assert not [step for step in script if "cmake" in step], f"{name}: {script!r}"
+        assert check < min(builds), name
 
 
 def test_gitlab_windows_build_jobs_pin_uv_to_the_matrix_abi(tmp_path):
@@ -501,19 +503,26 @@ def test_github_linux_no_setup_python(ci_toml, tmp_path):
     assert "setup-python" not in linux_section
 
 
-def test_github_ci_uses_default_version(ci_toml, tmp_path):
-    """Verify GitHub CI uses 0.0.0 default, ignoring the version passed to generate_ci."""
+def test_github_ci_bakes_no_version_into_the_workflow(ci_toml, tmp_path):
+    """Nothing in the rendered workflow names a version, or rewrites one.
+
+    The version handed to generate_ci is the generating xmsconan's argument,
+    not the library's; it used to leak into the file as an ``XMS_VERSION``
+    default of 0.0.0 that two third-party actions then overwrote in
+    GITHUB_ENV on a tag, next to a Conan reference and channel nothing read.
+    The tools resolve GITHUB_REF_NAME themselves now, when GITHUB_REF_TYPE
+    says it is a tag, so the workflow has no version to carry and no step
+    that rewrites the environment for the next one.
+    """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "7.0.1", str(output_dir))
-    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
-    content = ci_file.read_text(encoding="utf-8")
-    # Default version should be 0.0.0
-    assert "XMS_VERSION: '0.0.0'" in content
-    assert "CONAN_REFERENCE: xmscore/0.0.0" in content
-    # The passed-in version should NOT appear in any XMS_VERSION line
-    for line in content.splitlines():
-        if "XMS_VERSION:" in line:
-            assert "7.0.1" not in line
+    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(encoding="utf-8")
+
+    assert "7.0.1" not in content
+    for gone in ("XMS_VERSION", "CONAN_REFERENCE", "CONAN_CHANNEL", "RELEASE_PYTHON",
+                 "get-git-tag", "set-env", "branch-name", "xmsconan_gen --version"):
+        assert gone not in content, gone
+    assert "run: xmsconan_gen build.toml" in content
 
 
 def test_github_ci_uses_cli_commands(ci_toml, tmp_path):
@@ -552,8 +561,16 @@ def test_gitlab_ci_uses_cli_commands(tmp_path):
     assert "conan profile detect" not in content
 
 
-def test_gitlab_ci_deploy_jobs_set_package_version(tmp_path):
-    """All GitLab deploy jobs explicitly export PACKAGE_VERSION."""
+def test_gitlab_ci_deploy_jobs_leave_the_version_to_the_tool(tmp_path):
+    """No job exports a version; ``xmsconan_conan_deploy`` resolves the tag itself.
+
+    Every deploy block used to open with ``export PACKAGE_VERSION=${CI_COMMIT_TAG:-0.0.0}``
+    and spend it twice, as the positional version and inside the tarball
+    name, so a save in one job and a restore in another agreed only while
+    two lines in each block stayed in step. There is one source now: the
+    tool reads CI_COMMIT_TAG, and the ``{version}`` in the tarball path is
+    filled from the same resolution.
+    """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmscore"\n'
@@ -563,15 +580,20 @@ def test_gitlab_ci_deploy_jobs_set_package_version(tmp_path):
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    ci_file = output_dir / ".gitlab-ci.yml"
-    content = ci_file.read_text(encoding="utf-8")
-    # Every section that calls xmsconan_conan_deploy must first set PACKAGE_VERSION
-    deploy_blocks = re.split(r'\n(?=\S)', content)
-    for block in deploy_blocks:
-        if "xmsconan_conan_deploy" in block:
-            assert "export PACKAGE_VERSION=" in block, (
-                f"Deploy block missing 'export PACKAGE_VERSION=':\n{block}"
-            )
+    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
+
+    assert "PACKAGE_VERSION" not in content
+    assert "DEFAULT_VERSION" not in content
+    parsed = yaml.safe_load(content)
+    deploys = [step for name, job in parsed.items() if name not in NON_JOB_SHAPE_KEYS
+               for step in job.get("script", []) if step.startswith("xmsconan_conan_deploy ")]
+    assert deploys
+    for step in deploys:
+        tokens = step.split()
+        # `<library>` and then straight to a flag: no positional version.
+        assert tokens[2].startswith("--"), step
+        tarballs = [tokens[index + 1] for index, token in enumerate(tokens) if token in ("--save", "--restore")]
+        assert tarballs and all(path.endswith("-{version}.tar.gz") for path in tarballs), step
 
 
 def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
@@ -596,20 +618,35 @@ def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
 
 
 def test_github_ci_version_floor(ci_toml, tmp_path):
-    """Rendered GitHub CI floors xmsconan at the generating version.
+    """Rendered GitHub CI floors xmsconan at the generating version and caps it at the next major.
 
-    Every job installs ``xmsconan>=<version that generated the file>`` rather
-    than pinning with ``==``, so a repo picks up an xmsconan release without
-    regenerating and committing its CI. The floor still rules out resolving a
-    version older than the templates were written against.
+    Every job installs ``xmsconan[ci]>=<generating version>,<<next major>``
+    rather than pinning with ``==``, so a repo picks up an xmsconan release
+    without regenerating and committing its CI. The floor rules out resolving
+    a version older than the templates were written against; the cap is where
+    the job contract is allowed to change, so a workflow nobody regenerated
+    keeps installing the xmsconan its commands were written for.
     """
     from xmsconan import __version__
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert f"xmsconan>={__version__}" in content
+    assert f'"xmsconan[ci]{xmsconan_requirement(__version__)}"' in content
     assert "xmsconan==" not in content
+
+
+@pytest.mark.parametrize("version, expected", [
+    ("2.18.0", ">=2.18.0,<3"),
+    # A local label is legal only with == and !=, so it comes off the floor.
+    ("2.19.1.dev3+gabcdef0", ">=2.19.1.dev3,<3"),
+    ("10.0.0", ">=10.0.0,<11"),
+    # An uninstalled checkout: satisfied by nothing on the index, and loud about it at pip install.
+    ("0.0.0", ">=0.0.0,<1"),
+])
+def test_xmsconan_requirement_caps_at_the_next_major(version, expected):
+    """The specifier the jobs install with: the generating version as floor, the next major as cap."""
+    assert xmsconan_requirement(version) == expected
 
 
 def test_github_flake_job_uses_generated_flake8_config(ci_toml, tmp_path):
@@ -652,58 +689,6 @@ def test_generate_ci_rejects_an_unknown_top_level_key(tmp_path):
 
     with pytest.raises(ValueError, match="unknown top-level key\\(s\\) has_test_files"):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
-
-
-def test_gitlab_pins_conan_version(tmp_path):
-    """Conan installs in the GitLab pipeline are pinned, same as GitHub's.
-
-    Only the GitHub workflows were asserted; the GitLab template installs conan
-    on five separate lines and a bump slipping into any one of them detaches
-    that leg from the binaries the others resolved.
-    """
-    # coverage=True so the fifth install -- the coverage job's, the one the
-    # GitHub side already had a test for -- is rendered too.
-    toml_file = write_gitlab_toml(tmp_path, coverage=True)
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    conan_installs = _conan_install_lines(content)
-
-    assert conan_installs
-    assert [line for line in conan_installs if '"conan~=' not in line] == []
-
-
-def _conan_install_lines(content):
-    """Return the rendered lines that pip-install conan itself.
-
-    `xmsconan` is excluded because it matches the substring and is pinned on
-    its own `>=` line. Checked per line rather than file-wide: the old
-    `'"conan~=' in content` was satisfied by any one pinned install anywhere,
-    and its `"pip install conan " not in content` half stayed true when the
-    conan install was dropped from the workflow altogether.
-    """
-    return [
-        line
-        for line in content.splitlines()
-        if "pip install" in line and "conan" in line and "xmsconan" not in line
-    ]
-
-
-def test_ci_pins_conan_version(ci_toml, tmp_path):
-    """Conan is pinned to a patch series, not installed unpinned.
-
-    A conan minor bump can change package_id computation and silently detach
-    a build from binaries already published to the remote.
-    """
-    output_dir = tmp_path / "output"
-    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
-    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
-    content = ci_file.read_text(encoding="utf-8")
-
-    conan_installs = _conan_install_lines(content)
-
-    assert conan_installs
-    assert [line for line in conan_installs if '"conan~=' not in line] == []
 
 
 def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
@@ -1042,7 +1027,7 @@ def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
     )
     assert "ghcr.io/aquaveo/conan-gcc13-py3.13" not in content
     assert "actions/setup-python" in content
-    assert 'pip install --upgrade "xmsconan>=' in content
+    assert 'pip install --upgrade "xmsconan[ci]>=' in content
 
 
 def test_github_coverage_yaml_omitted_when_coverage_false(ci_toml, tmp_path):
@@ -1101,8 +1086,15 @@ def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
     assert "cmake --preset coverage" not in content
 
 
-def test_gitlab_coverage_version_is_parameterized(tmp_path):
-    """The GitLab Coverage stage uses ${CI_COMMIT_TAG:-0.0.0}, not a hardcoded version."""
+def test_gitlab_coverage_jobs_pass_no_version(tmp_path):
+    """The Coverage stage names no version: ``xmsconan_coverage`` reads CI_COMMIT_TAG itself.
+
+    The measure and collect jobs used to receive ``--version ${PACKAGE_VERSION}``
+    from an export two lines up, the same ``${CI_COMMIT_TAG:-0.0.0}`` the tool
+    now resolves on its own. What must never come back is a literal ``0.0.0``
+    on the command, which would label a tag pipeline's report with the
+    fallback.
+    """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmscore"\n'
@@ -1116,11 +1108,11 @@ def test_gitlab_coverage_version_is_parameterized(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    # The Coverage stage must source the version from CI_COMMIT_TAG with a 0.0.0 fallback.
-    assert "${PACKAGE_VERSION}" in content
-    assert "${CI_COMMIT_TAG:-0.0.0}" in content
-    # And must not bake a literal 0.0.0 into the xmsconan_coverage invocation.
-    assert "xmsconan_coverage --version 0.0.0" not in content
+
+    coverage_lines = [line.strip() for line in content.splitlines() if "xmsconan_coverage" in line]
+    assert coverage_lines
+    assert [line for line in coverage_lines if "--version" in line] == []
+    assert "PACKAGE_VERSION" not in content
 
 
 def _instrumented_build_jobs(parsed):
@@ -1280,46 +1272,40 @@ def test_gitlab_pages_takes_the_html_from_the_job_that_rendered_it(tmp_path):
     assert "cov-cpp.xml" in report["paths"]
 
 
-def test_github_coverage_pins_gcovr(tmp_path):
-    """Generated Coverage.yaml pins the gcovr major to keep CI reproducible."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n'
-        'description = "desc"\n'
-        'ci_type = "github"\n'
-        '\n'
-        '[ci]\n'
-        'coverage = true\n',
-        encoding="utf-8",
-    )
+def test_github_coverage_installs_nothing_but_the_extra(tmp_path):
+    """Coverage.yaml has one install line, and it asks for ``xmsconan[ci]``.
+
+    gcovr's major bound and conan's patch series live in the extra now, so a
+    bare ``pip install conan wheel gcovr`` here would make this the one job
+    measuring with a toolchain the build workflow did not resolve.
+    """
+    toml_file = write_github_toml(tmp_path, coverage=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
-    content = cov.read_text(encoding="utf-8")
-    # gcovr must carry a version constraint.
-    assert "pip install conan wheel gcovr" not in content
-    assert "gcovr>=" in content
+    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
+
+    install_lines = [line.strip() for line in content.splitlines()
+                     if "pip install" in line and not line.strip().startswith("#")]
+    assert len(install_lines) == 1, install_lines
+    assert install_lines[0].startswith('pip install --upgrade "xmsconan[ci]>='), install_lines[0]
 
 
-def test_github_coverage_overrides_version_from_git_tag(tmp_path):
-    """Generated Coverage.yaml derives XMS_VERSION from the git tag when present."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n'
-        'description = "desc"\n'
-        'ci_type = "github"\n'
-        '\n'
-        '[ci]\n'
-        'coverage = true\n',
-        encoding="utf-8",
-    )
+def test_github_coverage_reads_the_tag_without_an_action(tmp_path):
+    """Coverage.yaml passes no version and runs no action to find the tag.
+
+    Two third-party actions used to find the tag and write XMS_VERSION into
+    GITHUB_ENV on ``refs/tags/*``; ``xmsconan_coverage`` reads GITHUB_REF_NAME
+    itself when GITHUB_REF_TYPE says it is a tag, so the report advertises the
+    tag with nothing outside GitHub's own namespace running in the job.
+    """
+    toml_file = write_github_toml(tmp_path, coverage=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
-    content = cov.read_text(encoding="utf-8")
-    # The Get Tag + Set Coverage Version steps must be present.
-    assert "little-core-labs/get-git-tag" in content
-    assert "steps.gitTag.outputs.tag" in content
+    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
+
+    assert "run: xmsconan_coverage build.toml" in content
+    for gone in ("XMS_VERSION", "get-git-tag", "set-env", "xmsconan_coverage --version"):
+        assert gone not in content, gone
 
 
 def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
@@ -1578,7 +1564,7 @@ def test_gitlab_linux_export_tarballs_are_named_per_configuration(tmp_path):
     names = _linux_export_names(content)
     assert len(names) == len(set(names)) == 2, names
     for label in ("Release-pybind-py3.13", "Release-pybind-py3.14"):
-        expected = f".export/xmssnap-linux-{label}-${{PACKAGE_VERSION}}.tar.gz"
+        expected = f".export/xmssnap-linux-{label}-{{version}}.tar.gz"
         assert expected in names, (expected, names)
 
 
@@ -1597,7 +1583,7 @@ def test_gitlab_single_linux_version_still_qualifies_its_export_tarballs(tmp_pat
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
     names = _linux_export_names(content)
-    assert names == [".export/xmssnap-linux-Release-pybind-py3.13-${PACKAGE_VERSION}.tar.gz"]
+    assert names == [".export/xmssnap-linux-Release-pybind-py3.13-{version}.tar.gz"]
 
     parsed = yaml.safe_load(content)
     restores = [line for line in parsed["Conan Deploy - Linux"]["script"]
@@ -2294,21 +2280,22 @@ def test_github_ci_pins_third_party_actions_to_a_sha(ci_toml, tmp_path):
     assert [line for line in third_party if "  # v" not in line] == []
 
 
-def test_github_coverage_pins_third_party_actions_to_a_sha(tmp_path):
-    """The coverage workflow gets the same treatment as the CI workflow."""
+def test_github_coverage_runs_no_third_party_action(tmp_path):
+    """Coverage.yaml uses only ``actions/*``.
+
+    Its two third-party actions existed to find the tag and write it into
+    GITHUB_ENV, and the tool reads the tag itself now. So the CI workflow's
+    pin test has no twin here: there is nothing to pin, and an assertion that
+    every third-party action is pinned is satisfied by an empty list for the
+    wrong reason. This holds the list empty on purpose.
+    """
     toml_file = write_github_toml(tmp_path, coverage=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(
-        encoding="utf-8",
-    )
-    third_party = _third_party_uses_lines(content)
+    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
 
-    # Same three assertions as its CI twin. On its own, `== []` is satisfied by
-    # a Coverage.yaml carrying no `uses:` line at all.
-    assert third_party
-    assert _unpinned_third_party_actions(content) == []
-    assert [line for line in third_party if "  # v" not in line] == []
+    assert _USES_RE.findall(content)
+    assert _third_party_uses_lines(content) == []
 
 
 def test_github_ci_uses_a_current_setup_python(ci_toml, tmp_path):
@@ -2329,42 +2316,30 @@ def test_github_ci_uses_a_current_setup_python(ci_toml, tmp_path):
     assert "actions/setup-python@v2" not in content
 
 
-def test_github_flake_job_installs_the_banned_modules_plugin(ci_toml, tmp_path):
-    """The flake job installs the plugin that `banned-modules` needs.
+def test_github_flake_job_takes_its_plugins_from_the_extra(ci_toml, tmp_path):
+    """The flake job installs ``xmsconan[ci]`` and names no plugin itself.
 
-    The .flake8 this job generates sets `banned-modules = osgeo.*`, an option
-    only flake8-tidy-imports registers. flake8 ignores options no installed
-    plugin claims, so the ban was accepted and enforced nothing while the job
-    reported the same green as a run that had checked it. GitLab already
-    installed the plugin, so the two pipelines linted to different rules.
+    The .flake8 this job generates sets ``banned-modules = osgeo.*``, an
+    option only flake8-tidy-imports registers, and flake8 ignores an option
+    no installed plugin claims: the ban was accepted and enforced nothing
+    while the job reported the same green as a run that had checked it. The
+    plugin list lives in the extra now, where ``test_ci_extra`` holds it
+    against the options the generated config sets, so this job cannot lint
+    to a different rule set than GitLab's Lint by installing a different list.
     """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
-    content = (output_dir / ".github" / "workflows" / "XmsCore-CI.yaml").read_text(
-        encoding="utf-8",
-    )
+    workflow = workflow_document(output_dir / ".github" / "workflows" / "XmsCore-CI.yaml")
 
-    assert "flake8-tidy-imports" in content
-
-
-def test_github_coverage_pins_conan_version(tmp_path):
-    """The coverage workflow pins conan to the same series as the CI workflow.
-
-    A conan minor bump can change package_id computation; a coverage run that
-    resolves different package ids than the build workflow is measuring a
-    different set of binaries.
-    """
-    toml_file = write_github_toml(tmp_path, coverage=True)
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(
-        encoding="utf-8",
-    )
-
-    conan_installs = _conan_install_lines(content)
-
-    assert conan_installs
-    assert [line for line in conan_installs if '"conan~=' not in line] == []
+    install_lines = [
+        line.strip()
+        for step in steps_running(workflow["jobs"]["flake"], "pip install")
+        for line in step["run"].splitlines() if "pip install" in line
+    ]
+    assert [line for line in install_lines if "xmsconan[ci]" in line], install_lines
+    plugins = {name for line in install_lines for name in requirement_names(line)
+               if name.startswith("flake8") or name == "pep8-naming"}
+    assert plugins == set(), plugins
 
 
 def test_gitlab_windows_cache_snapshot_reports_an_empty_copy(tmp_path):
@@ -3524,23 +3499,6 @@ def test_github_ci_reads_the_index_url_from_a_variable(tmp_path, linux_arm):
         assert url == "${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}", name
 
 
-def _requirement_names(line):
-    """The bare distribution names on one ``pip install`` line, case-folded.
-
-    A substring match over the whole line is wrong in one direction: it also
-    matches ``tomli`` and ``tomlkit``, which are different distributions, and
-    would match a ``build.toml`` path if an install line ever carried one. A
-    bare ``line.split()`` match is wrong in the other -- it misses every
-    decorated form a re-added requirement would arrive in: ``toml==0.10``,
-    ``"toml"``, ``toml>=0.10``, ``toml@https://...``. Names are folded because
-    distribution names are matched case-insensitively.
-    """
-    names = set()
-    for token in line.split():
-        names.add(re.split(r"[=<>!~\[;@]", token.strip("\"'"), maxsplit=1)[0].casefold())
-    return names
-
-
 @pytest.mark.parametrize("writer, ci_flags, workflow", [
     pytest.param(write_github_toml, {"coverage": True}, ".github/workflows/XmsCore-CI.yaml", id="github-ci"),
     pytest.param(write_github_toml, {"coverage": True}, ".github/workflows/Coverage.yaml", id="github-coverage"),
@@ -3565,7 +3523,7 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workf
     install_lines = [line for line in content.splitlines() if "pip install" in line]
     assert install_lines
     assert [line for line in install_lines if "devpi" in line] == []
-    assert [line for line in install_lines if "toml" in _requirement_names(line)] == []
+    assert [line for line in install_lines if "toml" in requirement_names(line)] == []
 
 
 @pytest.mark.parametrize("deploy", [pytest.param(True, id="deploy"), pytest.param(False, id="no-deploy")])

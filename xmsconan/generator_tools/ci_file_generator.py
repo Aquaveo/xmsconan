@@ -83,6 +83,33 @@ RELEASE_ONLY_WHEEL_DIR = (
 )
 
 
+def xmsconan_requirement(version: str) -> str:
+    """The specifier the generated jobs install ``xmsconan[ci]`` with: ``>=<version>,<<major + 1>``.
+
+    The floor is the version that generated the file, so no job resolves an
+    xmsconan older than the templates it is running; ``--upgrade`` on the
+    install line is what lets a fix reach every repository on its next run.
+    The ceiling is the next major: that is where the commands a generated
+    file calls are allowed to change, so a repository nobody regenerated
+    keeps resolving the line its file was written against rather than
+    failing on a renamed tool. A new major reaches a repository the way a
+    ``[ci]`` change does -- by regenerating and committing.
+
+    A PEP 440 local label -- the ``+g<sha>`` setuptools-scm appends past a
+    tag -- is dropped from the floor: local labels are legal only with
+    ``==`` and ``!=``, so on ``>=`` pip rejects the whole line as malformed
+    rather than merely unsatisfiable, and every generated job would fail
+    before installing anything. ``local_scheme = "no-local-version"`` in
+    pyproject.toml keeps one out of xmsconan's own version today, so this
+    normalizes rather than repairs -- it is what stops a change to that one
+    setting from writing an uninstallable install line into every generated
+    file at once.
+    """
+    public = version.split("+", 1)[0]
+    major = int(public.split(".", 1)[0])
+    return f">={public},<{major + 1}"
+
+
 def _display_name(library_name: str) -> str:
     """Convert library_name to display format (e.g., 'xmscore' -> 'XmsCore')."""
     return "Xms" + library_name[3:].title()
@@ -494,6 +521,7 @@ def plan_ci(
     # Build template context
     context = {
         "xmsconan_version": xmsconan_version,
+        "xmsconan_requirement": xmsconan_requirement(xmsconan_version),
         "library_name": library_name,
         "display_name": display,
         "version": version,
@@ -665,6 +693,8 @@ def main():
 
 def _main():
     """Parse arguments and generate the CI configuration."""
+    from xmsconan.generator_tools.version import resolve_version, VERSION_FLAG_HELP
+
     parser = argparse.ArgumentParser(description="Generate CI configuration from build.toml.")
     parser.add_argument(
         "--output_dir",
@@ -684,7 +714,7 @@ def _main():
     add_verbosity_args(parser)
     parser.add_argument(
         "--version", default=None,
-        help="The build version. If omitted, tries setuptools-scm then falls back to 0.0.0.",
+        help=f"The build version. {VERSION_FLAG_HELP}",
     )
     parser.add_argument("toml_file", nargs="?", default="build.toml",
                         help="Path to the build.toml file. Defaults to build.toml in the current directory.")
@@ -692,7 +722,6 @@ def _main():
     args = parser.parse_args()
     configure_logging(args)
 
-    from xmsconan.generator_tools.version import resolve_version
     version = resolve_version(args.version)
 
     if args.check:
