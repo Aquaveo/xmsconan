@@ -9,6 +9,7 @@ import pytest
 from uv import find_uv_bin
 
 from xmsconan.ci_tools.wheel_deploy import main, wheel_deploy, WheelDeployError
+from .doc_helpers import slice_between, usage_section
 from .utils import patch_env
 
 UV = "/venv/bin/uv"
@@ -415,28 +416,9 @@ def test_main_exits_with_the_upload_tools_code(mock_deploy, monkeypatch):
 # --- documentation drift ---
 
 
-def _slice_between(text, start, end, source):
-    """The text of *source* from heading *start* up to heading *end*.
-
-    Both headings are asserted before they are used as offsets. ``str.index``
-    alone answers a renamed or renumbered heading with ``ValueError:
-    substring not found``, which says nothing about which document moved --
-    and the whole point of these tests is to name the drift.
-    """
-    assert start in text, f"{source} no longer contains {start!r}"
-    assert end in text, f"{source} no longer contains {end!r}"
-    return text[text.index(start):text.index(end)]
-
-
-def _usage_section(number):
-    """The text of ``docs/USAGE.md`` section *number*."""
-    usage = (Path(__file__).parent.parent / "docs" / "USAGE.md").read_text(encoding="utf-8")
-    return _slice_between(usage, f"\n## {number}.", f"\n## {number + 1}.", "docs/USAGE.md")
-
-
 def test_docs_describe_the_uv_publish_upload():
     """USAGE section 13 and the README describe the upload the code performs."""
-    section = _usage_section(13)
+    section = usage_section(13)
     assert "uv publish" in section
     assert "UV_PUBLISH_USERNAME" in section
     assert "UV_PUBLISH_PASSWORD" in section
@@ -445,7 +427,7 @@ def test_docs_describe_the_uv_publish_upload():
     assert "find_uv_bin" in section
 
     readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
-    wheel_deploy_section = _slice_between(
+    wheel_deploy_section = slice_between(
         readme, "#### Wheel Deploy", "#### Conan Deploy", "README.md",
     )
     assert "uv publish" in wheel_deploy_section
