@@ -89,8 +89,13 @@ stages:
    reads it from the environment and turns the pair into the filter this
    template used to interpolate as a JSON literal into a quoted shell argument
    -- which meant a leg was described in two places, here and in the tool that
-   had to agree with it. #>
+   had to agree with it.
+
+   Not on an instrumented job: that one runs `xmsconan_coverage`, which pins
+   its own build types, so $BUILD_TYPE there names a leg nothing reads. #>
+<% if not job.instrumented %>
     BUILD_TYPE: '<< job.build_type >>'
+<% endif %>
 <# What this job has to hand downstream, decided before the block is opened.
    A library configuration -- no testing, no pybind, not the export job --
    produces nothing any later job reads, and emitting `artifacts: paths:` with
@@ -154,7 +159,7 @@ stages:
    tarball's name. They are facts about build.toml and this job's environment,
    and reading them where they are used is what keeps the two from drifting.
    See docs/USAGE.md §10.4; §10.5 is how to replay this job locally. #>
-    - xmsconan job build --leg << job.kind >><< " --export" if job_exports else "" >>
+    - xmsconan job build --leg << job.kind >><< " --defer-cxx-tests" if ci_split_tests and job.kind == "testing" else "" >><< " --export" if job_exports else "" >>
 <% endif %>
 
 <% endfor %>
@@ -207,8 +212,19 @@ Conan Build:
    is set above either way, by the fan-out or by `variables:`, so the `py<v>`
    segment is unconditional now where the template used to omit it for a
    single-version repository. The deploy job's `--restore` below is spelled to
-   match. #>
-    - xmsconan job build<< " --export" if ci_deploy else "" >>
+   match.
+
+   `--defer-cxx-tests` because the "Run C++ Tests" jobs below consume this
+   build's runner. The Windows build renders the same flagless command and
+   must *not* have it: no Windows test job is generated, so its suite has
+   nowhere else to run.
+
+   On a tag pipeline this job still defers while the test jobs below are
+   `except: - tags`, so the C++ suite does not run at all. That is the
+   pre-collapse behavior restored rather than a new hole -- a tag is built
+   from a commit whose own pipeline ran the suite -- but the flag is the
+   first place it is written down. #>
+    - xmsconan job build<< " --defer-cxx-tests" if ci_split_tests else "" >><< " --export" if ci_deploy else "" >>
 
 <% endif %>
 <% if ci_wheel_only %>

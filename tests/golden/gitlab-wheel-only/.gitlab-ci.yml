@@ -49,7 +49,6 @@ stages:
     - tags
   variables:
     PYTHON_TARGET_VERSION: '3.13'
-    BUILD_TYPE: 'Release'
   artifacts:
     expire_in: '1d'
     when: always
@@ -111,7 +110,6 @@ stages:
     - tags
   variables:
     PYTHON_TARGET_VERSION: '3.13'
-    BUILD_TYPE: 'Debug'
   artifacts:
     expire_in: '1d'
     when: always

@@ -9,6 +9,7 @@ lose.
 """
 import contextlib
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -16,8 +17,9 @@ import pytest
 from xmsconan.build_toml import read_build_toml
 from xmsconan.constants import VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME
 from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
-from xmsconan.job_tools import build
+from xmsconan.job_tools import build, common
 from xmsconan.job_tools.build import BuildSteps
+from .job_helpers import write_build_toml as _toml
 
 
 def _library_configuration(build_type="Release"):
@@ -132,13 +134,6 @@ class _Recorder:
         self.deploy_kwargs.append((library, version, kwargs))
 
 
-def _toml(tmp_path, body='library_name = "xmscore"\n'):
-    """Write a build.toml and return its path as a string."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(body, encoding="utf-8")
-    return str(toml_file)
-
-
 # --- the sequence ---
 
 
@@ -177,6 +172,28 @@ def test_conan_setup_does_not_log_in(tmp_path):
     recorder = _Recorder()
     job_build_in(tmp_path, recorder, version="1.2.3")
     assert recorder.conan_setup_kwargs == [{"login": False}]
+
+
+@pytest.mark.parametrize("defer, expected", [(True, "1"), (False, None)])
+def test_the_defer_flag_reaches_the_environment_the_build_runs_under(
+        tmp_path, defer, expected):
+    """The flag is only worth parsing if it lands in the recipe's environment.
+
+    ``tests/test_job_cli.py`` asserts the flag reaches this function and
+    ``tests/test_job_common.py`` asserts what ``set_job_environment`` does
+    with it; neither notices if the hop between them is dropped. Hardcoding
+    ``defer_cxx_tests=False`` at the call site passes both of those, and the
+    only symptom in CI is a C++ suite that runs twice.
+    """
+    environ = {}
+    recorder = _Recorder()
+    job_build_in(
+        tmp_path, recorder, version="1.2.3", environ=environ,
+        defer_cxx_tests=defer,
+        body='library_name = "xmscore"\n[ci]\nsplit_tests = true\n',
+    )
+
+    assert environ.get(common.SKIP_CXX_TESTS_VARIABLE) == expected
 
 
 def test_a_failed_generate_stops_before_the_build(tmp_path):
@@ -282,16 +299,25 @@ def test_an_incomplete_wheel_extraction_fails_the_job(tmp_path, capsys):
 
 
 def test_dependency_libs_are_skipped_when_repair_is_off(tmp_path):
-    """The staged libraries exist only for the repair tools to resolve imports."""
+    """[ci].windows_wheel_repair is a Windows rule and must not reach Linux.
+
+    ``repairs_wheel`` answers True unconditionally off win32
+    (``xmsconan/ci_options.py``), so a Linux job that honoured the flag would
+    stop staging the libraries ``job package`` needs in the manylinux image --
+    and the wheel it publishes would carry unresolved imports. Asserted
+    unconditionally under a patched platform rather than behind an ``if``: the
+    guard this replaces was false on every non-Windows machine, so the test
+    passed there having checked nothing.
+    """
     recorder = _Recorder(packager=_FakePackager(configurations=[_pybind_configuration()]))
-    job_build_in(
-        tmp_path, recorder, leg="pybind", version="1.2.3",
-        body='library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
-    )
-    # Off Windows the option does not apply, so the libs are staged regardless;
-    # what must never happen is repairing without them.
-    if recorder.packager.dependency_lib_dirs == []:
-        assert recorder.repair_kwargs == []
+    with patch.object(build.sys, "platform", "linux"):
+        job_build_in(
+            tmp_path, recorder, leg="pybind", version="1.2.3",
+            body='library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
+        )
+
+    assert recorder.packager.dependency_lib_dirs == [os.path.join("wheelhouse", "libs")]
+    assert recorder.repair_kwargs == []
 
 
 # --- VS2019 ---
@@ -342,9 +368,12 @@ def test_export_saves_a_tarball_under_the_fixed_export_dir(tmp_path):
 
     library, version, kwargs = recorder.deploy_kwargs[0]
     assert (library, version) == ("xmscore", "1.2.3")
-    expected = os.path.join(
-        ".export", f"xmscore-{build._platform_segment()}-Release-1.2.3.tar.gz")
-    assert kwargs["save"] == expected
+    # The segment is a literal per platform, not build._platform_segment() --
+    # computing the expectation with the function under test would agree with
+    # any renaming it grew.
+    segment = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    assert kwargs["save"] == os.path.join(
+        ".export", f"xmscore-{segment}-Release-1.2.3.tar.gz")
 
 
 # --- export naming and queries, on their own ---
@@ -413,15 +442,29 @@ def test_platforms_that_own_their_cache_need_no_query():
     assert build.export_package_query(configurations, platform="linux") is None
 
 
-def test_no_query_when_the_configurations_disagree(caplog):
-    """A query naming one of several would silently drop the rest."""
+def test_disagreeing_configurations_refuse_to_save_rather_than_save_unqueried():
+    """A save this cannot restrict is the failure the query exists to prevent.
+
+    Warning and returning None left the caller saving every binary in a
+    runner's shared cache -- which on a fleet running both toolchains at once
+    is how msvc 192 packages reach the remote that exists to keep them apart.
+    The generator raises on the same condition one layer up
+    (``ci_file_generator._only_msvc_version``), so this agrees with it.
+    """
     configurations = [
         {"build_type": "Release", "compiler.version": "194"},
         {"build_type": "Release", "compiler.version": "192"},
     ]
-    with caplog.at_level("WARNING"):
-        assert build.export_package_query(configurations, platform="win32") is None
-    assert "Not restricting the Conan save" in caplog.text
+    with pytest.raises(ValueError) as excinfo:
+        build.export_package_query(configurations, platform="win32")
+
+    assert "192" in str(excinfo.value) and "194" in str(excinfo.value)
+
+
+def test_configurations_naming_no_compiler_version_also_refuse():
+    """The empty case reaches the same place: nothing to restrict the save to."""
+    with pytest.raises(ValueError):
+        build.export_package_query([{"build_type": "Release"}], platform="win32")
 
 
 @pytest.mark.parametrize("platform, expected", [
@@ -451,7 +494,7 @@ def test_the_build_runs_inside_a_display_when_the_repository_asks(tmp_path):
 
     assert recorder.calls.index("display-enter") < recorder.calls.index("display-exit")
     assert recorder.display_config.ci.xvfb is True
-    assert recorder.packager.events.index("run") >= 0
+    assert "run" in recorder.packager.events
 
 
 def test_the_display_wraps_only_the_build(tmp_path):

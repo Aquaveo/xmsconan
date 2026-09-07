@@ -1681,6 +1681,58 @@ def test_version_sort_key_orders_numerically_not_lexically():
     assert sorted(["3.14", "3.9", "3.10"], key=version_sort_key) == ["3.9", "3.10", "3.14"]
 
 
+def _build_steps(pipeline):
+    """Every ``xmsconan job build`` invocation in *pipeline*, by job name."""
+    steps = {}
+    for name, job in pipeline.items():
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("script") or []:
+            if "xmsconan job build" in step:
+                steps[name] = step
+    return steps
+
+
+@pytest.mark.parametrize("matrix_table, deferring", [
+    (None, {"Conan Build"}),
+    (WHEEL_ONLY, {"Release Build", "Debug Build"}),
+])
+def test_gitlab_split_tests_defers_only_the_builds_with_a_downstream_test_job(
+        tmp_path, matrix_table, deferring):
+    """``--defer-cxx-tests`` marks the builds whose runner another job runs.
+
+    The tool cannot work this out for itself, and the collapse to
+    ``xmsconan job build`` is why: on a non-wheel_only repository the Linux
+    "Conan Build" and "Conan Build - Windows" render the *same* flagless
+    command, and only one of them has "Run C++ Tests" jobs downstream. A rule
+    keyed on ``--leg`` skipped neither, so the C++ suite ran inline in the
+    build and again in each test job; a rule keyed on ``leg is None`` would
+    skip the Windows suite, which nothing else runs.
+
+    ``tests/test_job_common.py`` holds the other end -- that the flag is what
+    sets ``XMS_SKIP_CXX_TESTS``, and that ``[ci].split_tests`` still gates it.
+    """
+    flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+    steps = _build_steps(_gitlab_jobs(tmp_path, split_tests=True, **flags))
+
+    assert steps, "no build job rendered; the rest of this asserts nothing"
+    assert {name for name, step in steps.items()
+            if "--defer-cxx-tests" in step} == deferring
+    # Named rather than left to the set comparison: the Windows job is the one
+    # a plausible fix gets wrong, because no Windows test job exists to notice.
+    assert "--defer-cxx-tests" not in steps["Conan Build - Windows"]
+
+
+@pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY])
+def test_gitlab_defers_nothing_without_split_tests(tmp_path, matrix_table):
+    """With no separate test job, the build is where the suite runs."""
+    flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+    steps = _build_steps(_gitlab_jobs(tmp_path, **flags))
+
+    assert steps, "no build job rendered; the rest of this asserts nothing"
+    assert all("--defer-cxx-tests" not in step for step in steps.values()), steps
+
+
 def _gitlab_jobs(tmp_path, **ci_flags):
     """Render a GitLab pipeline and return its parsed YAML."""
     toml_file = write_gitlab_toml(tmp_path, **ci_flags)
@@ -1962,7 +2014,8 @@ def test_gitlab_windows_build_keeps_its_wheel_as_an_artifact(tmp_path):
     assert f"{job_common.WHEEL_DIR}/" not in job["artifacts"]["paths"]
 
 
-def test_gitlab_windows_wheel_repair_is_not_a_rendered_step(tmp_path):
+@pytest.mark.parametrize("repair", [True, False, None])
+def test_gitlab_windows_wheel_repair_is_not_a_rendered_step(tmp_path, repair):
     """No Windows job renders a repair step, at any setting of the opt-in.
 
     delvewheel reads the DLL imports of a win_amd64 .pyd, so the repair cannot
@@ -1974,18 +2027,20 @@ def test_gitlab_windows_wheel_repair_is_not_a_rendered_step(tmp_path):
     off, vendoring a private mangled msvcp140 beside a .pyd whose host
     supplies that runtime deliberately.
 
-    Asserted at both settings, because a step rendered unconditionally and a
-    step rendered under the flag fail differently and only one of them shows
-    up in a default pipeline. ``tests/test_job_build.py`` holds the tool's end
-    of both.
+    Parametrized over the settings rather than looped in the body, because a
+    step rendered unconditionally and a step rendered under the flag fail
+    differently, and a loop reports one result for all three.
+    ``tests/test_job_build.py`` holds the tool's end of both.
     """
-    for repair in (True, False, None):
-        flags = {} if repair is None else {"windows_wheel_repair": repair}
-        case_dir = tmp_path / f"repair-{repair}"
-        case_dir.mkdir()
-        job = _gitlab_jobs(case_dir, windows=True, **flags)["Conan Build - Windows"]
-        assert not any("wheel_repair" in step for step in job["script"]), (repair, job)
-        assert not any("--skip-dependency-libs" in step for step in job["script"]), repair
+    flags = {} if repair is None else {"windows_wheel_repair": repair}
+    job = _gitlab_jobs(tmp_path, windows=True, **flags)["Conan Build - Windows"]
+
+    # Anchored on the command that owns the decision now: without it both
+    # absences below would hold just as well for a job with no script at all,
+    # or one whose build step stopped rendering.
+    assert any("xmsconan job build" in step for step in job["script"]), job
+    assert not any("wheel_repair" in step for step in job["script"]), (repair, job)
+    assert not any("--skip-dependency-libs" in step for step in job["script"]), repair
 
 
 def test_gitlab_windows_wheel_deploy_survives_a_skipped_repair(tmp_path):

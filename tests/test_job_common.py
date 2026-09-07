@@ -12,15 +12,8 @@ import json
 
 import pytest
 
-from xmsconan.build_toml import read_build_toml
 from xmsconan.job_tools import common
-
-
-def _config(tmp_path, body='library_name = "xmscore"\n'):
-    """A parsed build.toml with the given body."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(body, encoding="utf-8")
-    return read_build_toml(toml_file)
+from .job_helpers import build_toml_config as _config
 
 
 # --- resolve_leg ---
@@ -44,15 +37,30 @@ def test_resolve_leg_reproduces_the_filter_the_generator_renders(leg, expected_o
     assert resolved == {"build_type": "Release", "options": expected_options}
 
 
-def test_every_leg_pins_both_flags():
+@pytest.mark.parametrize("leg", common.LEG_KINDS)
+def test_every_leg_pins_both_flags(leg):
     """A selector naming one flag would take the other leg's configurations.
 
     Testing and pybind are disjoint copies of the base combinations, so
     ``{"pybind": True}`` alone matches nothing extra but ``{"testing": False}``
     alone takes the pybind configurations along with the library ones.
+
+    Parametrized rather than looped in the body: a loop over an empty
+    ``LEG_SELECTORS`` would report three passes' worth of nothing.
     """
-    for selector in common.LEG_SELECTORS.values():
-        assert {"testing", "pybind"} <= set(selector)
+    assert {"testing", "pybind"} <= set(common.LEG_SELECTORS[leg])
+
+
+def test_the_leg_vocabulary_is_not_writable():
+    """``LEG_KINDS`` is an import-time snapshot of ``LEG_SELECTORS``.
+
+    A caller that added a fourth kind would get an ``--leg`` choice argparse
+    rejects, because the choices were taken from the snapshot.
+    """
+    with pytest.raises(TypeError):
+        common.LEG_SELECTORS["cuda"] = {"testing": False, "pybind": False}
+    with pytest.raises(TypeError):
+        common.LEG_SELECTORS["library"]["pybind"] = True
 
 
 def test_pybind_omits_python_version_when_the_environment_names_none():
@@ -163,25 +171,35 @@ def test_uv_python_is_left_alone_when_no_abi_is_targeted(tmp_path):
     assert common.UV_PYTHON_VARIABLE not in environ
 
 
-def test_split_tests_skips_the_run_only_on_the_testing_leg(tmp_path):
-    """The compile-here-run-there variable, on the leg that compiles a runner.
+def test_split_tests_skips_the_run_only_where_the_generator_says_to(tmp_path):
+    """The skip is set on the builds whose compiled runner another job runs.
 
-    The other legs build no runner, so setting it there would be a no-op that
-    still has to be explained the next time someone reads the environment.
+    Stated by the caller rather than inferred from ``--leg``, because the two
+    jobs it must distinguish -- the Linux build whose runner the "Run C++
+    Tests" jobs consume, and the Windows build with no such downstream job --
+    render the identical flagless ``xmsconan job build``. Inferring from
+    ``leg is None`` would skip the Windows suite entirely; inferring from
+    ``leg == "testing"``, which this replaces, skipped it on neither.
     """
     config = _config(tmp_path, 'library_name = "xmscore"\n[ci]\nsplit_tests = true\n')
-    testing_environ = {}
-    library_environ = {}
-    common.set_job_environment(config, leg="testing", environ=testing_environ)
-    common.set_job_environment(config, leg="library", environ=library_environ)
-    assert testing_environ[common.SKIP_CXX_TESTS_VARIABLE] == "1"
-    assert common.SKIP_CXX_TESTS_VARIABLE not in library_environ
+    deferred = {}
+    inline = {}
+    common.set_job_environment(config, defer_cxx_tests=True, environ=deferred)
+    common.set_job_environment(config, defer_cxx_tests=False, environ=inline)
+    assert deferred[common.SKIP_CXX_TESTS_VARIABLE] == "1"
+    assert common.SKIP_CXX_TESTS_VARIABLE not in inline
 
 
 def test_split_tests_off_runs_the_tests_in_the_build(tmp_path):
-    """Without split_tests there is no separate job to run them."""
+    """Without split_tests there is no separate job to run them.
+
+    Asserted with ``defer_cxx_tests`` on, because build.toml is read at run
+    time: a pipeline generated under ``split_tests`` still carries the flag on
+    its command line after the setting is turned off, and this is what makes
+    that stale flag inert rather than silently skipping the suite everywhere.
+    """
     environ = {}
-    common.set_job_environment(_config(tmp_path), leg="testing", environ=environ)
+    common.set_job_environment(_config(tmp_path), defer_cxx_tests=True, environ=environ)
     assert common.SKIP_CXX_TESTS_VARIABLE not in environ
 
 

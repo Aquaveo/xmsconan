@@ -10,5 +10,5 @@ rather than as a failing test here.
 The commands in this package take that work back. What is left in a template
 is what a tool cannot decide -- the stage graph, ``needs``, images, runners,
 ``rules``, secrets wiring -- and every job's ``script:`` is an install line
-and one ``xmsconan job`` call. See ``docs/DESIGN-ci-job-commands.md``.
+and one ``xmsconan job`` call. See ``docs/USAGE.md`` sections 10.4 and 10.5.
 """

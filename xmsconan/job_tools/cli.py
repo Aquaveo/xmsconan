@@ -23,7 +23,7 @@ from xmsconan.constants import VS2019_PLATFORM_KEY
 from xmsconan.exit_codes import EXIT_OK
 from xmsconan.generator_tools.build_file_generator import generate_build_files
 from xmsconan.generator_tools.version import FALLBACK_VERSION, VERSION_FLAG_HELP
-from xmsconan.job_tools import common
+from xmsconan.job_tools import common, xvfb
 from xmsconan.job_tools.build import job_build
 from xmsconan.package_tools import packager
 
@@ -41,7 +41,11 @@ def job_test(label=None, toml_path="build.toml", runner_args=(), timeout=None):
     Everything ``xmsconan_test_shards`` needed as a flag except the label is a
     fact about this repository or the fixed layout: the artifacts directory the
     build wrote, the shard count from ``[ci].test_shards``, and whether the
-    shards need displays from ``[ci].xvfb``. The label stays a flag because it
+    shards need displays -- ``[ci].xvfb`` asked through
+    :func:`~xmsconan.job_tools.xvfb.wants_xvfb`, which is the same predicate
+    the build and the coverage run ask, so a host with no ``xvfb-run`` warns
+    and runs bare instead of every shard dying on a missing ``Xvfb``. The
+    label stays a flag because it
     names *which* configuration this job tests, which is the one thing the job
     knows and ``build.toml`` does not.
     """
@@ -50,7 +54,7 @@ def job_test(label=None, toml_path="build.toml", runner_args=(), timeout=None):
     return test_shards.run(
         common.ARTIFACTS_DIR, shards, label=label,
         output=test_shards.DEFAULT_REPORT_NAME,
-        xvfb=config.ci.xvfb,
+        xvfb=xvfb.wants_xvfb(config),
         timeout=test_shards.DEFAULT_SHARD_TIMEOUT if timeout is None else timeout,
         runner_args=list(runner_args),
     )
@@ -116,6 +120,12 @@ def _add_build_arguments(parser):
         help="Save a Conan cache tarball under "
              f"{common.EXPORT_DIR}/ for the deploy job to restore. Passed by "
              "the jobs a tag pipeline publishes from.",
+    )
+    parser.add_argument(
+        "--defer-cxx-tests", action="store_true",
+        help="A separate job in this pipeline runs the C++ suite this build "
+             f"compiles, so set ${common.SKIP_CXX_TESTS_VARIABLE} and do not "
+             "also run it inline. Inert unless [ci].split_tests is on.",
     )
     parser.add_argument(
         "--release-skips-testing", action="store_true",
@@ -201,6 +211,7 @@ def _main():
             export=args.export,
             release_skips_testing=args.release_skips_testing,
             build_missing=args.build_missing,
+            defer_cxx_tests=args.defer_cxx_tests,
         )
     if args.kind == "test":
         return job_test(label=args.label, toml_path=args.toml_path,

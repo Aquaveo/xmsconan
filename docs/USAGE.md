@@ -747,6 +747,7 @@ Every GitLab job's script is now an install line and one `xmsconan job` call. Th
 | `--platform windows_vs2019` | detect from the running machine | Build the msvc 192 matrix. Carries the legacy remote, `--build-missing`, the dropped boost defaults, the suppressed wheel and the `-vs2019-` tarball segment with it (§10.2). |
 | `--export` | off | Save a Conan cache tarball under `.export/` for the deploy job to restore. Passed only by the jobs a tag pipeline publishes from — a branch pipeline's tarball is never restored, and uploading one costs artifact storage on every push. |
 | `--release-skips-testing` | off | On a release version, drop the testing configurations. This is the Windows job's old tag rule: nothing installs a test runner and no tag pipeline runs one. A flag rather than an unconditional rule, because the Linux jobs that loop a whole matrix publish from that same build and their tarball would lose binaries a release ships. |
+| `--defer-cxx-tests` | off | A separate job in this pipeline runs the C++ suite this build compiles, so set `XMS_SKIP_CXX_TESTS` rather than also running it inline. Inert unless `[ci].split_tests` is on. A flag rather than something the tool infers from `--leg`: the Linux and Windows builds both run a flagless `xmsconan job build`, and only the generator knows that the Linux one has `Run C++ Tests` jobs downstream and the Windows one has none. |
 | `--build-missing` | off (implied by `--platform windows_vs2019`) | Build missing dependencies from source. |
 | `--version` / `--toml` | resolved (§10), `build.toml` | As everywhere else. |
 
@@ -757,8 +758,8 @@ Three environment variables the template used to `export` are set by `job build`
 | Variable | Set to | When |
 |---|---|---|
 | `CTEST_PARALLEL_LEVEL` | `8` | always |
-| `UV_PYTHON` | `$PYTHON_TARGET_VERSION` | only when that variable is set — a library leg targets no ABI and must not pin uv to this interpreter |
-| `XMS_SKIP_CXX_TESTS` | `1` | only on the testing leg under `[ci].split_tests`, where the suite runs in its own job |
+| `UV_PYTHON` | `$PYTHON_TARGET_VERSION` | only when that variable is set — off CI nothing names an ABI, and pinning uv to whichever interpreter happens to be first on `PATH` is not the same decision. Every generated GitLab job does set it, testing and library legs included, so in a pipeline this is always on. |
+| `XMS_SKIP_CXX_TESTS` | `1` | under `[ci].split_tests`, on the jobs the generator marks `--defer-cxx-tests` — the ones whose compiled runner a separate `Run C++ Tests` job consumes |
 
 The two output directories are the exception that proves it: `test_artifacts/` and `wheelhouse/` are fixed by the tool, and the pipeline's only remaining say in them is which ones it collects as artifacts. A rename on either side uploads nothing, which is why the test asserting the pairing reads both from the same constants.
 
@@ -787,6 +788,7 @@ Three things to know when you do:
 - **The environment is part of the job.** `PYTHON_TARGET_VERSION` selects the ABI the pybind fan-out builds and names the export tarball; `BUILD_TYPE` narrows the matrix the same way the fan-out jobs' `variables:` block does. Both come from the job's `variables:` in the generated file — copy them across, or you will build a different matrix than the runner did.
 - **A version is resolved, not assumed.** Off CI, `xmsconan job build` takes the version from setuptools-scm; on CI it takes the tag, or `0.0.0` when there is none (§10). Pass `--version` to pin it.
 - **`--export` is safe to omit and usually should be.** It writes a Conan cache tarball under `.export/` that only a deploy job reads.
+- **`--defer-cxx-tests` is worth omitting too.** Under `[ci].split_tests` the build jobs pass it so the compiled runner is exercised by the `Run C++ Tests` jobs instead; replaying the build without it runs the suite inline, which is usually what you want from one local command. Pass it when you are reproducing what the runner did rather than testing the code.
 
 A job that builds nothing now says so and fails: when the `[filter]` table and the leg selector cancel each other out, `xmsconan job build` prints which filters it applied and exits non-zero, rather than looping an empty list and exiting 0. That case used to read as a passing build that produced no packages.
 

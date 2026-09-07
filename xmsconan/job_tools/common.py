@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import time
+from types import MappingProxyType
 
 import xmsconan
 
@@ -62,11 +63,11 @@ UV_PYTHON_VARIABLE = "UV_PYTHON"
 #: copies of the base combinations, so each kind pins *both* flags: a selector
 #: naming only ``pybind`` would take the testing configurations too on a
 #: matrix that builds both.
-LEG_SELECTORS = {
-    "library": {"testing": False, "pybind": False},
-    "testing": {"testing": True, "pybind": False},
-    "pybind": {"pybind": True, "testing": False},
-}
+LEG_SELECTORS = MappingProxyType({
+    "library": MappingProxyType({"testing": False, "pybind": False}),
+    "testing": MappingProxyType({"testing": True, "pybind": False}),
+    "pybind": MappingProxyType({"pybind": True, "testing": False}),
+})
 
 #: ``--leg`` choices, in matrix order.
 LEG_KINDS = tuple(LEG_SELECTORS)
@@ -133,7 +134,7 @@ def resolve_leg(leg=None, release=False, release_skips_testing=False, environ=No
     return selection
 
 
-def set_job_environment(config, leg=None, environ=None):
+def set_job_environment(config, defer_cxx_tests=False, environ=None):
     """Set the variables a generated job used to ``export`` before its build.
 
     Each one is set only when the environment has not already chosen a value,
@@ -142,7 +143,8 @@ def set_job_environment(config, leg=None, environ=None):
 
     Args:
         config: The parsed build.toml.
-        leg: The leg being built, for the split-tests decision.
+        defer_cxx_tests: This build's C++ suite is run by a separate job in the
+            same pipeline, so it must not also run inline here.
         environ: The environment to modify; ``os.environ`` when None.
 
     Returns:
@@ -163,10 +165,15 @@ def set_job_environment(config, leg=None, environ=None):
     if python_version:
         _default(UV_PYTHON_VARIABLE, python_version)
 
-    # The testing leg compiles a runner that a separate job executes. Skipping
-    # the run here is the whole point of [ci].split_tests; the other legs build
-    # no runner, so the variable would be a no-op on them.
-    if config.ci.split_tests and leg == "testing":
+    # Which jobs hand their runner to a separate test job is a fact about the
+    # pipeline's shape, so the generator states it with `--defer-cxx-tests`
+    # rather than the tool inferring it from `--leg`. Inferring it was wrong in
+    # both directions: the `--leg`-less Linux build feeds the "Run C++ Tests"
+    # jobs and got no skip, while the Windows build renders the same flagless
+    # command and must keep running its suite inline, because no Windows test
+    # job is generated to run it. [ci].split_tests still gates, so turning
+    # sharding off takes effect without regenerating.
+    if config.ci.split_tests and defer_cxx_tests:
         _default(SKIP_CXX_TESTS_VARIABLE, "1")
 
     return set_names

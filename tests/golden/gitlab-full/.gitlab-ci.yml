@@ -39,7 +39,7 @@ Conan Build:
       - test_artifacts/
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan job build --export
+    - xmsconan job build --defer-cxx-tests --export
 
 "Run C++ Tests - Release-testing":
   stage: Test

@@ -17,6 +17,7 @@ The predicate that decides whether any of it happens is :func:`wants_xvfb`, and
 it is the same one for all three.
 """
 import contextlib
+import errno
 import logging
 import os
 from pathlib import Path
@@ -28,6 +29,10 @@ import sys
 import time
 
 LOGGER = logging.getLogger(__name__)
+
+#: What a display that is merely still starting refuses a probe with. Anything
+#: else is a condition the deadline will not cure, so it is worth a line.
+STARTUP_ERRNOS = frozenset({errno.ECONNREFUSED, errno.ENOENT, errno.EAGAIN})
 
 #: The screen ``xvfb-run`` is asked for, and the one a server started here
 #: serves. 24-bit depth because the GL clients under test refuse to pick a
@@ -100,13 +105,6 @@ def run_prefix():
     return ["xvfb-run", "-a", "-s", RUN_SERVER_ARGUMENTS]
 
 
-def under_xvfb(argv, config, environ=None, platform=None):
-    """*argv*, prefixed with :func:`run_prefix` when this machine wants one."""
-    if wants_xvfb(config, environ=environ, platform=platform):
-        return run_prefix() + list(argv)
-    return list(argv)
-
-
 def reexec_under_xvfb(module, environ=None, argv=None, exec_fn=None):
     """Replace this process with itself, running under ``xvfb-run``.
 
@@ -162,8 +160,11 @@ def ensure_socket_dir():
     os.makedirs(SOCKET_DIR, exist_ok=True)
     try:
         os.chmod(SOCKET_DIR, 0o1777)
-    except OSError:
-        pass
+    except OSError as error:
+        # Expected on a host whose X server already owns the directory, which
+        # is why it is not fatal -- but a chmod that failed for another reason
+        # is worth having in the log when a display later refuses.
+        LOGGER.debug("Leaving %s as it is: %s", SOCKET_DIR, error)
 
 
 def server_answers(display_number):
@@ -186,8 +187,14 @@ def server_answers(display_number):
             probe.sendall(struct.pack("<BxHHHHxx", ord("l"), 11, 0, 0, 0))
             if probe.recv(1) == b"\x01":
                 return True
-        except OSError:
-            pass
+        except OSError as error:
+            # A server still starting refuses, or has not bound its socket
+            # yet; that is what this loop polls through. EACCES is not that --
+            # it will still be true at the deadline, and reporting it only as
+            # "did not answer within 60s" hides the one actionable cause.
+            if error.errno not in STARTUP_ERRNOS:
+                LOGGER.debug("Probe of display :%s at %r failed: %s",
+                             display_number, address, error)
         finally:
             probe.close()
     return False

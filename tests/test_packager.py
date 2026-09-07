@@ -16,6 +16,7 @@ from xmsconan.constants import (
     MSVC_VS2019_VERSION,
     VS2019_REMOTE_NAME,
 )
+from xmsconan.job_tools.common import SKIP_CXX_TESTS_VARIABLE
 from xmsconan.package_tools.packager import (
     config_label,
     configurations,
@@ -1639,11 +1640,12 @@ def test_run_skips_tests_when_sharding(mock_run, tmp_path):
 
     p.run()
 
-    # conan create should have been called with env containing XMS_SKIP_CXX_TESTS
+    # Read through the constant `xmsconan job build --defer-cxx-tests` sets,
+    # so a rename that left this literal behind fails here rather than in CI.
     call_kwargs = mock_run.call_args_list[0]
     env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
     assert env is not None
-    assert env.get('XMS_SKIP_CXX_TESTS') == '1'
+    assert env.get(SKIP_CXX_TESTS_VARIABLE) == '1'
 
 
 @patch_env(clear=True)

@@ -23,11 +23,12 @@ environment variables, or ``~/.xmsconan.toml`` (see
 :mod:`xmsconan.ci_tools.credentials`).
 """
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any, Callable, Optional
 
 from xmsconan._cli import add_verbosity_args, configure_logging
 from xmsconan.build_toml import read_build_toml
@@ -59,14 +60,20 @@ class PublishSteps:
 
     Each field defaults to the production implementation.  Tests can
     supply fakes to avoid patching module-level names.
+
+    The fields default to None and are resolved in ``__post_init__`` rather
+    than defaulting to the functions themselves: a dataclass default is bound
+    when the class is created, which would freeze the module globals these
+    name, and the tests reach them by patching exactly those globals before
+    constructing this.
     """
 
-    conan_setup: object = field(default=None)
-    subprocess_run: object = field(default=None)
-    wheel_repair: object = field(default=None)
-    wheel_deploy: object = field(default=None)
-    conan_deploy: object = field(default=None)
-    check_xvfb: object = field(default=None)
+    conan_setup: Optional[Callable[..., Any]] = None
+    subprocess_run: Optional[Callable[..., Any]] = None
+    wheel_repair: Optional[Callable[..., Any]] = None
+    wheel_deploy: Optional[Callable[..., Any]] = None
+    conan_deploy: Optional[Callable[..., Any]] = None
+    check_xvfb: Optional[Callable[..., Any]] = None
 
     def __post_init__(self):  # noqa: D105
         if self.conan_setup is None:

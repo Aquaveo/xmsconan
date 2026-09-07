@@ -14,10 +14,10 @@ and importing it would make the CI path depend on a generated file being
 current -- the one thing the regeneration exists to stop mattering.
 """
 from dataclasses import dataclass
-import logging
 import os
 from pathlib import Path
 import sys
+from typing import Any, Callable, Optional
 
 from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_options import repairs_wheel
@@ -30,8 +30,6 @@ from xmsconan.generator_tools.build_file_generator import generate_build_files
 from xmsconan.generator_tools.version import is_release_version, resolve_version
 from xmsconan.job_tools import common, xvfb
 from xmsconan.package_tools import packager
-
-LOGGER = logging.getLogger(__name__)
 
 #: ``sys.platform`` prefix -> the segment naming it in an export tarball. The
 #: names are the ones the GitLab template rendered, so a pipeline's tarballs
@@ -96,9 +94,15 @@ def export_package_query(configurations, platform=None):
     therefore its cache; there is nothing else in it to exclude.
 
     Returns:
-        ``"compiler.version=<v>"``, or None when the platform does not need
-        one or its configurations do not agree on a single value -- a query
-        that named one of several would silently drop the rest of the build.
+        ``"compiler.version=<v>"``, or None on a platform that does not need one.
+
+    Raises:
+        ValueError: A Windows build whose configurations do not agree on a
+            single ``compiler.version``. Saving unqueried is the failure this
+            query exists to prevent, so there is nothing safe to fall back to
+            -- the generator's own
+            :func:`~xmsconan.generator_tools.ci_file_generator._only_msvc_version`
+            raises on the same condition, one layer up.
     """
     platform = sys.platform if platform is None else platform
     if platform != "win32":
@@ -106,11 +110,12 @@ def export_package_query(configurations, platform=None):
     versions = {configuration.get("compiler.version") for configuration in configurations}
     versions.discard(None)
     if len(versions) != 1:
-        LOGGER.warning(
-            "Not restricting the Conan save: this build's configurations name %d "
-            "compiler.version values (%s).", len(versions), ", ".join(sorted(versions)),
+        raise ValueError(
+            f"cannot restrict the Conan save: this build's {len(configurations)} "
+            f"configurations name {len(versions)} compiler.version values "
+            f"({', '.join(sorted(versions)) or 'none'}); an unqueried save would "
+            f"tarball whatever else is in this runner's cache."
         )
-        return None
     return f"compiler.version={versions.pop()}"
 
 
@@ -149,15 +154,24 @@ class BuildSteps:
     Each field defaults to the production implementation; tests supply fakes
     that record the sequence, which is the property worth asserting here --
     the order the six steps run in is what the template used to spell out.
+
+    The fields default to None and are resolved in ``__post_init__`` rather
+    than defaulting to the functions themselves: a dataclass default is bound
+    when the class is created, which would freeze the module globals these
+    name against any later patch of them. No test in this module patches one
+    today -- they all pass fakes in -- but :class:`~xmsconan.ci_tools.publish.
+    PublishSteps` carries the same resolution for tests that do, and having
+    the two classes answer the question differently is a trap for whoever
+    writes the first such test here.
     """
 
-    print_versions: object = None
-    conan_setup: object = None
-    generate: object = None
-    make_packager: object = None
-    display: object = None
-    wheel_repair: object = None
-    conan_deploy: object = None
+    print_versions: Optional[Callable[..., Any]] = None
+    conan_setup: Optional[Callable[..., Any]] = None
+    generate: Optional[Callable[..., Any]] = None
+    make_packager: Optional[Callable[..., Any]] = None
+    display: Optional[Callable[..., Any]] = None
+    wheel_repair: Optional[Callable[..., Any]] = None
+    conan_deploy: Optional[Callable[..., Any]] = None
 
     def __post_init__(self):  # noqa: D105
         if self.print_versions is None:
@@ -178,7 +192,7 @@ class BuildSteps:
 
 def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
               export=False, release_skips_testing=False, build_missing=False,
-              steps=None, environ=None):
+              defer_cxx_tests=False, steps=None, environ=None):
     """Run one CI build leg.
 
     Args:
@@ -194,10 +208,16 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
         export: Save a Conan cache tarball under ``.export/`` for the deploy
             job to restore. Passed by the jobs that a tag pipeline publishes
             from; a branch pipeline's tarball would never be restored.
-        release_skips_testing: On a tag, drop the testing configurations. See
+        release_skips_testing: On a release version, drop the testing
+            configurations. In a pipeline that is the tag jobs and only those,
+            because an untagged pipeline resolves the ``0.0.0`` fallback. See
             :func:`~xmsconan.job_tools.common.resolve_leg`.
         build_missing: Build missing dependencies from source. Implied by the
             VS2019 platform, whose legacy dependency graph is not prebuilt.
+        defer_cxx_tests: A separate job in this pipeline runs the C++ suite
+            this build compiles, so it must not also run inline here. Passed
+            by the generator, which is the only layer that knows the job
+            graph; inert unless ``[ci].split_tests`` is on.
         steps: :class:`BuildSteps` instance (production defaults if omitted).
         environ: The environment to read and set; ``os.environ`` when None.
 
@@ -212,7 +232,12 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
     version = resolve_version(version, environ=environ)
     config = read_build_toml(toml_path)
     build_missing = build_missing or platform == VS2019_PLATFORM_KEY
-    common.set_job_environment(config, leg=leg, environ=environ)
+    defaulted = common.set_job_environment(
+        config, defer_cxx_tests=defer_cxx_tests, environ=environ)
+    if defaulted:
+        # Named in the log because they change what the build does and nothing
+        # else in the job's output says they were this command's doing.
+        print(f"Defaulted for this job: {', '.join(defaulted)}.")
 
     with common.log_section("Conan setup", environ=environ):
         # No login: a generated job has never run one. Conan reads
@@ -266,10 +291,11 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
                 return EXIT_ERROR
 
     configurations = list(builder.configurations)
-    wheel_result = _stage_wheel(builder, config, configurations, version, platform, steps,
+    wheel_result = _stage_wheel(builder, config, configurations, version, platform,
                                 environ=environ)
     if wheel_result != EXIT_OK:
         return wheel_result
+    _repair_wheel(config, configurations, platform, steps, environ=environ)
 
     if export:
         with common.log_section("Export Conan packages", environ=environ):
@@ -284,14 +310,14 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
     return EXIT_OK
 
 
-def _stage_wheel(builder, config, configurations, version, platform_key, steps, environ=None):
-    """Extract this leg's wheel, stage its dependencies, repair it on Windows.
+def _builds_wheel(configurations, platform_key):
+    """Whether this job produced a wheel worth staging.
 
-    Whether there is a wheel at all is read off the configurations that
-    survived the filters rather than from a flag: a wheel exists exactly when a
-    pybind configuration was built, which is the same question the CI
-    generator answers per platform when it decides whether to emit the wheel
-    steps -- asked here per job, against the configurations actually built.
+    Read off the configurations that survived the filters rather than from a
+    flag: a wheel exists exactly when a pybind configuration was built, which
+    is the same question the CI generator answers per platform when it decides
+    whether to emit the wheel steps -- asked here per job, against the
+    configurations actually built.
 
     The VS2019 matrix is the one exception, and it is a publishing rule rather
     than a build one: a wheel's tags (``cp310-cp310-win_amd64``) say nothing
@@ -299,10 +325,20 @@ def _stage_wheel(builder, config, configurations, version, platform_key, steps, 
     the same filename on the index and would overwrite each other by upload
     order.
     """
-    builds_wheel = any(
+    if platform_key == VS2019_PLATFORM_KEY:
+        return False
+    return any(
         configuration.get("options", {}).get("pybind") for configuration in configurations
     )
-    if not builds_wheel or platform_key == VS2019_PLATFORM_KEY:
+
+
+def _stage_wheel(builder, config, configurations, version, platform_key, environ=None):
+    """Extract this leg's wheel and stage the libraries its repair will need.
+
+    The staging half runs on every platform that built a wheel; only the
+    repair that consumes it is Windows-only, and that is :func:`_repair_wheel`.
+    """
+    if not _builds_wheel(configurations, platform_key):
         return EXIT_OK
 
     with common.log_section("Stage wheel", environ=environ):
@@ -316,15 +352,28 @@ def _stage_wheel(builder, config, configurations, version, platform_key, steps, 
             return EXIT_ERROR
         # The staged libraries exist only so the repair tools can resolve
         # imports, so collecting them is pure cost once repair is off.
-        if repairs_wheel(config):
+        if repairs_wheel(config, platform=sys.platform):
             builder.collect_dependency_libs(os.path.join(common.WHEEL_DIR, "libs"))
-
-    # Windows repairs in place; Linux does not. delvewheel resolves the DLL
-    # imports of a win_amd64 .pyd and can only run on a Windows host, so a
-    # manylinux container cannot stand in and a second WinVM allocation would
-    # be the alternative. The Linux wheel is repaired by `job package`, in the
-    # manylinux image, because auditwheel needs that image's glibc.
-    if sys.platform == "win32" and repairs_wheel(config):
-        with common.log_section("Repair wheel", environ=environ):
-            steps.wheel_repair(wheel_dir=common.WHEEL_DIR, platform="windows")
     return EXIT_OK
+
+
+def _repair_wheel(config, configurations, platform_key, steps, environ=None, platform=None):
+    """Repair this job's wheel in place, on the one platform that can.
+
+    Windows repairs in place; Linux does not. delvewheel resolves the DLL
+    imports of a win_amd64 .pyd and can only run on a Windows host, so a
+    manylinux container cannot stand in and a second WinVM allocation would be
+    the alternative. The Linux wheel is repaired by ``job package``, in the
+    manylinux image, because auditwheel needs that image's glibc.
+
+    *platform* is threaded in rather than read here and again inside
+    :func:`~xmsconan.ci_options.repairs_wheel`: one value has to answer both,
+    or a caller can reach a repair whose staged libraries were skipped.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform != "win32" or not _builds_wheel(configurations, platform_key):
+        return
+    if not repairs_wheel(config, platform=platform):
+        return
+    with common.log_section("Repair wheel", environ=environ):
+        steps.wheel_repair(wheel_dir=common.WHEEL_DIR, platform="windows")
