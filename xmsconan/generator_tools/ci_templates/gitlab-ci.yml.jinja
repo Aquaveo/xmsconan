@@ -462,12 +462,16 @@ Conan Build:
      inserted first: it must not become the first stop for every `conan
      install` on a shared runner. It is where the legacy dependencies are
      resolved from as well as where the results go.
-   * Every deploy step carries `--package-query compiler.version=<<
+   * Every save and every upload is restricted to `compiler.version=<<
      vs2019_msvc_version >>`. The Conan cache on a runner is per machine, not
-     per job, so without it this job's `conan cache save` would tarball the
+     per job, so without that this job's `conan cache save` would tarball the
      msvc 194 job's binaries and publish them to the VS2019 remote, exit 0,
      and leave two toolchains mixed on a remote whose whole purpose is to keep
-     them apart.
+     them apart. The query is not rendered here: `job build` and `job deploy`
+     each read the version from the same packager matrix row `--platform`
+     selects, so it cannot name a toolchain the matrix does not pin -- which a
+     literal in this file silently could, matching nothing and publishing
+     nothing after a bump.
    * No `--wheel-dir`. A wheel's tags (`cp310-cp310-win_amd64`) say nothing
      about which MSVC built it, so an msvc 192 wheel and an msvc 194 wheel are
      the same devpi filename -- publishing both would have them overwrite each
@@ -602,7 +606,7 @@ Repair Wheel:
     - Repair Wheel
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_wheel_deploy --wheel-dir wheelhouse
+    - xmsconan job deploy --wheels-only
   only:
     - tags
 <% endif %>
@@ -633,13 +637,12 @@ Repair Wheel:
 <% endfor %>
 <% endif %>
 <% else %>
-<% if gitlab_linux_fanout %>
-  parallel:
-    matrix:
-<% for v in ci_linux_python_versions %>
-      - PYTHON_TARGET_VERSION: '<< v >>'
-<% endfor %>
-<% endif %>
+<# No `parallel: matrix` here either, for the reason the wheel_only branch
+   above gives. `dependencies: - Conan Build` hands every instance the whole
+   fan-out's artifacts, so N instances each restored all N tarballs and raced
+   to upload the same Conan reference; the per-instance `--restore` name was
+   the only thing keeping them apart, and it is gone now that `job deploy`
+   globs `.export/` instead of reassembling names the build already composed. #>
   dependencies:
     - Conan Build
 <% endif %>
@@ -649,19 +652,11 @@ Repair Wheel:
     - python3 -m venv .venv
     - source .venv/bin/activate
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
-<% if ci_wheel_only %>
-<# Restore every tarball into this job's cache first, then upload once.
-   `conan upload <ref>` publishes every package id under the reference, so the
-   single upload at the end covers the whole restored set -- and uploading per
-   tarball instead would push the same recipe repeatedly. #>
-<% for job in ci_linux_export_jobs %>
-    - xmsconan_conan_deploy << library_name >> --restore .export/<< library_name >>-linux-<< job.label >>-{version}.tar.gz
-<% endfor %>
-    - xmsconan_conan_deploy << library_name >> --upload
-<% else %>
-    - xmsconan_conan_deploy << library_name >> --restore .export/<< library_name >>-linux<< gitlab_linux_py_suffix >>-{version}.tar.gz --upload
-<% endif %>
+<# Restores every tarball in `.export/` into this job's cache, then uploads
+   once. `conan upload <ref>` publishes every package id under the reference,
+   so one upload covers the whole restored set -- uploading per tarball would
+   push the same recipe repeatedly. #>
+    - xmsconan job deploy --conan-only
   only:
     - tags
 
@@ -685,7 +680,7 @@ Repair Wheel:
       artifacts: true
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_wheel_deploy --wheel-dir wheelhouse
+    - xmsconan job deploy --wheels-only
   only:
     - tags
 <% endif %>
@@ -694,55 +689,44 @@ Repair Wheel:
   stage: Deploy
   # GLR-UV and `uv venv`, for the reasons spelled out on "Conan Build -
   # Windows" above. This job only restores and uploads a cache tarball, so it
-  # does not compile against the interpreter -- it still builds the venv on
-  # the matrix ABI so both Windows jobs bootstrap identically and neither can
-  # be the one that rots.
+  # does not compile against the interpreter; it still bootstraps its venv the
+  # way the build job does so neither of the two can be the one that rots.
   image: GLR-UV
-  parallel:
-    matrix:
-<% for v in ci_python_versions %>
-      - PYTHON_TARGET_VERSION: '<< v >>'
-<% endfor %>
+  variables:
+    # No `parallel: matrix` any more. Restoring and uploading is
+    # ABI-independent, and `needs: artifacts: true` on a fanned-out build hands
+    # every instance the whole set of tarballs -- so N deploy instances each
+    # restored all N and raced to upload the same Conan reference. The
+    # per-instance `--restore` name was what kept them apart, and it is gone
+    # now that `job deploy` globs `.export/`. The venv still needs *an*
+    # interpreter, so this pins the newest ABI the matrix builds.
+    PYTHON_TARGET_VERSION: '<< gitlab_windows_single_py >>'
   # Depend on the whole build job rather than selecting one parallel instance.
   # GitLab does not expand variables inside needs:parallel:matrix, so a selector
   # like "PYTHON_TARGET_VERSION: $PYTHON_TARGET_VERSION" is compared literally,
   # matches no job, and fails the whole pipeline at config time with
-  # "undefined need". Listing the matrix values instead would make every deploy
-  # instance need every build instance anyway, so this is equivalent and cannot
-  # drift out of sync with the matrix above.
+  # "undefined need".
   needs:
     - job: "Conan Build - Windows"
       artifacts: true
-  artifacts:
-    expire_in: '1d'
-    paths:
-      - conan_packages/
+<# No `conan_packages/` artifact any more, and no `cp -r ${HOME}/.conan2/p/*`
+   to fill it. It was an unqueried copy of a *shared* runner's Conan cache, so
+   on a machine also running the msvc 192 matrix it snapshotted the other
+   toolchain's binaries beside this job's -- unreliable for the one question it
+   existed to answer, and nothing consumed it. `xmsconan job deploy
+   --cache-archive PATH` writes the queried equivalent for anyone who wants a
+   snapshot back; the GitHub template uses it for the release asset. #>
   script:
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
     - uv pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
-<# The query is repeated on the upload rather than trusted from the save: this
-   is the command that reaches the shared remote, and a tarball restored into a
-   cache that already holds the other toolchain's binaries of the same
-   reference would otherwise publish those too. #>
-    - xmsconan_conan_deploy << library_name >> --restore .export/<< library_name >>-windows-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --upload --package-query compiler.version=<< windows_msvc_version >>
-    - mkdir -p conan_packages
-    <# ${HOME}, not the hard-coded /c/Users/admin the GLR-py* images ran as:
-       the conan home is `~/.conan2`, so a runner whose service account is
-       anyone else silently produced an empty artifact. GLR-UV is a different
-       machine, so the old literal is exactly the kind of assumption this
-       migration has to stop making.
-
-       `|| echo`, not `|| true`: with nothing under the cache path -- a
-       restore that produced nothing, or a HOME that is not where conan put
-       its cache -- the job used to go green and ship an empty
-       conan_packages/ artifact with no line in the log saying so. It stays
-       non-fatal because the upload above has already succeeded by this point
-       and nothing consumes this artifact; it is a snapshot of the cache for
-       debugging. #>
-    - cp -r ${HOME}/.conan2/p/* conan_packages/ || echo "warning - no Conan packages under ${HOME}/.conan2/p, conan_packages/ artifact will be empty"
+<# The remote and the `--package-query` are the tool's, read from the same
+   packager matrix that pins this platform's `compiler.version` -- not literals
+   rendered here. A stale literal fails silently: `compiler.version=194` after
+   a toolchain bump matches nothing and the upload exits 0 having published
+   nothing. #>
+    - xmsconan job deploy --conan-only
   only:
     - tags
   tags:
@@ -763,11 +747,10 @@ Repair Wheel:
 "Conan Deploy - Windows VS2019":
   stage: Deploy
   image: GLR-UV
-  parallel:
-    matrix:
-<% for v in ci_python_versions %>
-      - PYTHON_TARGET_VERSION: '<< v >>'
-<% endfor %>
+  variables:
+    # One job, not a fan-out, for the reason given on "Conan Deploy - Windows"
+    # above; the pinned ABI is only what the venv is built on.
+    PYTHON_TARGET_VERSION: '<< gitlab_windows_single_py >>'
   # The whole build job, not one parallel instance, for the reason given on
   # "Conan Deploy - Windows" above: GitLab does not expand variables inside
   # needs:parallel:matrix.
@@ -779,10 +762,11 @@ Repair Wheel:
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
     - uv pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
-<# Concurrent remotes.json writers: see the note on the build job above. #>
-    - xmsconan_conan_setup --remote-name << vs2019_remote_name >> --remote-url << vs2019_remote_url >> --append
-    - xmsconan_conan_deploy << library_name >> --restore .export/<< library_name >>-windows-vs2019-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --upload --remote << vs2019_remote_name >> --package-query compiler.version=<< vs2019_msvc_version >>
+<# `--platform` is what routes this to << vs2019_remote_name >> rather than the
+   CI remote: it also appends that remote (never first -- see the build job's
+   note on concurrent remotes.json writers) and restricts the upload to the
+   msvc version the same matrix row pins. #>
+    - xmsconan job deploy --conan-only --platform << vs2019_platform_key >>
   only:
     - tags
   tags:
@@ -867,38 +851,6 @@ Coverage:
    number. An unmeasured C++ layer prints "n/a" and matches nothing here, so it
    cannot publish a percentage that looks like a real measurement. #>
   coverage: '/Coverage total: (\d+\.?\d*%)/'
-
-pages:
-  stage: Pages
-<# The merged HTML is rendered in "Coverage", so take it from there. That job
-   uploads `when: always`, which means the report still publishes on a gate
-   miss -- the run you most want to read is the one that failed its threshold.
-   `pages` waits for the whole Coverage stage either way; stage ordering, not
-   this dependency, is what sequences them. #>
-  dependencies:
-    - "Coverage"
-  script:
-    - mkdir -p public
-    - cp -r coverage-html-cpp public/cpp
-    - HAS_PY=0
-    - if [ -d coverage-html-py ]; then cp -r coverage-html-py public/python; HAS_PY=1; fi
-    - |
-      {
-        echo '<!DOCTYPE html>'
-        echo '<html lang="en"><head><meta charset="utf-8">'
-        echo '<title><< library_name >> coverage</title></head><body>'
-        echo '<h1><< library_name >> coverage</h1>'
-        echo '<ul>'
-        echo '<li><a href="cpp/index.html">C++ coverage (gcovr)</a></li>'
-        [ "$HAS_PY" -eq 1 ] && echo '<li><a href="python/index.html">Python coverage (pytest-cov)</a></li>'
-        echo '</ul></body></html>'
-      } > public/index.html
-  artifacts:
-    paths:
-      - public
-  only:
-    - master
-    - main
 <% else %>
 <# The pre-restructure coverage stage: a "Coverage Build" that compiles
    both instrumented configurations in a job of its own, and a report job
@@ -1006,37 +958,38 @@ Coverage:
    number. An unmeasured C++ layer prints "n/a" and matches nothing here, so it
    cannot publish a percentage that looks like a real measurement. #>
   coverage: '/Coverage total: (\d+\.?\d*%)/'
+<% endif %>
 
+<# One `pages:` for both coverage layouts. The two used to differ in exactly one
+   line -- which job the rendered HTML is taken from -- wrapped around fourteen
+   `echo`s of identical inline markup, which is the shape where two copies
+   drift. The markup is `xmsconan job coverage --pages` now, so the one real
+   difference is all that is left here.
+
+   That command also fixes what the shell could not. `cp -r coverage-html-cpp
+   public/cpp` on a run whose C++ layer measured nothing printed to stderr,
+   carried on, and published an index whose first link 404s; the tool copies and
+   links exactly the reports that exist.
+
+   The dependency is the job that *renders* the HTML, and that is not the same
+   job in the two layouts. Either way it publishes on a gate miss -- the run you
+   most want to read is the one that failed its threshold -- and `pages` waits
+   for the whole Coverage stage regardless, because stage ordering, not this
+   dependency, is what sequences them. #>
 pages:
   stage: Pages
-<# "Coverage Build" is where the HTML is rendered, so take it from there. It
-   also means the report publishes on a gate miss: the run you most want to
-   read is the one that failed its threshold. `pages` still waits for the whole
-   Coverage stage either way -- stage ordering, not this dependency, is what
-   sequences them. #>
+<# An image with an interpreter, which the inline-shell version did not need.
+   The same one the Coverage job above runs on, so the two cannot drift. #>
+  image: python:<< coverage_python_version >>
   dependencies:
-    - "Coverage Build"
+    - "<< 'Coverage' if ci_wheel_only else 'Coverage Build' >>"
   script:
-    - mkdir -p public
-    - cp -r coverage-html-cpp public/cpp
-    - HAS_PY=0
-    - if [ -d coverage-html-py ]; then cp -r coverage-html-py public/python; HAS_PY=1; fi
-    - |
-      {
-        echo '<!DOCTYPE html>'
-        echo '<html lang="en"><head><meta charset="utf-8">'
-        echo '<title><< library_name >> coverage</title></head><body>'
-        echo '<h1><< library_name >> coverage</h1>'
-        echo '<ul>'
-        echo '<li><a href="cpp/index.html">C++ coverage (gcovr)</a></li>'
-        [ "$HAS_PY" -eq 1 ] && echo '<li><a href="python/index.html">Python coverage (pytest-cov)</a></li>'
-        echo '</ul></body></html>'
-      } > public/index.html
+    - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan job coverage --pages
   artifacts:
     paths:
       - public
   only:
     - master
     - main
-<% endif %>
 <% endif %>

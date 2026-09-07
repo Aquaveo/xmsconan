@@ -36,7 +36,7 @@ xmsconan gen --help          # help for a specific command
 | `xmsconan profiles` | Generate Conan profiles and `CMakePresets.json` from `build.toml` (run automatically by `xmsconan gen`) |
 | `xmsconan coverage` | Run unified C++/Python coverage (see `docs/USAGE.md` §11) |
 | `xmsconan test-shards` | Run a staged gtest runner as N parallel shards in one container and merge their JUnit reports (see `docs/USAGE.md` §10.2) |
-| `xmsconan job` | Run one generated CI job — `build`, `test`, `package`, or `lint`. Each reads what it needs from `build.toml` and the job's environment, so a red pipeline job replays locally as the same command (see `docs/USAGE.md` §10.4, §10.5) |
+| `xmsconan job` | Run one generated CI job — `build`, `test`, `package`, `deploy`, `lint`, or `coverage --pages`. Each reads what it needs from `build.toml` and the job's environment, so a red pipeline job replays locally as the same command (see `docs/USAGE.md` §10.4, §10.5) |
 | `xmsconan build` | Build XMS libraries |
 | `xmsconan vs2019` | Build/publish the manual VS2019 (msvc 192) matrix (see `docs/USAGE.md` §16) |
 | `xmsconan conan-setup` | Set up Conan profile and remotes for CI builds |

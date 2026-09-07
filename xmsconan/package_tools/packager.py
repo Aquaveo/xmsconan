@@ -157,6 +157,43 @@ configurations = {
 }
 
 
+def only_msvc_version(platform_key: str) -> str:
+    """Return the single ``compiler.version`` the named Windows matrix pins.
+
+    A query over the matrix above, not a literal written anywhere else.
+    ``xmsconan job deploy`` restricts a Windows publish to this value, and a
+    literal that fell behind a toolchain bump would not fail loudly: ``conan
+    upload -p compiler.version=194`` after a move to 195 matches nothing, and
+    the job goes green having published no binaries at all. The generated CI
+    file used to carry that literal per platform; it renders none now, which
+    is what the reading has to stay here to keep true.
+
+    :func:`~xmsconan.job_tools.build.export_package_query` answers the same
+    question for a *build*, from the configurations that build actually
+    produced rather than from the matrix key -- a build's job is to restrict
+    the save to what it compiled, and the two can only agree by construction
+    if neither writes the number down.
+
+    Args:
+        platform_key: Key into :data:`configurations`.
+
+    Returns:
+        The compiler version as a string.
+
+    Raises:
+        ValueError: When the matrix pins more or fewer than one version, which
+            would make "the version this job publishes" ambiguous.
+    """
+    versions = configurations[platform_key]["compiler.version"]
+    if len(versions) != 1:
+        raise ValueError(
+            f"platform {platform_key!r} pins {len(versions)} compiler.version values "
+            f"({', '.join(versions)}); a publish from this platform restricts to exactly "
+            f"one, so this needs a decision rather than a guess."
+        )
+    return versions[0]
+
+
 def _collect_setting_values():
     """Map each settings key to every value any platform emits for it."""
     values = {}
