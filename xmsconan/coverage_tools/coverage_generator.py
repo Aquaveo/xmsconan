@@ -55,6 +55,7 @@ from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
 )
+from xmsconan.job_tools import xvfb
 from xmsconan.package_tools.packager import COVERAGE_PYBIND_BUILD_TYPE
 
 
@@ -115,8 +116,6 @@ COVERAGE_LEGS = (LEG_CPP, LEG_PYTHON)
 #: takes effect without re-running the builds.
 COVERAGE_STATUS_FILE = "coverage-status.json"
 
-_XVFB_REEXEC_FLAG = "XMSCONAN_COVERAGE_XVFB_REEXEC"
-
 
 def _opt_is_truthy(value) -> bool:
     """Return True if a Conan option value represents truthy regardless of repr.
@@ -130,36 +129,6 @@ def _opt_is_truthy(value) -> bool:
     if isinstance(value, str):
         return value.lower() == "true"
     return False
-
-
-def _reexec_under_xvfb():
-    """Re-exec the current process under xvfb-run.
-
-    Sets _XVFB_REEXEC_FLAG in the child environment so the re-entered process
-    does not recurse. No-op if xvfb-run is not on PATH; the caller logs and
-    continues without a display, which surfaces test failures with a clear
-    error rather than silently masking them.
-    """
-    if os.environ.get(_XVFB_REEXEC_FLAG):
-        return
-    xvfb_run = shutil.which("xvfb-run")
-    if not xvfb_run:
-        LOGGER.warning("ci.xvfb is true but xvfb-run is not on PATH; running without a display.")
-        return
-    env = os.environ.copy()
-    env[_XVFB_REEXEC_FLAG] = "1"
-    # Re-exec through `-m <module>`, not through sys.argv[0]: the `xmsconan`
-    # dispatcher rewrites argv[0] to the literal "xmsconan coverage"
-    # (cli.py), so passing it to the interpreter ran
-    # `python "xmsconan coverage"` and died with "can't open file". The module
-    # has a __main__ guard for exactly this entry.
-    cmd = [
-        xvfb_run, "-a", "-s", "-screen 0 1280x1024x24",
-        sys.executable, "-m", "xmsconan.coverage_tools.coverage_generator",
-        *sys.argv[1:],
-    ]
-    LOGGER.info("Re-execing under xvfb-run: %s", " ".join(cmd))
-    os.execvpe(xvfb_run, cmd, env)
 
 
 def _run(cmd, env=None, cwd=None):
@@ -1105,7 +1074,9 @@ def _prepare_coverage_run(toml_file_path, version, output_dir) -> _CoverageRun:
     coverage_python_version = _resolve_coverage_python_version(config)
 
     if config.ci.xvfb:
-        _reexec_under_xvfb()
+        # Re-exec rather than wrap a child: this command drives the suite
+        # itself, so a display started around a subprocess would be too late.
+        xvfb.reexec_under_xvfb("xmsconan.coverage_tools.coverage_generator")
 
     # Regenerate with XMS_COVERAGE set, so every profile this run builds
     # from carries the coverage option rather than the production one.

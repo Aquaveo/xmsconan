@@ -34,8 +34,6 @@ import logging
 import os
 from pathlib import Path
 import shutil
-import socket
-import struct
 import subprocess
 import sys
 import time
@@ -46,6 +44,8 @@ from xml.etree import ElementTree
 
 # 3. Aquaveo modules
 from xmsconan._cli import add_verbosity_args, configure_logging
+from xmsconan.job_tools.xvfb import (BASE_DISPLAY, ensure_socket_dir, start_server,
+                                     stop_server)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -77,123 +77,6 @@ _TESTING_LABEL_SUFFIX = "-testing"
 #: the configuration ``xmsconan coverage`` instruments. The pick is announced,
 #: never silent; ``--label`` overrides it.
 _LABEL_PREFERENCE = ("Debug-testing", "Release-testing")
-
-#: X display numbers start here and step by one per shard. Each shard owns its
-#: number for the life of the run; a stale ``/tmp/.X99-lock`` in the container
-#: makes that shard fail loudly with the Xvfb log naming the display, which
-#: beats ``xvfb-run -a``'s silent renumbering (and its check-then-bind race).
-_XVFB_BASE_DISPLAY = 99
-
-#: How each shard's Xvfb is started. This module owns the servers rather than
-#: delegating to ``xvfb-run``, because xvfb-run launches Xvfb and the client
-#: back to back with no readiness handshake: under N simultaneous cold starts
-#: squeezed into one job container's CPU quota, a runner can dial its display
-#: before the server answers, and a GL client that limps past that first
-#: failed XOpenDisplay dies later with a fatal BadAccess on GLXMakeCurrent,
-#: taking the whole shard with it (seen repeatedly on xmsvtk's runner).
-#: ``-noreset`` is the other half of the fix: an X server tears down and
-#: regenerates whenever its *last* client disconnects, so both a readiness
-#: probe and a test that closes the final render window would otherwise leave
-#: the next connection to land inside a reset window and fail the same way.
-_XVFB_ARGS = ("-screen", "0", "1280x1024x24", "-noreset", "-nolisten", "tcp")
-
-#: Seconds to wait for a shard's Xvfb to answer the X11 handshake before the
-#: shard is failed with the server's own log. Generous because N servers
-#: initialize at once against one CPU quota.
-_XVFB_START_TIMEOUT = 60
-
-#: Where X servers put their unix sockets.
-_X_SOCKET_DIR = "/tmp/.X11-unix"
-
-
-def _ensure_x_socket_dir() -> None:
-    """Create the X socket directory before the server storm needs it.
-
-    Concurrent cold-starting Xvfbs race each other creating it in a fresh
-    container: the loser's mkdir fails with EEXIST, its unix listener is
-    never created, and its display never answers (seen on xmsvtk's runner --
-    one Xvfb per container never hit this because the first server created
-    the directory alone). One mkdir up front removes the race. The chmod
-    matches the sticky world-writable mode X expects but does not insist:
-    on a host with a real X server the directory already exists, owned by
-    root, already correct, and not ours to touch.
-    """
-    os.makedirs(_X_SOCKET_DIR, exist_ok=True)
-    try:
-        os.chmod(_X_SOCKET_DIR, 0o1777)
-    except OSError:
-        pass
-
-
-def _x_server_answers(display_number: int) -> bool:
-    """One X11 connection-setup handshake against *display_number*.
-
-    Sends the 12-byte setup request (little-endian byte order, protocol 11.0,
-    no authorization) and requires the server's success reply. Merely seeing
-    the socket file is not enough -- Xvfb binds it early in startup, before it
-    can answer a client, and a connection accepted that early still fails.
-    The Linux abstract namespace is tried first because that is Xlib's own
-    first choice, so a server that lost its filesystem listener but holds the
-    abstract one still serves the runner and counts as ready.
-    """
-    socket_path = f"{_X_SOCKET_DIR}/X{display_number}"
-    for address in (f"\0{socket_path}", socket_path):
-        probe = socket.socket(socket.AF_UNIX)
-        probe.settimeout(2)
-        try:
-            probe.connect(address)
-            probe.sendall(struct.pack("<BxHHHHxx", ord("l"), 11, 0, 0, 0))
-            if probe.recv(1) == b"\x01":
-                return True
-        except OSError:
-            pass
-        finally:
-            probe.close()
-    return False
-
-
-def _start_xvfb(display_number: int, log_path: Path):
-    """Start one Xvfb and wait until it answers the handshake.
-
-    Returns:
-        ``(process, None)`` once the server answers, or ``(process, error)``
-        with the server's captured output when it exited early or never
-        became ready -- the shard fails loudly instead of running against a
-        display that cannot serve it.
-    """
-    with open(log_path, "w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            ["Xvfb", f":{display_number}", *_XVFB_ARGS],
-            stdout=log, stderr=subprocess.STDOUT,
-        )
-    deadline = time.monotonic() + _XVFB_START_TIMEOUT
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            return process, (
-                f"Xvfb :{display_number} exited with code {process.returncode} "
-                f"before serving: {log_path.read_text(errors='replace').strip()}"
-            )
-        if _x_server_answers(display_number):
-            return process, None
-        time.sleep(0.2)
-    _stop_xvfb(process)
-    return process, (
-        f"Xvfb :{display_number} did not answer within {_XVFB_START_TIMEOUT}s: "
-        f"{log_path.read_text(errors='replace').strip()}"
-    )
-
-
-def _stop_xvfb(process) -> None:
-    """Terminate a shard's Xvfb, escalating to kill if it lingers."""
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-
 
 #: Counter attributes gtest writes on ``<testsuites>`` and ``<testsuite>``.
 #: Summed across shards on merge. ``skipped`` is absent in older gtest, hence
@@ -456,9 +339,9 @@ def _run_one_shard(runner: Path, index: int, total: int, output_dir: Path,
     started = time.monotonic()
     try:
         if xvfb:
-            display_number = _XVFB_BASE_DISPLAY + index
-            server, error = _start_xvfb(display_number,
-                                        output_dir / f"xvfb-{index}.log")
+            display_number = BASE_DISPLAY + index
+            server, error = start_server(display_number,
+                                         output_dir / f"xvfb-{index}.log")
             if error:
                 return ShardResult(
                     index=index, returncode=None,
@@ -495,7 +378,7 @@ def _run_one_shard(runner: Path, index: int, total: int, output_dir: Path,
         )
     finally:
         if server is not None:
-            _stop_xvfb(server)
+            stop_server(server)
 
 
 def _print_shard_output(result: ShardResult, total: int, stream=None) -> None:
@@ -547,7 +430,7 @@ def run_shards(runner: Path, shards: int, output_dir: Path, *, xvfb: bool = Fals
         stale.unlink()
 
     if xvfb:
-        _ensure_x_socket_dir()
+        ensure_socket_dir()
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=shards) as executor:

@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from xmsconan.job_tools.common import SKIP_CXX_TESTS_VARIABLE
+
 # Stub out the conan package so xms_conan2_file can be imported without
 # conan installed in the test environment.
 _conan_stubs = {}
@@ -360,6 +362,30 @@ class TestSkipCxxTests:
         obj.run_cxx_tests(cmake)
 
         cmake.test.assert_called_once()
+
+    def test_the_name_job_tools_sets_is_the_name_this_recipe_reads(self):
+        """The literal above and ``SKIP_CXX_TESTS_VARIABLE`` are one contract.
+
+        ``xmsconan job build --defer-cxx-tests`` sets the variable by that
+        constant, and this recipe -- which is copied into consumer repos, so
+        it cannot import it -- reads the literal. Renaming the constant alone
+        would leave the flag parsed, exported and ignored, and the only
+        symptom would be a C++ suite quietly running in two jobs.
+        """
+        obj = object.__new__(XmsConan2File)
+        obj.options = MagicMock()
+        obj.options.testing = True
+        obj.options.pybind = False
+        obj.output = MagicMock()
+
+        cmake = MagicMock()
+        os.environ[SKIP_CXX_TESTS_VARIABLE] = "1"
+        try:
+            obj.run_cxx_tests(cmake)
+        finally:
+            del os.environ[SKIP_CXX_TESTS_VARIABLE]
+
+        cmake.test.assert_not_called()
 
 
 class TestPackageId:

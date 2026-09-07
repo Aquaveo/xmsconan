@@ -573,8 +573,18 @@ def plan_ci(
             else ci_linux_python_versions[0]
         ),
         "gitlab_linux_single_py": max(ci_linux_python_versions, key=version_sort_key),
+        # The ABI segment in "Conan Build"'s export tarball name, which the
+        # deploy job restores by. Always present now: `xmsconan job build`
+        # names the tarball from $PYTHON_TARGET_VERSION, and that variable is
+        # set in the build job either way -- by the `parallel: matrix` when
+        # several ABIs are built, and by `variables:` when one is. It used to
+        # be empty in the single-ABI case because the template rendered the
+        # name itself and had the version list in hand; the tool does not, and
+        # a suffix that appeared only sometimes is exactly the kind of
+        # agreement between two files that this refactor exists to remove.
         "gitlab_linux_py_suffix": (
-            "-py${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1 else ""
+            "-py${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1
+            else f"-py{ci_linux_python_versions[0]}"
         ),
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),

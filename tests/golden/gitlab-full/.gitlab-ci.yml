@@ -38,16 +38,8 @@ Conan Build:
       - wheelhouse/
       - test_artifacts/
   script:
-    - gcc --version
-    - python --version
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - cmake --version
-    - xmsconan_conan_setup
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - export XMS_SKIP_CXX_TESTS=1
-    - xmsconan_gen build.toml
-    - xvfb-run -a -s "-screen 0 1280x1024x24" python build.py --wheel-dir wheelhouse --artifacts-dir test_artifacts
-    - xmsconan_conan_deploy xmssnap --save .export/xmssnap-linux-{version}.tar.gz
+    - xmsconan job build --defer-cxx-tests --export
 
 "Run C++ Tests - Release-testing":
   stage: Test
@@ -67,7 +59,8 @@ Conan Build:
       - TEST-cxxtest.xml
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_test_shards --artifacts-dir test_artifacts --label Release-testing --shards 4 --xvfb
+    - xmsconan job test --label Release-testing
+
 "Run C++ Tests - Debug-testing":
   stage: Test
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-x11-gdal-py3.13
@@ -86,7 +79,8 @@ Conan Build:
       - TEST-cxxtest.xml
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_test_shards --artifacts-dir test_artifacts --label Debug-testing --shards 4 --xvfb
+    - xmsconan job test --label Debug-testing
+
 "Conan Build - Windows":
   stage: Build
   image: GLR-UV
@@ -103,18 +97,11 @@ Conan Build:
       - test_artifacts/
       - wheelhouse/*.whl
   script:
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - export UV_PYTHON=${PYTHON_TARGET_VERSION}
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
-    - python --version
     - uv pip install --upgrade "xmsconan[ci]>=2.18.0,<3" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - cmake --version
-    - xmsconan_conan_setup
-    - xmsconan_gen build.toml
-    - python build.py --wheel-dir wheelhouse --skip-dependency-libs --artifacts-dir test_artifacts
-    - xmsconan_conan_deploy xmssnap --save .export/xmssnap-windows-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --package-query compiler.version=194
+    - xmsconan job build --export
   tags:
     - WinVM
 
@@ -131,19 +118,11 @@ Conan Build:
       - .export
       - test_artifacts/
   script:
-    - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - export UV_PYTHON=${PYTHON_TARGET_VERSION}
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
-    - python --version
     - uv pip install --upgrade "xmsconan[ci]>=2.18.0,<3" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - cmake --version
-    - xmsconan_conan_setup
-    - xmsconan_conan_setup --remote-name aquaveo-vs2019 --remote-url https://conan2.aquaveo.com/artifactory/api/conan/aquaveo-vs2019 --append
-    - xmsconan_gen build.toml
-    - python build.py --platform windows_vs2019 --build-missing --artifacts-dir test_artifacts
-    - xmsconan_conan_deploy xmssnap --save .export/xmssnap-windows-vs2019-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --package-query compiler.version=192
+    - xmsconan job build --platform windows_vs2019 --export
   tags:
     - WinVM
 
@@ -154,8 +133,7 @@ Lint:
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - pip install -i https://aquapi.aquaveo.com/aquaveo/dev/+simple/ flake8-aquaveo
-    - xmsconan_gen --version 0.0.0 build.toml
-    - flake8 _package
+    - xmsconan job lint
 
 Repair Wheel:
   stage: Package
@@ -164,7 +142,7 @@ Repair Wheel:
     - Conan Build
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - /opt/python/cp313-cp313/bin/xmsconan_wheel_repair --wheel-dir wheelhouse
+    - /opt/python/cp313-cp313/bin/xmsconan job package
   artifacts:
     expire_in: '1d'
     paths:
@@ -193,7 +171,7 @@ Repair Wheel:
     - source .venv/bin/activate
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan_conan_setup
-    - xmsconan_conan_deploy xmssnap --restore .export/xmssnap-linux-{version}.tar.gz --upload
+    - xmsconan_conan_deploy xmssnap --restore .export/xmssnap-linux-py3.13-{version}.tar.gz --upload
   only:
     - tags
 

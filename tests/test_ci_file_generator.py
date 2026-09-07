@@ -5,6 +5,7 @@ import re
 import pytest
 import yaml
 
+from xmsconan.build_toml import read_build_toml
 from xmsconan.constants import version_sort_key
 from xmsconan.coverage_tools.coverage_generator import EXIT_GATE_FAILED
 from xmsconan.generator_tools.ci_file_generator import (
@@ -12,6 +13,7 @@ from xmsconan.generator_tools.ci_file_generator import (
     generate_ci,
     xmsconan_requirement,
 )
+from xmsconan.job_tools import build as job_build, common as job_common
 from .ci_helpers import (
     NON_JOB_SHAPE_KEYS,
     requirement_names,
@@ -22,6 +24,7 @@ from .ci_helpers import (
     write_gitlab_toml,
 )
 from .doc_helpers import slice_between, usage_text
+from .utils import patch_env
 
 
 @pytest.mark.parametrize("input_name,expected", [
@@ -403,22 +406,25 @@ def test_gitlab_windows_jobs_install_with_uv_not_pip(tmp_path):
         assert any("xmsconan[ci]>=" in step for step in installs), name
 
 
-def test_gitlab_build_jobs_check_cmake_after_installing_the_extra(tmp_path):
-    """Each ``Conan Build`` job proves cmake resolves after the install and before the build.
+def test_gitlab_build_jobs_install_the_extra_before_the_job_command(tmp_path):
+    """Each ``Conan Build`` job installs the ``[ci]`` extra, then runs a command from it.
 
     GLR-py310 / GLR-py313 carried cmake on PATH and GLR-UV does not, so the
     Windows jobs have always had to supply it -- conan shells out to ``cmake``
     to configure every configuration, including the dependencies it builds
-    from source. The ``[ci]`` extra carries it now, to every job, and on the
-    Linux images it lands ahead of the image's own cmake on PATH. So the
-    ``cmake --version`` each build job prints has to come after the one
-    install line: printed before it, the log names a cmake that built
-    nothing, and a resolution failure resurfaces as a per-configuration build
-    error much later instead of reading as one.
+    from source. The ``[ci]`` extra carries it, and ``xmsconan job build`` is
+    itself a console script from that same extra, so the install has to come
+    first and has to be the only one: a second install line is a second
+    opinion about which version of the tool the job is running.
+
+    What the job command does *once it starts* -- print the tool versions
+    before anything builds, so a cmake that fails to resolve reads as one line
+    rather than resurfacing as a per-configuration build error much later --
+    moved into :mod:`xmsconan.job_tools.build` with the rest of the script,
+    and is asserted against the tool in ``tests/test_job_build.py``.
 
     The instrumented jobs and ``Coverage Build`` are outside this on purpose:
-    they install the same extra, but hand the build to ``xmsconan_coverage``,
-    so there is no ``python build.py`` line for the print to sit in front of.
+    they install the same extra, but hand the build to ``xmsconan_coverage``.
     """
     toml_file = write_gitlab_toml(tmp_path, windows_vs2019=True)
     output_dir = tmp_path / "output"
@@ -429,43 +435,13 @@ def test_gitlab_build_jobs_check_cmake_after_installing_the_extra(tmp_path):
         script = parsed[name]["script"]
         installs = [step for step in script if "pip install" in step]
         assert len(installs) == 1 and "xmsconan[ci]" in installs[0], f"{name}: {installs!r}"
-        # Asserted before they are indexed: a job that stopped printing the
-        # version, or stopped building, would otherwise raise ValueError from
-        # index() or min() and name neither the job nor the missing step.
-        assert "cmake --version" in script, f"{name}: {script!r}"
-        builds = [index for index, step in enumerate(script) if "python build.py" in step]
+        # Asserted before it is indexed: a job that stopped invoking the
+        # command would otherwise raise ValueError from min() and name
+        # neither the job nor the missing step.
+        builds = [index for index, step in enumerate(script)
+                  if "xmsconan job build" in step]
         assert builds, f"{name}: {script!r}"
-        check = script.index("cmake --version")
-        assert script.index(installs[0]) < check, name
-        assert check < min(builds), name
-
-
-def test_gitlab_windows_build_jobs_pin_uv_to_the_matrix_abi(tmp_path):
-    """The Windows build jobs export ``UV_PYTHON`` before anything builds a wheel.
-
-    ``uv build`` given no interpreter discovers one itself and takes the newest
-    it can see, which on GLR-UV is 3.14 regardless of which leg is running -- so
-    a 3.10 leg built a cp314 wheel and then refused to install it into its own
-    venv. The variable is what makes the wheel carry the ABI the rest of the
-    build was compiled against.
-
-    It has to be the environment rather than a flag on the recipe's own
-    command, because the msvc 192 job passes ``--build-missing``: its
-    dependencies are compiled from source by the recipe copy each was exported
-    with, and only uv's own environment reaches those.
-    """
-    parsed = _gitlab_jobs(tmp_path, windows_vs2019=True)
-
-    for name in ("Conan Build - Windows", "Conan Build - Windows VS2019"):
-        script = parsed[name]["script"]
-        export = script.index("export UV_PYTHON=${PYTHON_TARGET_VERSION}")
-        # Ahead of every uv invocation, not merely somewhere in the script: a
-        # `uv build` above the export would silently pick its own interpreter.
-        first_uv = min(
-            index for index, step in enumerate(script)
-            if step.startswith("uv ") or step.startswith("python build.py")
-        )
-        assert export < first_uv, f"{name}: exported at {export}, first uv at {first_uv}"
+        assert script.index(installs[0]) < min(builds), name
 
 
 def test_gitlab_windows_conan_cache_snapshot_follows_home(tmp_path):
@@ -553,8 +529,9 @@ def test_gitlab_ci_uses_cli_commands(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "xmsconan_conan_setup" in content
-    assert "xmsconan_wheel_repair" in content
+    assert "xmsconan job build" in content
+    assert "xmsconan job lint" in content
+    assert "xmsconan job package" in content
     assert "xmsconan_wheel_deploy" in content
     assert "xmsconan_conan_deploy" in content
     # Inline conan profile detect should NOT appear
@@ -725,8 +702,19 @@ def test_github_ci_test_artifact_upload_uses_always(ci_toml, tmp_path):
             assert "always()" in block
 
 
-def test_gitlab_ci_includes_artifacts_dir_flag(tmp_path):
-    """Rendered GitLab CI build commands include --artifacts-dir test_artifacts."""
+def test_gitlab_ci_collects_the_directories_the_job_command_writes(tmp_path):
+    """The rendered ``artifacts:`` paths are the layout the tool writes into.
+
+    These were a flag pair -- ``--artifacts-dir test_artifacts --wheel-dir
+    wheelhouse`` on the build line, spelled again in ``artifacts: paths:``
+    just below it. The flags are gone: ``xmsconan job build`` owns the layout,
+    so the template's only remaining say in it is which directories it
+    collects, and a rename on either side now silently uploads nothing.
+
+    Asserted through the constants rather than against the literals, so the
+    two ends cannot be renamed apart -- which is the whole failure this
+    replaces the flags with.
+    """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
@@ -734,23 +722,11 @@ def test_gitlab_ci_includes_artifacts_dir_flag(tmp_path):
     )
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    ci_file = output_dir / ".gitlab-ci.yml"
-    content = ci_file.read_text(encoding="utf-8")
-    assert "--artifacts-dir test_artifacts" in content
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-
-def test_gitlab_ci_includes_test_artifacts_path(tmp_path):
-    """Rendered GitLab CI artifacts paths include test_artifacts/."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
-        encoding="utf-8",
-    )
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    ci_file = output_dir / ".gitlab-ci.yml"
-    content = ci_file.read_text(encoding="utf-8")
-    assert "test_artifacts/" in content
+    paths = parsed["Conan Build"]["artifacts"]["paths"]
+    assert f"{job_common.ARTIFACTS_DIR}/" in paths, paths
+    assert f"{job_common.WHEEL_DIR}/" in paths, paths
 
 
 def test_gitlab_ci_uses_when_always(tmp_path):
@@ -767,8 +743,15 @@ def test_gitlab_ci_uses_when_always(tmp_path):
     assert "when: always" in content
 
 
-def test_gitlab_ci_sets_ctest_parallel_level(tmp_path):
-    """Rendered GitLab CI sets CTEST_PARALLEL_LEVEL in Conan Build job."""
+def test_gitlab_ci_leaves_the_ctest_level_to_the_job_command(tmp_path):
+    """No job exports CTEST_PARALLEL_LEVEL; ``set_job_environment`` sets it.
+
+    The export took the runner's value when it had one (``${VAR:-8}``) and 8
+    otherwise, and the tool reproduces exactly that. But it reproduces it by
+    *not overriding what is already set* -- so a template export left in place
+    would not merely be redundant, it would win, and the tool's default would
+    become unreachable from the one place a bigger runner can raise it.
+    """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
@@ -778,7 +761,11 @@ def test_gitlab_ci_sets_ctest_parallel_level(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}" in content
+    # Anchored on the command that now owns the variable: an absence assertion
+    # alone would pass against an empty pipeline, or one whose test job stopped
+    # rendering -- the two outcomes this is least able to notice.
+    assert "xmsconan job build" in content
+    assert job_common.CTEST_PARALLEL_VARIABLE not in content
 
 
 def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
@@ -797,7 +784,6 @@ def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "XMS_SKIP_CXX_TESTS" in content
     ci = yaml.safe_load(content)
     # Build and Test are separate stages, and the build fans out into one job
     # per configuration rather than one job looping them.
@@ -840,11 +826,11 @@ def test_gitlab_ci_no_split_tests_by_default(tmp_path):
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
     assert '"Run C++ Tests":' not in content
-    assert "XMS_SKIP_CXX_TESTS" not in content
     # No Build stage — everything stays in Test
     ci = yaml.safe_load(content)
     build_jobs = {name: job for name, job in ci.items()
-                  if isinstance(job, dict) and "build.py" in str(job.get("script", ""))}
+                  if isinstance(job, dict)
+                  if "xmsconan job build" in str(job.get("script", ""))}
     assert build_jobs, "the Linux build jobs must still be emitted"
     assert all(job["stage"] == "Test" for job in build_jobs.values()), build_jobs
     assert "Build" not in ci.get("stages", [])
@@ -866,8 +852,10 @@ def test_gitlab_ci_test_shards_run_in_one_container(tmp_path):
 
     `parallel: N` bought its concurrency by starting N containers, each
     repeating the container start, the pip install and the artifact download to
-    run one Nth of the suite. The shard count now reaches xmsconan_test_shards,
-    which forks N processes in the single container this job already has.
+    run one Nth of the suite. The shards are processes forked inside the single
+    container this job already has -- ``xmsconan job test`` reads the count
+    from build.toml, so the template no longer renders it as a flag and the
+    absence of ``parallel:`` is the whole of what it still decides.
     """
     toml_file = write_gitlab_toml(tmp_path, split_tests=True, test_shards=4, xvfb=True)
     output_dir = tmp_path / "output"
@@ -876,7 +864,6 @@ def test_gitlab_ci_test_shards_run_in_one_container(tmp_path):
     content = ci_file.read_text(encoding="utf-8")
     ci = yaml.safe_load(content)
     assert "parallel" not in ci["Run C++ Tests - Debug-testing"]
-    assert "--shards 4" in content
     # The GTEST_* variables are the shard runner's business now. Exporting them
     # from the job would pin every shard in the container to the same index.
     assert "GTEST_TOTAL_SHARDS" not in content
@@ -884,24 +871,6 @@ def test_gitlab_ci_test_shards_run_in_one_container(tmp_path):
     # The merged report is what makes a failing case visible in the MR widget.
     junit = ci["Run C++ Tests - Debug-testing"]["artifacts"]["reports"]["junit"]
     assert junit == "TEST-cxxtest.xml"
-
-
-def test_gitlab_ci_no_shards_without_config(tmp_path):
-    """Without test_shards the job runs a single shard, still via the runner script.
-
-    One code path for both cases: a single shard is the N=1 degenerate one, so
-    the artifact-finding and test_files relinking that the job needs either way
-    does not have to exist twice.
-    """
-    toml_file = write_gitlab_toml(tmp_path, split_tests=True, xvfb=True)
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    ci_file = output_dir / ".gitlab-ci.yml"
-    content = ci_file.read_text(encoding="utf-8")
-    ci = yaml.safe_load(content)
-    assert "parallel" not in ci["Run C++ Tests - Debug-testing"]
-    assert "GTEST_TOTAL_SHARDS" not in content
-    assert "--shards 1" in content
 
 
 def test_gitlab_ci_test_shards_without_split_tests_no_parallel(tmp_path):
@@ -918,22 +887,31 @@ def test_gitlab_ci_test_shards_without_split_tests_no_parallel(tmp_path):
     assert "parallel: 4" not in content
 
 
-def test_gitlab_ci_split_test_job_uses_xvfb(tmp_path):
-    """Setting xvfb = true reaches the shard runner as --xvfb.
+def test_gitlab_every_split_test_job_runs_the_job_command(tmp_path):
+    """Each test job hands its suite to ``xmsconan job test``, naming its label.
 
-    The wrapping moved into the script because each shard needs its *own*
-    display: `xvfb-run -a` picks a free server number, but between that check
-    and the bind is a window that N simultaneous starts land in.
+    Every test job, not just whichever one happens to render first -- the
+    label is the only thing that differs between them, so a template that
+    emitted the command once and the label twice would run one configuration's
+    suite twice and the other's never.
+
+    Whether that suite runs under a display is the tool's decision now: it
+    reads ``xvfb`` from build.toml, and starts one server per shard because
+    ``xvfb-run -a`` picks a free server number and then races N simultaneous
+    starts to bind it. ``tests/test_job_cli.py`` holds that end.
     """
     toml_file = write_gitlab_toml(tmp_path, split_tests=True, xvfb=True)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     ci_file = output_dir / ".gitlab-ci.yml"
     content = ci_file.read_text(encoding="utf-8")
-    # Every test job gets it, not just whichever one happens to render first.
-    sections = re.findall(r'"Run C\+\+ Tests - .*?(?=\n\S|\Z)', content, re.DOTALL)
-    assert len(sections) == 2, sections
-    assert all("--xvfb" in section for section in sections)
+    ci = yaml.safe_load(content)
+
+    jobs = {name: job for name, job in ci.items() if name.startswith("Run C++ Tests")}
+    assert len(jobs) == 2, sorted(jobs)
+    for name, job in jobs.items():
+        label = name.split(" - ", 1)[1]
+        assert f"xmsconan job test --label {label}" in job["script"], (name, job["script"])
 
 
 def _cxx_test_jobs(ci):
@@ -974,7 +952,13 @@ def test_gitlab_split_tests_runs_every_staged_testing_configuration(tmp_path):
         {"job": "Debug Build", "artifacts": True},
     ]
     # No invocation may reach the label fallback: passing --label is the fix.
-    assert "xmsconan_test_shards --artifacts-dir test_artifacts --shards" not in content
+    # Asserted over every test job rather than as the absence of an
+    # unlabelled invocation -- a marker that stops being emitted makes an
+    # absence assertion pass without checking anything.
+    for name, job in jobs.items():
+        runs = [step for step in job["script"] if "xmsconan job test" in step]
+        assert len(runs) == 1, (name, job["script"])
+        assert "--label" in runs[0].split(), (name, runs[0])
 
 
 def test_gitlab_split_test_job_uploads_only_its_own_configuration(tmp_path):
@@ -1481,17 +1465,60 @@ def test_gitlab_linux_image_tracks_the_implicit_linux_default(tmp_path):
         assert job["variables"]["PYTHON_TARGET_VERSION"] == "3.14", name
 
 
-def _linux_export_names(content):
-    """The Conan cache tarballs the Linux build jobs save, in job order.
+def _job_build_tokens(job):
+    """The single ``xmsconan job build`` invocation in a job's script, tokenized."""
+    steps = [step for step in job.get("script", []) if "xmsconan job build" in step]
+    assert len(steps) == 1, steps
+    return steps[0].split()
 
-    Windows saves one too, from its own job and under a name of its own shape
-    (``-windows-py${PYTHON_TARGET_VERSION}-``). It is matched by a bare
-    ``--save .export/`` search and would be counted as a Linux export, which is
-    how a count assertion goes green for the wrong reason.
+
+def _tool_export_name(toml_path, job, platform_key=None, platform="linux"):
+    """The tarball ``xmsconan job build --export`` saves when this job runs it.
+
+    The save name used to be rendered into the build job beside the restore
+    name in the deploy job, where a single template could keep the two in
+    step. It is computed by the tool now, from the flags on the job's command
+    and the environment GitLab gives it -- so the pairing crosses a layer, and
+    is only checkable by composing the tool the way
+    :func:`~xmsconan.job_tools.build.job_build` composes it: real packager,
+    build.toml ``[filter]``, then the leg filter.
+
+    The job's own rendered ``variables:`` stand in for the environment, which
+    is what makes ``BUILD_TYPE`` and ``PYTHON_TARGET_VERSION`` part of the
+    assertion rather than assumptions restated here. They are patched into
+    ``os.environ`` as well as passed, because the packager resolves the ABI
+    it fans pybind out over from the process environment
+    (``XmsConanPackager._resolve_python_versions``) rather than from anything
+    a caller hands it -- so a job's matrix is not reproducible without them.
     """
-    return [line.split("--save ")[1].strip()
-            for line in content.splitlines()
-            if "--save .export/" in line and "-linux-" in line]
+    tokens = _job_build_tokens(job)
+    leg = tokens[tokens.index("--leg") + 1] if "--leg" in tokens else None
+    environ = {key: str(value) for key, value in (job.get("variables") or {}).items()}
+
+    config = read_build_toml(str(toml_path))
+    with patch_env(environ):
+        builder = job_build._make_packager(config, str(toml_path), False, platform_key)
+        builder.generate_configurations(system_platform=platform_key or platform)
+    if config.filter:
+        builder.filter_configurations(config.filter)
+    leg_filter = job_common.resolve_leg(
+        leg=leg,
+        release=True,
+        release_skips_testing="--release-skips-testing" in tokens,
+        environ=environ,
+    )
+    if leg_filter:
+        builder.filter_configurations(leg_filter)
+    return job_build.export_tarball_name(
+        config.library_name, "{version}", builder.configurations, leg=leg,
+        platform_key=platform_key, platform=platform, environ=environ,
+    )
+
+
+def _restored_tarballs(job):
+    """The ``--restore`` paths a deploy job asks for, in script order."""
+    return [step.split("--restore ", 1)[1].split()[0]
+            for step in job.get("script", []) if "--restore " in step]
 
 
 def test_gitlab_linux_fanout_builds_each_abi_and_deploys_them_together(tmp_path):
@@ -1547,48 +1574,44 @@ def test_gitlab_linux_fanout_builds_each_abi_and_deploys_them_together(tmp_path)
     )
 
 
-def test_gitlab_linux_export_tarballs_are_named_per_configuration(tmp_path):
-    """Two build jobs sharing an export name would overwrite each other.
+@pytest.mark.parametrize("linux_python_versions", [["3.13", "3.14"], ["3.13"]],
+                         ids=["fanout", "single"])
+def test_gitlab_linux_saves_the_tarballs_the_deploy_restores(tmp_path, linux_python_versions):
+    """Every exporting build job's tarball is one the Linux deploy asks for.
 
-    They upload into one artifact space, so a shared name leaves whichever
-    finished last as the only tarball the deploy can restore -- and the deploy
-    would still look like it succeeded, having restored *a* package and
-    uploaded it. The name is the configuration's whole label, not just its ABI,
-    so it stays unique if a build type or an option ever splits the exporting
-    set along an axis that is not the interpreter.
-    """
-    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_python_versions=["3.13", "3.14"])
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    names = _linux_export_names(content)
-    assert len(names) == len(set(names)) == 2, names
-    for label in ("Release-pybind-py3.13", "Release-pybind-py3.14"):
-        expected = f".export/xmssnap-linux-{label}-{{version}}.tar.gz"
-        assert expected in names, (expected, names)
+    The deploy restores by name, so a build that saves one name while the
+    deploy asks for another fails only on a tag, in the job that publishes.
+    The two names are computed on opposite sides of a layer now -- the save by
+    :func:`~xmsconan.job_tools.build.export_tarball_name` at run time, the
+    restore by the template at generation time -- so nothing but this holds
+    them together.
 
-
-def test_gitlab_single_linux_version_still_qualifies_its_export_tarballs(tmp_path):
-    """The save and the restore have to spell the same name, fan-out or not.
-
-    With one ABI there is one exporting job, so nothing would collide on a bare
-    name -- but the deploy restores by name, and a build that saved a
-    label-qualified tarball while the deploy asked for a bare one would fail
-    only on a tag, in the job that publishes. The label is unconditional so the
-    two ends cannot disagree.
+    Asserted with one ABI as well as two. Nothing would collide on a bare name
+    with a single exporting job, which is exactly the condition under which a
+    qualified save and an unqualified restore both look reasonable in
+    isolation.
     """
     toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY,
-                                  linux_python_versions=["3.13"])
+                                  linux_python_versions=linux_python_versions)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    names = _linux_export_names(content)
-    assert names == [".export/xmssnap-linux-Release-pybind-py3.13-{version}.tar.gz"]
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    parsed = yaml.safe_load(content)
-    restores = [line for line in parsed["Conan Deploy - Linux"]["script"]
-                if "--restore" in line]
-    assert len(restores) == 1 and names[0] in restores[0], (restores, names)
+    exporters = {name: job for name, job in parsed.items()
+                 if isinstance(job, dict) and "Windows" not in name
+                 if "--export" in str(job.get("script", ""))}
+    assert len(exporters) == len(linux_python_versions), sorted(exporters)
+
+    saved = {name: _tool_export_name(toml_file, job) for name, job in exporters.items()}
+    # Distinct, because they land in one artifact space: a shared name leaves
+    # whichever job finished last as the only tarball there, and the deploy
+    # still exits 0 having restored *a* package and uploaded it.
+    assert len(set(saved.values())) == len(saved), saved
+
+    restored = _restored_tarballs(parsed["Conan Deploy - Linux"])
+    assert sorted(restored) == sorted(f".export/{name}" for name in saved.values()), (
+        restored, saved
+    )
 
 
 def test_gitlab_split_tests_with_multiple_linux_versions_is_rejected(tmp_path):
@@ -1658,6 +1681,58 @@ def test_version_sort_key_orders_numerically_not_lexically():
     assert sorted(["3.14", "3.9", "3.10"], key=version_sort_key) == ["3.9", "3.10", "3.14"]
 
 
+def _build_steps(pipeline):
+    """Every ``xmsconan job build`` invocation in *pipeline*, by job name."""
+    steps = {}
+    for name, job in pipeline.items():
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("script") or []:
+            if "xmsconan job build" in step:
+                steps[name] = step
+    return steps
+
+
+@pytest.mark.parametrize("matrix_table, deferring", [
+    (None, {"Conan Build"}),
+    (WHEEL_ONLY, {"Release Build", "Debug Build"}),
+])
+def test_gitlab_split_tests_defers_only_the_builds_with_a_downstream_test_job(
+        tmp_path, matrix_table, deferring):
+    """``--defer-cxx-tests`` marks the builds whose runner another job runs.
+
+    The tool cannot work this out for itself, and the collapse to
+    ``xmsconan job build`` is why: on a non-wheel_only repository the Linux
+    "Conan Build" and "Conan Build - Windows" render the *same* flagless
+    command, and only one of them has "Run C++ Tests" jobs downstream. A rule
+    keyed on ``--leg`` skipped neither, so the C++ suite ran inline in the
+    build and again in each test job; a rule keyed on ``leg is None`` would
+    skip the Windows suite, which nothing else runs.
+
+    ``tests/test_job_common.py`` holds the other end -- that the flag is what
+    sets ``XMS_SKIP_CXX_TESTS``, and that ``[ci].split_tests`` still gates it.
+    """
+    flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+    steps = _build_steps(_gitlab_jobs(tmp_path, split_tests=True, **flags))
+
+    assert steps, "no build job rendered; the rest of this asserts nothing"
+    assert {name for name, step in steps.items()
+            if "--defer-cxx-tests" in step} == deferring
+    # Named rather than left to the set comparison: the Windows job is the one
+    # a plausible fix gets wrong, because no Windows test job exists to notice.
+    assert "--defer-cxx-tests" not in steps["Conan Build - Windows"]
+
+
+@pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY])
+def test_gitlab_defers_nothing_without_split_tests(tmp_path, matrix_table):
+    """With no separate test job, the build is where the suite runs."""
+    flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+    steps = _build_steps(_gitlab_jobs(tmp_path, **flags))
+
+    assert steps, "no build job rendered; the rest of this asserts nothing"
+    assert all("--defer-cxx-tests" not in step for step in steps.values()), steps
+
+
 def _gitlab_jobs(tmp_path, **ci_flags):
     """Render a GitLab pipeline and return its parsed YAML."""
     toml_file = write_gitlab_toml(tmp_path, **ci_flags)
@@ -1687,15 +1762,19 @@ class TestVs2019Ci:
         Asserted with the opt-in *off* as well, because the msvc 194 query has to be
         unconditional: a guard that appears only in the configuration that needs it
         is one refactor away from being dropped from the one that does.
+
+        The build jobs' half of the symmetry moved with their script: their save
+        is issued by ``xmsconan job build --export``, which derives the query from
+        the configurations it actually built rather than from a rendered literal.
+        ``tests/test_job_build.py`` holds that end, including the case where the
+        configurations disagree and no query can honestly be claimed.
         """
         for vs2019 in (False, True):
             case_dir = tmp_path / f"vs2019-{vs2019}"
             case_dir.mkdir()
             pipeline = _gitlab_jobs(case_dir, windows_vs2019=vs2019)
             expected = {
-                "Conan Build - Windows": "compiler.version=194",
                 "Conan Deploy - Windows": "compiler.version=194",
-                "Conan Build - Windows VS2019": "compiler.version=192",
                 "Conan Deploy - Windows VS2019": "compiler.version=192",
             }
             for name, query in expected.items():
@@ -1748,23 +1827,22 @@ class TestVs2019Ci:
     def test_gitlab_vs2019_build_selects_the_msvc_192_matrix(self, tmp_path):
         """The build job passes --platform windows_vs2019 and nothing else does.
 
-        That flag is the whole difference in what gets compiled: it selects the
-        msvc 192 platform key, and `build.py` reads it to drop the boost option
-        defaults the legacy boost/1.74.0.3 recipe does not declare. The msvc 194
-        job must not acquire it.
+        That flag is the whole difference in what gets compiled, and it is now
+        the *only* difference the template spells: ``xmsconan job build``
+        derives the rest from it -- the msvc 192 matrix, the legacy remote, the
+        ``--build-missing`` the not-fully-prebuilt legacy graph needs, the
+        dropped boost option defaults boost/1.74.0.3 does not declare, the
+        suppressed wheel, and the tarball name. So the msvc 194 job acquiring
+        this flag would not be one wrong argument, it would be six.
         """
         pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
-        builds = [step for step in pipeline["Conan Build - Windows VS2019"]["script"]
-                  if step.startswith("python build.py")]
-        assert len(builds) == 1
-        assert "--platform windows_vs2019" in builds[0]
-        # The legacy dependency graph is not fully prebuilt for msvc 192.
-        assert "--build-missing" in builds[0]
+        builds = _job_build_tokens(pipeline["Conan Build - Windows VS2019"])
+        assert "--platform" in builds
+        assert builds[builds.index("--platform") + 1] == "windows_vs2019"
 
-        other = [step for step in pipeline["Conan Build - Windows"]["script"]
-                 if step.startswith("python build.py")]
-        assert all("--platform" not in step for step in other)
+        other = _job_build_tokens(pipeline["Conan Build - Windows"])
+        assert "--platform" not in other, other
 
     def test_gitlab_vs2019_build_publishes_no_wheel(self, tmp_path):
         """No --wheel-dir, and no wheel artifact, on either msvc 192 job.
@@ -1776,49 +1854,48 @@ class TestVs2019Ci:
         pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
         job = pipeline["Conan Build - Windows VS2019"]
-        assert all("--wheel-dir" not in step for step in job["script"])
+        # The staging half is the job command's (tests/test_job_build.py);
+        # collecting it is the template's, and is what still reads here.
         assert all("wheel" not in path for path in job["artifacts"]["paths"])
         # And no deploy job was added for a wheel that is never staged.
         assert "Wheel Deploy - Windows VS2019" not in pipeline
 
-    def test_gitlab_vs2019_jobs_keep_msvc_192_off_the_ci_remote(self, tmp_path):
-        """Every msvc 192 deploy step names the VS2019 remote and the 192 query.
+    def test_gitlab_vs2019_deploy_keeps_msvc_192_off_the_ci_remote(self, tmp_path):
+        """The msvc 192 upload names the VS2019 remote and the 192 query.
 
-        Both halves, on both jobs. The Conan cache on a runner is per machine, not
-        per job, so a save or an upload matching by reference alone would carry the
-        msvc 194 job's binaries onto a remote whose only purpose is to keep the two
-        toolchains apart -- and exit 0 having done it.
+        Both halves. The Conan cache on a runner is per machine, not per job, so
+        an upload matching by reference alone would carry the msvc 194 job's
+        binaries onto a remote whose only purpose is to keep the two toolchains
+        apart -- and exit 0 having done it.
+
+        The build job's half of this is no longer rendered: ``xmsconan job build
+        --platform windows_vs2019`` appends the legacy remote itself and queries
+        its own save by what it built. Held in ``tests/test_job_build.py``,
+        including that the remote is *appended* -- on a shared runner it must not
+        become the first stop for every ``conan install`` -- and that the CI
+        remote is still configured alongside it, because the recipe's own
+        dependencies resolve from there even on the legacy toolchain.
         """
         pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
-        deploys = [
-            step
-            for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019")
-            for step in pipeline[name]["script"]
-            if step.startswith("xmsconan_conan_deploy")
-        ]
-        assert len(deploys) == 2
-        for step in deploys:
-            assert "--package-query compiler.version=192" in step
-        upload = [step for step in deploys if "--upload" in step]
-        assert len(upload) == 1
-        assert "--remote aquaveo-vs2019" in upload[0]
+        deploys = [step for step in pipeline["Conan Deploy - Windows VS2019"]["script"]
+                   if step.startswith("xmsconan_conan_deploy")]
+        assert len(deploys) == 1
+        assert "--package-query compiler.version=192" in deploys[0]
+        assert "--upload" in deploys[0]
+        assert "--remote aquaveo-vs2019" in deploys[0]
 
-        # The VS2019 remote is added, and appended rather than inserted first: on a
-        # shared runner it must not become the first stop for every conan install.
-        for name in ("Conan Build - Windows VS2019", "Conan Deploy - Windows VS2019"):
-            setups = [step for step in pipeline[name]["script"]
-                      if step.startswith("xmsconan_conan_setup")]
-            assert any(
-                "--remote-name aquaveo-vs2019" in step and "--append" in step
-                for step in setups
-            ), name
-            # The CI remote is still configured, by a call that names no remote:
-            # the recipe's own dependencies resolve from it even on the legacy
-            # toolchain. Asserted as "an entry with no --remote-name" rather than
-            # as an exact string, so the bare call gaining an unrelated flag does
-            # not read as the CI remote having been dropped.
-            assert any("--remote-name" not in step for step in setups), name
+        setups = [step for step in pipeline["Conan Deploy - Windows VS2019"]["script"]
+                  if step.startswith("xmsconan_conan_setup")]
+        assert any(
+            "--remote-name aquaveo-vs2019" in step and "--append" in step
+            for step in setups
+        ), setups
+        # The CI remote is still configured, by a call that names no remote.
+        # Asserted as "an entry with no --remote-name" rather than as an exact
+        # string, so the bare call gaining an unrelated flag does not read as
+        # the CI remote having been dropped.
+        assert any("--remote-name" not in step for step in setups), setups
 
     def test_gitlab_vs2019_save_and_restore_spell_the_same_tarball(self, tmp_path):
         """The VS2019 build's --save name and the deploy's --restore name agree.
@@ -1828,24 +1905,34 @@ class TestVs2019Ci:
         asked for another fails only on a tag, in the job that publishes. The msvc
         192 tarball carries an extra `-vs2019-` segment to keep it distinct from the
         msvc 194 one in the same artifact space, which is exactly the kind of
-        detail one end can acquire without the other.
+        detail one end can acquire without the other -- and the two ends sit on
+        opposite sides of a layer now, the save computed by the tool at run time
+        and the restore by the template at generation time.
         """
         pipeline = _gitlab_jobs(tmp_path, windows_vs2019=True)
 
-        def tarball(job_name, flag):
-            steps = [
-                step for step in pipeline[job_name]["script"]
-                if step.startswith("xmsconan_conan_deploy") and flag in step
-            ]
-            assert len(steps) == 1, (job_name, steps)
-            return steps[0].split(flag, 1)[1].split()[0]
+        # Neither Windows build job names a leg, so the tarball's discriminator
+        # is the ABI straight from the environment and no matrix is consulted.
+        # Both jobs fan out over ABIs and so does each deploy, which is why the
+        # variable stays unexpanded on both sides and can be passed through as
+        # the literal it is.
+        def saved_name(platform_key):
+            return job_build.export_tarball_name(
+                "xmssnap", "{version}", configurations=[], leg=None,
+                platform_key=platform_key, platform="win32",
+                environ={job_common.PYTHON_TARGET_VARIABLE: "${PYTHON_TARGET_VERSION}"},
+            )
 
-        saved = tarball("Conan Build - Windows VS2019", "--save ")
-        restored = tarball("Conan Deploy - Windows VS2019", "--restore ")
-        assert saved == restored, (saved, restored)
-        # And distinct from the msvc 194 pair's, which shares the artifact space.
+        saved = saved_name("windows_vs2019")
+        restored, = _restored_tarballs(pipeline["Conan Deploy - Windows VS2019"])
+        assert restored == f".export/{saved}", (restored, saved)
+
+        # The msvc 194 pair shares the artifact space, so it is held to the
+        # same pairing and to being a different name.
         assert "-vs2019-" in saved
-        assert saved != tarball("Conan Build - Windows", "--save ")
+        assert saved != saved_name(None)
+        restored_194, = _restored_tarballs(pipeline["Conan Deploy - Windows"])
+        assert restored_194 == f".export/{saved_name(None)}", restored_194
 
     def test_gitlab_vs2019_jobs_match_the_msvc_194_shape(self, tmp_path):
         """Same runner, same ABI fan-out, same tag-gated deploy as the msvc 194 pair."""
@@ -1911,67 +1998,49 @@ class TestVs2019Ci:
         assert "GitLab-only" in caplog.text
 
 
-def test_gitlab_windows_build_stages_a_wheel(tmp_path):
-    """The Windows build job asks build.py for a wheel and keeps it as an artifact.
+def test_gitlab_windows_build_keeps_its_wheel_as_an_artifact(tmp_path):
+    """The Windows build job keeps the wheel it stages, and only the wheel.
 
-    Without both halves the wheel is built and then discarded when the job ends,
-    which is what left Windows with no publishable wheel.
+    Staging it and collecting it are two halves of one thing: without the
+    artifact entry the wheel is built and then discarded when the job ends,
+    which is what left Windows with no publishable wheel. The staging half is
+    ``xmsconan job build``'s -- it stages one whenever a pybind configuration
+    survived its filters -- so this end is what the template still decides.
     """
     job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
     # The wheels alone: `when: always` on the whole directory would upload the
     # several hundred DLLs the repair staging leaves in wheelhouse/libs.
-    assert "wheelhouse/*.whl" in job["artifacts"]["paths"]
-    assert "wheelhouse/" not in job["artifacts"]["paths"]
-    assert any("--wheel-dir wheelhouse" in step for step in job["script"])
+    assert f"{job_common.WHEEL_DIR}/*.whl" in job["artifacts"]["paths"]
+    assert f"{job_common.WHEEL_DIR}/" not in job["artifacts"]["paths"]
 
 
-def test_gitlab_windows_build_repairs_its_own_wheel(tmp_path):
-    """An opted-in Windows build job repairs in place, naming the windows platform.
+@pytest.mark.parametrize("repair", [True, False, None])
+def test_gitlab_windows_wheel_repair_is_not_a_rendered_step(tmp_path, repair):
+    """No Windows job renders a repair step, at any setting of the opt-in.
 
-    delvewheel reads the DLL imports of a win_amd64 .pyd, so the repair cannot be
-    delegated to the manylinux container that repairs the Linux wheel. GitLab
-    libraries do not repair by default, so this asks for it explicitly.
+    delvewheel reads the DLL imports of a win_amd64 .pyd, so the repair cannot
+    be delegated to the manylinux container that repairs the Linux wheel: it
+    has to happen inside the build job, which is now the job command's own
+    business. It reads ``windows_wheel_repair`` from build.toml and repairs
+    only on a Windows host, so a rendered step would be a second, unguarded
+    opinion -- one that would run the repair on a runner where the opt-in is
+    off, vendoring a private mangled msvcp140 beside a .pyd whose host
+    supplies that runtime deliberately.
+
+    Parametrized over the settings rather than looped in the body, because a
+    step rendered unconditionally and a step rendered under the flag fail
+    differently, and a loop reports one result for all three.
+    ``tests/test_job_build.py`` holds the tool's end of both.
     """
-    job = _gitlab_jobs(
-        tmp_path, windows=True, windows_wheel_repair=True
-    )["Conan Build - Windows"]
-    assert any(
-        "xmsconan_wheel_repair" in step and "--platform windows" in step
-        for step in job["script"]
-    )
+    flags = {} if repair is None else {"windows_wheel_repair": repair}
+    job = _gitlab_jobs(tmp_path, windows=True, **flags)["Conan Build - Windows"]
 
-
-def test_gitlab_windows_repair_can_be_switched_off(tmp_path):
-    """windows_wheel_repair = false drops the repair step and the libs collection.
-
-    delvewheel's ignore list excuses vcruntime140 for a cp3xx wheel but not
-    msvcp140, so a .pyd with no third-party imports still gets a mangled CRT
-    vendored beside it -- overriding the runtime XMS deliberately supplies to
-    the Python process. A library with nothing to vendor skips the step, and
-    with it the ~800-DLL collect_dependency_libs pass that only feeds it.
-    """
-    job = _gitlab_jobs(tmp_path, windows=True, windows_wheel_repair=False)["Conan Build - Windows"]
-
-    assert not any("xmsconan_wheel_repair" in step for step in job["script"])
-    # The wheel is still staged and still deployed; only the repair is gone.
-    assert any("--wheel-dir wheelhouse" in step for step in job["script"])
-    assert any("--skip-dependency-libs" in step for step in job["script"])
-
-
-def test_gitlab_windows_repair_is_off_by_default(tmp_path):
-    """A GitLab library does not repair its Windows wheel unless it asks to.
-
-    GitLab wheels are internal, published to AquaPi, and loaded only by the XMS
-    Python, which supplies the C++ runtime on PATH deliberately. delvewheel does
-    not ignore msvcp140.dll, so repairing such a wheel vendors a private mangled
-    copy of the very runtime the host is controlling. These pipelines also staged
-    no Windows wheel at all before this feature, so there is no prior repairing
-    behavior to preserve.
-    """
-    job = _gitlab_jobs(tmp_path, windows=True)["Conan Build - Windows"]
-
-    assert not any("xmsconan_wheel_repair" in step for step in job["script"])
-    assert any("--skip-dependency-libs" in step for step in job["script"])
+    # Anchored on the command that owns the decision now: without it both
+    # absences below would hold just as well for a job with no script at all,
+    # or one whose build step stopped rendering.
+    assert any("xmsconan job build" in step for step in job["script"]), job
+    assert not any("wheel_repair" in step for step in job["script"]), (repair, job)
+    assert not any("--skip-dependency-libs" in step for step in job["script"]), repair
 
 
 def test_gitlab_windows_wheel_deploy_survives_a_skipped_repair(tmp_path):
@@ -2527,11 +2596,11 @@ def test_gitlab_drops_windows_wheel_work_when_pybind_filtered_off(tmp_path):
     """The Windows leg's wheel work goes too, and the Conan deploys stay.
 
     Windows repairs its wheel in place inside the build job rather than in a
-    separate Package job, so its --wheel-dir, its repair step, and the
-    "Wheel Deploy - Windows" job each need the same gate the Linux jobs get.
-    build.py exits 1 when --wheel-dir extracts no complete set of wheels, so an
-    un-gated --wheel-dir here is a red pipeline on every branch. The two
-    "Conan Deploy" jobs publish packages rather than wheels and must survive.
+    separate Package job, so both the collected wheel artifact and the
+    "Wheel Deploy - Windows" job need the same gate the Linux jobs get. The
+    build fails when it is asked for a wheel and extracts none, so an
+    un-gated wheel here is a red pipeline on every branch. The two "Conan
+    Deploy" jobs publish packages rather than wheels and must survive.
     """
     toml_file = _write_filtered_toml(
         tmp_path, ci_type="gitlab",
@@ -2543,8 +2612,9 @@ def test_gitlab_drops_windows_wheel_work_when_pybind_filtered_off(tmp_path):
     content = (tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8")
     parsed = yaml.safe_load(content)
 
-    assert "--wheel-dir" not in content, "build.py exits 1 when no wheel is extracted"
-    assert "xmsconan_wheel_repair" not in content
+    assert all("wheel" not in path
+               for path in parsed["Conan Build - Windows"]["artifacts"]["paths"]), \
+        "a collected wheel path is a wheel this pipeline never builds"
     assert "xmsconan_wheel_deploy" not in content
     assert "Wheel Deploy - Windows" not in parsed
     assert "Conan Build - Windows" in parsed, "the Windows build itself survives"
@@ -2561,11 +2631,10 @@ def test_gitlab_keeps_windows_wheel_work_by_default(tmp_path):
     )
     generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
-    content = (tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    parsed = yaml.safe_load(content)
+    parsed = yaml.safe_load((tmp_path / ".gitlab-ci.yml").read_text(encoding="utf-8"))
 
-    assert "--wheel-dir wheelhouse" in content
-    assert "--platform windows" in content, "the in-place repair step is still emitted"
+    build = parsed["Conan Build - Windows"]
+    assert f"{job_common.WHEEL_DIR}/*.whl" in build["artifacts"]["paths"]
     assert "Wheel Deploy - Windows" in parsed
 
 
@@ -2879,37 +2948,48 @@ def test_gitlab_only_taggable_jobs_save_an_export_tarball(tmp_path):
     The deploy that restores them is ``only: tags``, so exporting from a
     branch-only job would pay the artifact upload on every branch pipeline for
     a file nothing ever reads.
+
+    Rendered ``wheel_only``, which is the shape that has more than one
+    exporting job and therefore the only one where this can go wrong. It is
+    also what keeps the test honest: the assertion is over every build job in
+    the pipeline, so a marker that stopped being emitted fails here instead of
+    quietly leaving nothing to check.
     """
-    parsed = _gitlab_jobs(tmp_path, coverage=True)
-    for name, job in parsed.items():
-        if not isinstance(job, dict) or job.get("needs") != []:
-            continue
-        saves = any("--save .export/" in step for step in job.get("script", []))
-        assert saves == (_gate(job) != "except:tags"), (name, _gate(job), saves)
+    parsed = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, coverage=True)
+    builds = {name: job for name, job in parsed.items()
+              if isinstance(job, dict)
+              if "xmsconan job build" in str(job.get("script", ""))}
+    assert len(builds) > 1, sorted(builds)
+
+    exporting = set()
+    for name, job in builds.items():
+        exports = "--export" in _job_build_tokens(job)
+        assert exports == (_gate(job) != "except:tags"), (name, _gate(job), exports)
+        if exports:
+            exporting.add(name)
+    assert exporting, sorted(builds)
 
 
 def test_gitlab_windows_tag_pipeline_narrows_its_filter(tmp_path):
-    """Windows narrows the same way, through a rules-selected variable.
+    """Windows narrows on a tag by asking the job command to, not through rules.
 
     Not through two jobs the way Linux does: this is still one job, and
     splitting it would mean either duplicating forty lines or renaming it --
     and "Conan Build - Windows" is the name both Windows deploy jobs point at.
+
+    It was a ``rules:`` block selecting a ``BUILD_MATRIX_FILTER`` variable that
+    the build line interpolated, whose two branches said "on a tag, drop the
+    testing configurations" and "otherwise, match everything". The whole of
+    that is ``--release-skips-testing``: the tool decides at run time, from the
+    version it already resolved, which is the same CI_COMMIT_TAG the rule
+    tested. Nothing selects it, so there is nothing to leave a job unreachable
+    -- which the old block needed its trailing catch-all rule to avoid.
     """
     job = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, windows=True)["Conan Build - Windows"]
 
-    # The branch default matches every configuration, so the build line can
-    # pass --filter unconditionally and quoted rather than relying on an empty
-    # variable disappearing through unquoted word splitting.
-    assert job["variables"]["BUILD_MATRIX_FILTER"] == '{"options":{}}'
-    assert job["rules"][0]["if"] == "$CI_COMMIT_TAG"
-    assert job["rules"][0]["variables"]["BUILD_MATRIX_FILTER"] == (
-        '{"options":{"testing":false}}'
-    )
-    assert job["rules"][-1] == {"when": "on_success"}, (
-        "without a catch-all rule a non-tag pipeline would drop the job"
-    )
-    build = [step for step in job["script"] if "build.py" in step]
-    assert build == [step for step in build if '--filter "${BUILD_MATRIX_FILTER}"' in step]
+    assert "BUILD_MATRIX_FILTER" not in job.get("variables", {})
+    assert "rules" not in job
+    assert "--release-skips-testing" in _job_build_tokens(job)
 
 
 def test_github_build_legs_narrow_their_filter_on_a_tag(tmp_path):
@@ -3051,8 +3131,7 @@ def test_gitlab_without_wheel_only_leaves_the_windows_build_unfiltered(tmp_path)
 
     assert "BUILD_MATRIX_FILTER" not in windows.get("variables", {})
     assert "rules" not in windows
-    build = [step for step in windows["script"] if "build.py" in step]
-    assert len(build) == 1 and "--filter" not in build[0], build
+    assert "--release-skips-testing" not in _job_build_tokens(windows)
 
 
 def test_gitlab_without_wheel_only_deploys_from_the_one_tarball(tmp_path):
@@ -3126,6 +3205,21 @@ def _script(job):
     return "\n".join(job.get("script", []))
 
 
+def _builds_a_wheel(job):
+    """Whether a job compiles a wheel and hands it on.
+
+    Both halves. ``xmsconan job build`` stages a wheel whenever a pybind
+    configuration survives its filters, which the template cannot see -- but a
+    wheel only leaves the job through an artifact entry, and that the template
+    does decide. The pair is also what keeps the repair and deploy jobs out:
+    they collect ``wheelhouse`` too, and matching on the directory alone would
+    let every consumer answer this question for itself.
+    """
+    paths = job.get("artifacts", {}).get("paths", [])
+    staged = [path for path in paths if path.startswith(job_common.WHEEL_DIR)]
+    return bool(staged) and "xmsconan job build" in _script(job)
+
+
 def _supplies_a_wheel(name, reaching, seen=None):
     """Whether `name` can hand a wheel downstream in this pipeline.
 
@@ -3138,8 +3232,7 @@ def _supplies_a_wheel(name, reaching, seen=None):
     if name in seen or name not in reaching:
         return False
     seen.add(name)
-    script = _script(reaching[name])
-    if "build.py" in script and "--wheel-dir" in script:
+    if _builds_a_wheel(reaching[name]):
         return True
     return any(_supplies_a_wheel(up, reaching, seen)
                for up in _upstreams(reaching[name]))
@@ -3164,7 +3257,7 @@ def test_gitlab_wheel_consumers_have_a_producer_in_their_own_pipeline(
 
     for name, job in reaching.items():
         script = _script(job)
-        if "xmsconan_wheel_repair" not in script and "xmsconan_wheel_deploy" not in script:
+        if "xmsconan job package" not in script and "xmsconan_wheel_deploy" not in script:
             continue
         assert _supplies_a_wheel(name, reaching), (
             f"{name!r} reads wheelhouse, but no job it depends on builds a "

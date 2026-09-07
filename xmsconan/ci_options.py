@@ -8,6 +8,8 @@ would have been the thing the option exists to prevent. The key and type
 checks that catch those now live with the ``[ci]`` schema in
 :mod:`xmsconan.build_toml`.
 """
+import sys
+
 from xmsconan.build_toml import BuildToml
 
 
@@ -39,3 +41,30 @@ def repairs_windows_wheel(config: BuildToml) -> bool:
     if config.ci.windows_wheel_repair is not None:
         return config.ci.windows_wheel_repair
     return config.ci_type != "gitlab"
+
+
+def repairs_wheel(config: BuildToml, platform: str = None) -> bool:
+    """Whether this platform's wheel gets repaired at all.
+
+    Only Windows is switchable, and the decision -- key name, type and
+    ``ci_type``-derived default -- is :func:`repairs_windows_wheel` above, so
+    this reader and the CI generator cannot disagree about it. Linux and macOS
+    have no such switch: an unrepaired manylinux wheel is not installable.
+
+    The answer also decides whether the Conan cache's shared libraries are
+    staged next to the wheel. They exist only so the repair tools can resolve
+    imports, so collecting them is pure cost once repair is off -- which is why
+    one predicate answers both questions rather than two that could disagree.
+
+    Args:
+        config: The parsed build.toml.
+        platform: ``sys.platform`` value to answer for; the running one when
+            None.
+
+    Returns:
+        True when the wheel should be repaired on that platform.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform != "win32":
+        return True
+    return repairs_windows_wheel(config)

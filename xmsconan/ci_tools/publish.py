@@ -23,66 +23,35 @@ environment variables, or ``~/.xmsconan.toml`` (see
 :mod:`xmsconan.ci_tools.credentials`).
 """
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
-import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
+from typing import Any, Callable, Optional
 
 from xmsconan._cli import add_verbosity_args, configure_logging
 from xmsconan.build_toml import read_build_toml
-from xmsconan.ci_options import repairs_windows_wheel
+from xmsconan.ci_options import repairs_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
 from xmsconan.generator_tools.version import FALLBACK_VERSION, is_release_version, resolve_version, VERSION_FLAG_HELP
+from xmsconan.job_tools import xvfb
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _repairs_wheel(config) -> bool:
-    """Whether this platform's wheel should be repaired.
-
-    Only Windows is switchable, and the decision -- key name, type and
-    ``ci_type``-derived default -- lives in :mod:`xmsconan.ci_options` so this
-    reader and the CI generator cannot disagree about it. Linux and macOS have
-    no such switch: an unrepaired manylinux wheel is not installable.
-
-    Args:
-        config: The parsed build.toml.
-
-    Returns:
-        True when the wheel should be repaired on this platform.
-    """
-    if sys.platform != "win32":
-        return True
-    return repairs_windows_wheel(config)
-
-
 def _check_xvfb(config):
-    """Check if xvfb-run should wrap commands.
+    """Whether this machine should run the build behind a virtual display.
 
-    Returns ``True`` on Linux when ``[ci].xvfb`` is set, no ``$DISPLAY`` is
-    available, and ``xvfb-run`` is on PATH.
+    A delegate, kept as a name because :class:`PublishSteps` injects it: the
+    predicate itself lives with the rest of the Xvfb handling in
+    :mod:`xmsconan.job_tools.xvfb`, which is where the four copies that used
+    to disagree about it were merged.
     """
-    if not sys.platform.startswith("linux"):
-        return False
-    if os.environ.get("DISPLAY"):
-        return False
-    if not config.ci.xvfb:
-        return False
-    if not shutil.which("xvfb-run"):
-        LOGGER.warning("ci.xvfb=true but xvfb-run not found on PATH. VTK tests may segfault.")
-        return False
-    return True
-
-
-def _xvfb_prefix():
-    """Return the xvfb-run prefix for wrapping commands."""
-    return ["xvfb-run", "-a", "-s", "-screen 0 1280x1024x24"]
+    return xvfb.wants_xvfb(config)
 
 
 @dataclass
@@ -91,14 +60,20 @@ class PublishSteps:
 
     Each field defaults to the production implementation.  Tests can
     supply fakes to avoid patching module-level names.
+
+    The fields default to None and are resolved in ``__post_init__`` rather
+    than defaulting to the functions themselves: a dataclass default is bound
+    when the class is created, which would freeze the module globals these
+    name, and the tests reach them by patching exactly those globals before
+    constructing this.
     """
 
-    conan_setup: object = field(default=None)
-    subprocess_run: object = field(default=None)
-    wheel_repair: object = field(default=None)
-    wheel_deploy: object = field(default=None)
-    conan_deploy: object = field(default=None)
-    check_xvfb: object = field(default=None)
+    conan_setup: Optional[Callable[..., Any]] = None
+    subprocess_run: Optional[Callable[..., Any]] = None
+    wheel_repair: Optional[Callable[..., Any]] = None
+    wheel_deploy: Optional[Callable[..., Any]] = None
+    conan_deploy: Optional[Callable[..., Any]] = None
+    check_xvfb: Optional[Callable[..., Any]] = None
 
     def __post_init__(self):  # noqa: D105
         if self.conan_setup is None:
@@ -155,7 +130,7 @@ def publish(
     config = read_build_toml(toml_path)
     library_name = config.library_name
     use_xvfb = steps.check_xvfb(config)
-    xvfb = _xvfb_prefix() if use_xvfb else []
+    xvfb_prefix = xvfb.run_prefix() if use_xvfb else []
 
     # 1. Setup Conan
     LOGGER.info("Setting up Conan...")
@@ -170,8 +145,8 @@ def publish(
 
     # 3. Build (wrapped with xvfb-run if needed)
     LOGGER.info("Building...")
-    repair_wheel = _repairs_wheel(config)
-    build_cmd = xvfb + [
+    repair_wheel = repairs_wheel(config)
+    build_cmd = xvfb_prefix + [
         sys.executable, "build.py",
         "--version", version,
         "--wheel-dir", wheel_dir,
