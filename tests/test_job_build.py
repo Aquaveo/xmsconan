@@ -9,7 +9,6 @@ lose.
 """
 import contextlib
 import os
-import sys
 from unittest.mock import patch
 
 import pytest
@@ -364,16 +363,37 @@ def test_no_export_unless_asked(tmp_path):
 def test_export_saves_a_tarball_under_the_fixed_export_dir(tmp_path):
     """The deploy job restores by name from one artifact space."""
     recorder = _Recorder(packager=_FakePackager(configurations=[_library_configuration()]))
-    job_build_in(tmp_path, recorder, leg="library", version="1.2.3", export=True)
+    # The platform is pinned, not inherited from the runner: it picks both the
+    # name's segment and whether ``export_package_query`` composes a query at
+    # all, so a test that reads it from ``sys`` asserts something different on
+    # each of the three CI platforms.
+    with patch.object(build.sys, "platform", "linux"):
+        job_build_in(tmp_path, recorder, leg="library", version="1.2.3", export=True)
 
     library, version, kwargs = recorder.deploy_kwargs[0]
     assert (library, version) == ("xmscore", "1.2.3")
-    # The segment is a literal per platform, not build._platform_segment() --
-    # computing the expectation with the function under test would agree with
-    # any renaming it grew.
-    segment = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    # A literal, not build._platform_segment() -- computing the expectation
+    # with the function under test would agree with any renaming it grew.
     assert kwargs["save"] == os.path.join(
-        ".export", f"xmscore-{segment}-Release-1.2.3.tar.gz")
+        ".export", "xmscore-linux-Release-1.2.3.tar.gz")
+
+
+def test_the_windows_export_carries_the_query_that_restricts_the_save(tmp_path):
+    """The save is restricted on the one platform that shares a runner cache.
+
+    Pinned here rather than left to a Windows runner to discover: the two
+    tests above take ``export_package_query``'s ``platform != "win32"``
+    early return on every other host, so nothing off Windows exercised the
+    branch that composes a query -- and the configurations a fake packager
+    hands back are the only ones that can fail to name a compiler.version.
+    """
+    configurations = [dict(_library_configuration(), **{"compiler.version": "194"})]
+    recorder = _Recorder(packager=_FakePackager(configurations=configurations))
+    with patch.object(build.sys, "platform", "win32"):
+        job_build_in(tmp_path, recorder, leg="library", version="1.2.3", export=True)
+
+    _, _, kwargs = recorder.deploy_kwargs[0]
+    assert kwargs["package_query"] == "compiler.version=194"
 
 
 # --- export naming and queries, on their own ---
@@ -500,7 +520,8 @@ def test_the_build_runs_inside_a_display_when_the_repository_asks(tmp_path):
 def test_the_display_wraps_only_the_build(tmp_path):
     """Setup and generate need no display, and the export happens after it."""
     recorder = _Recorder(packager=_FakePackager(configurations=[_library_configuration()]))
-    job_build_in(tmp_path, recorder, leg="library", version="1.2.3", export=True)
+    with patch.object(build.sys, "platform", "linux"):
+        job_build_in(tmp_path, recorder, leg="library", version="1.2.3", export=True)
 
     assert recorder.calls.index("generate") < recorder.calls.index("display-enter")
     assert recorder.calls.index("display-exit") < recorder.calls.index("conan_deploy")
