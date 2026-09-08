@@ -46,7 +46,8 @@ COMMANDS = {
     "test-shards": Command("Run staged gtest tests as parallel shards in one container",
                            "xmsconan.ci_tools.test_shards", "main"),
     "publish": Command("Build, repair, and deploy a library", "xmsconan.ci_tools.publish", "main"),
-    "job": Command("Run one CI job: build, test, package, or lint", "xmsconan.job_tools.cli", "main"),
+    "job": Command("Run one CI job: build, test, package, deploy, lint, or coverage --pages",
+                   "xmsconan.job_tools.cli", "main"),
 }
 
 

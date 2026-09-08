@@ -1222,11 +1222,12 @@ def test_gitlab_pages_builds_the_site_with_the_tool_and_no_inline_markup(tmp_pat
 
     The landing page used to be fourteen `echo`s inside a block scalar,
     rendered on both Jinja branches -- duplicated markup in a template, which
-    is the shape where the two copies drift. It also linked the C++ report
-    unconditionally, so a run whose C++ layer measured nothing published an
-    index whose first link 404s and went green. Both are
-    :mod:`xmsconan.job_tools.pages`' problem now, and
-    ``tests/test_job_pages.py`` holds the links and the missing-report case.
+    is the shape where the two copies drift. It also copied and linked the
+    C++ report unconditionally, which failed the job outright when the
+    directory was absent and served a 404 -- green -- when it was there and
+    empty. Both are :mod:`xmsconan.job_tools.pages`' problem now, and
+    ``tests/test_job_pages.py`` holds the links, the empty-report case and
+    the missing-report case.
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
@@ -1497,12 +1498,14 @@ def _tool_export_name(toml_path, job, platform_key=None, platform="linux"):
     """The tarball ``xmsconan job build --export`` saves when this job runs it.
 
     The save name used to be rendered into the build job beside the restore
-    name in the deploy job, where a single template could keep the two in
-    step. It is computed by the tool now, from the flags on the job's command
-    and the environment GitLab gives it -- so the pairing crosses a layer, and
-    is only checkable by composing the tool the way
-    :func:`~xmsconan.job_tools.build.job_build` composes it: real packager,
-    build.toml ``[filter]``, then the leg filter.
+    name in the deploy job, where a single template kept the two in step. The
+    deploy globs now, so what is left to check is the exporting jobs against
+    each other: they write into one artifact space, and a name two of them
+    share leaves whichever finished last as the only tarball there. Only the
+    tool can answer what a job writes -- it composes the name from the flags
+    on the job's command and the environment GitLab gives it -- so this
+    composes it the way :func:`~xmsconan.job_tools.build.job_build` does:
+    real packager, build.toml ``[filter]``, then the leg filter.
 
     The job's own rendered ``variables:`` stand in for the environment, which
     is what makes ``BUILD_TYPE`` and ``PYTHON_TARGET_VERSION`` part of the
@@ -1636,7 +1639,12 @@ def test_gitlab_linux_export_names_stay_distinct_and_unspelled(tmp_path,
     saved = {name: _tool_export_name(toml_file, job) for name, job in exporters.items()}
     assert len(set(saved.values())) == len(saved), saved
 
-    assert _named_tarballs(parsed["Conan Deploy - Linux"]) == [], saved
+    deploy_job = parsed["Conan Deploy - Linux"]
+    # Positive first: an emptied or renamed script: would satisfy the
+    # absence below on its own, and this test would go on passing while the
+    # pipeline published nothing.
+    assert deploy_job["script"][-1] == "xmsconan job deploy --conan-only"
+    assert _named_tarballs(deploy_job) == [], saved
 
 
 def test_gitlab_split_tests_with_multiple_linux_versions_is_rejected(tmp_path):
@@ -1934,6 +1942,10 @@ class TestVs2019Ci:
         assert saved != saved_name(None)
 
         for name in ("Conan Deploy - Windows", "Conan Deploy - Windows VS2019"):
+            # Positive first, for the reason given on the Linux deploy: an
+            # empty script: satisfies an absence assertion by itself.
+            assert pipeline[name]["script"][-1].startswith(
+                "xmsconan job deploy --conan-only"), name
             assert _named_tarballs(pipeline[name]) == [], name
 
     def test_gitlab_vs2019_jobs_match_the_msvc_194_shape(self, tmp_path):

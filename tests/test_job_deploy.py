@@ -8,6 +8,7 @@ written as literals per platform -- and both failure modes were silent: a
 restore of a path that no longer exists uploads nothing and exits 0, and so
 does an upload queried on a compiler version the matrix has moved past.
 """
+import inspect
 import os
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from xmsconan.constants import (DEFAULT_REMOTE_NAME, VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME,
                                 VS2019_REMOTE_URL)
 from xmsconan.exit_codes import EXIT_OK
+from xmsconan.generator_tools.version import FALLBACK_VERSION, GITLAB_TAG_VARIABLE
 from xmsconan.job_tools import common, deploy
 from xmsconan.package_tools.packager import configurations
 from .job_helpers import write_build_toml as _toml
@@ -123,6 +125,59 @@ def test_an_unrecognised_platform_key_falls_back_to_the_running_platform():
         DEFAULT_REMOTE_NAME, "compiler.version=194")
 
 
+# --- what a deploy refuses to publish ---
+
+
+@pytest.mark.parametrize("version, environ", [
+    (None, {"GITLAB_CI": "true"}),
+    (None, {"GITHUB_ACTIONS": "true"}),
+    (FALLBACK_VERSION, {}),
+    ("7.0.*", {}),
+])
+def test_a_version_no_release_names_is_refused_before_anything_publishes(
+        tmp_path, monkeypatch, version, environ):
+    """Both halves publish outward, so the version is asked about first.
+
+    An untagged pipeline resolves the fallback, and uploading it puts
+    ``<lib>/0.0.0`` on the remote every consumer resolves against with
+    nothing to notice; a glob would publish every version in the cache.
+    ``xmsconan conan-deploy`` refused both at its parser before ``job
+    deploy`` replaced that entry point, and ``xmsconan publish`` still does.
+
+    No generated job can reach this -- every deploy carries ``only: tags``
+    -- so what it guards is the hand-run replay USAGE 10.5 invites, and the
+    reason it is asserted here is that the deploy is the one job kind whose
+    mistake cannot be taken back.
+    """
+    recorder = _Recorder()
+    monkeypatch.chdir(tmp_path)
+    _exported(tmp_path, "xmscore-linux-Release-0.0.0.tar.gz")
+
+    with pytest.raises(ValueError, match="release version"):
+        deploy.job_deploy(toml_path=_toml(tmp_path), steps=recorder.steps(),
+                          environ=environ, version=version)
+
+    assert recorder.calls == []
+
+
+def test_the_tag_a_deploy_job_runs_under_is_accepted(tmp_path, monkeypatch):
+    """The other direction, which is the half a refusal-of-everything passes.
+
+    The guard is on the path every release takes, so a test that only
+    asserts what it rejects would let a version predicate that rejects
+    everything through.
+    """
+    recorder = _Recorder()
+    monkeypatch.chdir(tmp_path)
+    _exported(tmp_path, "xmscore-linux-Release-7.0.1.tar.gz")
+
+    assert deploy.job_deploy(
+        toml_path=_toml(tmp_path), steps=recorder.steps(), wheels=False,
+        environ={GITLAB_TAG_VARIABLE: "7.0.1"}, version=None) == EXIT_OK
+
+    assert {version for _, version, _ in recorder.deploy_kwargs} == {"7.0.1"}
+
+
 # --- what gets restored ---
 
 
@@ -187,7 +242,14 @@ def test_every_tarball_is_restored_before_the_single_upload(tmp_path, monkeypatc
 
     restores = [kwargs.get("restore") for _, _, kwargs in recorder.deploy_kwargs]
     uploads = [kwargs for _, _, kwargs in recorder.deploy_kwargs if kwargs.get("upload")]
-    assert [path is not None for path in restores] == [True, True, False]
+    # The paths, not a projection of them onto "restored something": each
+    # tarball has to be restored, and one restored twice while the other is
+    # skipped publishes half the matrix and looks identical from a count.
+    assert restores == [
+        os.path.join(common.EXPORT_DIR, "xmscore-linux-Debug-1.2.3.tar.gz"),
+        os.path.join(common.EXPORT_DIR, "xmscore-linux-Release-1.2.3.tar.gz"),
+        None,
+    ]
     assert len(uploads) == 1
     assert uploads[0]["remote"] == DEFAULT_REMOTE_NAME
     assert uploads[0]["package_query"] is None
@@ -337,3 +399,28 @@ def test_the_default_steps_are_the_real_publish_functions():
     assert steps.conan_setup is deploy._conan_setup
     assert steps.conan_deploy is deploy._conan_deploy
     assert steps.wheel_deploy is deploy._wheel_deploy
+
+
+def test_the_recorded_calls_are_calls_the_production_functions_accept():
+    """A rename in a real signature has to fail somewhere, and this is where.
+
+    Recording a call rather than reproducing it is what makes the arguments
+    assertable, and the cost is that :class:`_Recorder` accepts anything: a
+    ``conan_deploy`` that renamed ``package_query`` would leave every test in
+    this file green while the deploy raised on the runner. Binding the same
+    calls against the production signatures is the other half of that seam --
+    a signature check rather than a call, because these functions publish.
+    """
+    setup = inspect.signature(deploy._conan_setup)
+    setup.bind(login=False)
+    setup.bind(remote_name=VS2019_REMOTE_NAME, remote_url=VS2019_REMOTE_URL,
+               index=None, login=False)
+
+    conan = inspect.signature(deploy._conan_deploy)
+    conan.bind("xmscore", "1.2.3", restore="xmscore-linux-Release-1.2.3.tar.gz")
+    conan.bind("xmscore", "1.2.3", upload=True, remote=DEFAULT_REMOTE_NAME,
+               package_query="compiler.version=194")
+    conan.bind("xmscore", "1.2.3", save="release.tar.gz",
+               package_query="compiler.version=194")
+
+    inspect.signature(deploy._wheel_deploy).bind(wheel_dir=common.WHEEL_DIR)

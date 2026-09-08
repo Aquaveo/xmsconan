@@ -33,20 +33,18 @@ from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.constants import (DEFAULT_REMOTE_NAME, VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME,
-                                VS2019_REMOTE_URL)
+                                VS2019_REMOTE_URL, WINDOWS_PLATFORM_KEY)
 from xmsconan.exit_codes import EXIT_OK
-from xmsconan.generator_tools.version import resolve_version
+from xmsconan.generator_tools.version import (FALLBACK_VERSION, is_release_version,
+                                              resolve_version)
 from xmsconan.job_tools import common
 from xmsconan.package_tools.packager import only_msvc_version
 
-#: Tarballs this job restores, newest-last by name so a run's log reads in a
-#: stable order. ``job build`` writes them; see
+#: Tarballs this job restores, in name order -- not newest-first or -last,
+#: which the names do not encode: sorted so two runs over the same artifacts
+#: log the same sequence. ``job build`` writes them; see
 #: :func:`~xmsconan.job_tools.build.export_tarball_name`.
 EXPORT_GLOB = "*.tar.gz"
-
-#: The matrix key whose ``compiler.version`` the non-VS2019 Windows jobs pin.
-#: Spelled once so the query and the generated build both read the same row.
-WINDOWS_PLATFORM_KEY = "windows"
 
 
 def upload_target(platform_key=None, platform=None):
@@ -148,6 +146,11 @@ class DeploySteps:
 def _deploy_conan(config, version, platform, steps, cache_archive, environ):
     """Restore every exported tarball into this cache, then publish once."""
     remote, package_query = upload_target(platform_key=platform)
+    # Read before `conan_setup`, not after: on a miss this job has nothing to
+    # publish either way, and setup rewrites a `remotes.json` that several
+    # jobs on a shared Windows runner write at once (USAGE 10.2). A failure
+    # that touched nothing is one less concurrent writer for no benefit.
+    tarballs = exported_tarballs()
 
     with common.log_section("Conan setup", environ=environ):
         # No login, for the reason `job build` states: Conan reads
@@ -161,7 +164,6 @@ def _deploy_conan(config, version, platform, steps, cache_archive, environ):
             steps.conan_setup(remote_name=VS2019_REMOTE_NAME,
                               remote_url=VS2019_REMOTE_URL, index=None, login=False)
 
-    tarballs = exported_tarballs()
     with common.log_section("Restore exported packages", environ=environ):
         for tarball in tarballs:
             print(f"Restoring {tarball}")
@@ -191,7 +193,8 @@ def job_deploy(platform=None, version=None, toml_path="build.toml", conan=True, 
         platform: The build.toml matrix key whose remote this publishes to.
             Only ``windows_vs2019`` changes anything; every other job's remote
             and query follow the running platform.
-        version: Package version. Resolved from the CI environment when None.
+        version: Package version. Resolved from the CI environment when None,
+            and refused when that resolves to something nobody released.
         toml_path: Path to build.toml, read for the library name.
         conan: Restore the exported tarballs and upload them.
         wheels: Upload the staged wheels.
@@ -203,11 +206,29 @@ def job_deploy(platform=None, version=None, toml_path="build.toml", conan=True, 
     Returns:
         :data:`~xmsconan.exit_codes.EXIT_OK`. Every failure raises, and
         :func:`~xmsconan._cli.run_main` turns it into one line and exit 1.
+
+    Raises:
+        ValueError: The version is not one a release names, or -- from
+            :func:`exported_tarballs`, which is the likelier fault --
+            ``.export/`` is missing or holds no tarball.
     """
     steps = DeploySteps() if steps is None else steps
     environ = os.environ if environ is None else environ
 
     version = resolve_version(version, environ=environ)
+    if not is_release_version(version):
+        # Asked before either half runs, because both publish outward and
+        # neither takes it back: a Conan reference every consumer resolves
+        # against, and a wheel on the index they install from. The entry
+        # points this replaced refused it -- `xmsconan conan-deploy` at its
+        # parser, `xmsconan publish` before its first step -- and a generated
+        # job cannot reach it, every deploy being `only: tags`, so what this
+        # guards is the hand-run replay USAGE 10.5 invites.
+        raise ValueError(
+            f"deploy needs a release version, not {version!r}: {FALLBACK_VERSION} is what an "
+            "untagged build resolves to, and a glob would publish every version in the cache. "
+            "Run it from a tag pipeline, or pass --version."
+        )
     config = read_build_toml(toml_path)
     print(f"Deploying {config.library_name} {version}.")
 

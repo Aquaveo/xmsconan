@@ -85,6 +85,17 @@ MSVC_VS2019_VERSION = "192"
 VS2019_PLATFORM_KEY = "windows_vs2019"
 
 
+#: Key into :data:`xmsconan.package_tools.packager.configurations` selecting
+#: the msvc 194 matrix -- the Windows one every job outside the VS2019 track
+#: builds and publishes.
+#:
+#: Beside its sibling above rather than in its one reader
+#: (:mod:`xmsconan.job_tools.deploy`): the two keys name the two halves of
+#: one decision, and a reader who finds one of them here should not have to
+#: learn that the other lives somewhere else.
+WINDOWS_PLATFORM_KEY = "windows"
+
+
 #: Build-folder suffix for each CMake generator.  CMake refuses to reuse a
 #: binary directory configured by a different generator, so a Ninja build and a
 #: Visual Studio build of the same recipe need separate folders.

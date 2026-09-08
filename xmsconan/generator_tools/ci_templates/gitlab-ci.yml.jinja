@@ -665,10 +665,11 @@ Repair Wheel:
 <% if ci_wheel_enabled_windows %>
 "Wheel Deploy - Windows":
   stage: Deploy
-<# Runs on a plain Linux image, not a WinVM: xmsconan_wheel_deploy is a devpi
-   upload of a wheel the build job already finished with -- repaired there or
-   not, depending on [ci].windows_wheel_repair -- so it needs no MSVC toolchain
-   and no Windows host. The wheels arrive as artifacts from the build job. #>
+<# Runs on a plain Linux image, not a WinVM: `job deploy --wheels-only` is a
+   devpi upload of a wheel the build job already finished with -- repaired there
+   or not, depending on [ci].windows_wheel_repair -- so it needs no MSVC
+   toolchain and no Windows host. The wheels arrive as artifacts from the build
+   job. #>
   image: python:3.13
 <# Depend on the whole build job rather than one parallel instance, for the same
    reason spelled out on "Conan Deploy - Windows" below. Every matrix instance
@@ -715,7 +716,8 @@ Repair Wheel:
    toolchain's binaries beside this job's -- unreliable for the one question it
    existed to answer, and nothing consumed it. `xmsconan job deploy
    --cache-archive PATH` writes the queried equivalent for anyone who wants a
-   snapshot back; the GitHub template uses it for the release asset. #>
+   snapshot back. Nothing generated passes it yet: the GitHub workflows still
+   archive their release asset with `xmsconan_conan_deploy --save`. #>
   script:
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
@@ -734,16 +736,11 @@ Repair Wheel:
 
 <% if ci_windows_vs2019 %>
 <# Publishes what "Conan Build - Windows VS2019" exported, to
-   << vs2019_remote_name >> rather than to the CI remote. The package query is
-   repeated here rather than trusted from the save step: this is the command
-   that actually reaches a shared remote, and a tarball restored into a cache
-   that already holds msvc 194 binaries of the same reference would otherwise
-   publish those too.
+   << vs2019_remote_name >> rather than to the CI remote. Nothing about that
+   pairing is rendered here any more -- see the note on the command below.
 
-   No wheel deploy counterpart, and no `conan_packages/` snapshot -- see the
-   header on the build job for the wheel reasoning; the snapshot exists to
-   debug the msvc 194 pair and a second copy of it would only double the
-   artifact. #>
+   No wheel deploy counterpart: see the header on the build job for the
+   reasoning. #>
 "Conan Deploy - Windows VS2019":
   stage: Deploy
   image: GLR-UV
@@ -915,8 +912,9 @@ Coverage:
 
 <# Report-only: no conan, no compiler, no gcovr -- it reads the JSON the job
    above produced and applies the [coverage] thresholds. It re-declares the
-   artifacts so `pages` keeps taking them from this job, and so the cobertura
-   report is attached to the job whose result the MR widget shows. #>
+   XML so the cobertura report is attached to the job whose result the MR
+   widget shows; the rendered HTML is deliberately not re-declared here, and
+   `pages` takes that from "Coverage Build" for the reason given below. #>
 Coverage:
   stage: Coverage
   needs:
@@ -966,10 +964,12 @@ Coverage:
    drift. The markup is `xmsconan job coverage --pages` now, so the one real
    difference is all that is left here.
 
-   That command also fixes what the shell could not. `cp -r coverage-html-cpp
-   public/cpp` on a run whose C++ layer measured nothing printed to stderr,
-   carried on, and published an index whose first link 404s; the tool copies and
-   links exactly the reports that exist.
+   That command also fixes what the shell decided in two places. `cp -r
+   coverage-html-cpp public/cpp` ran unconditionally and the C++ link was
+   printed unconditionally, so a run whose C++ layer measured nothing failed on
+   the `cp` and published no page at all -- and a run that left the directory
+   behind empty copied it, linked it, and served a 404, green. The tool copies
+   and links exactly the reports that have an index.html to link to.
 
    The dependency is the job that *renders* the HTML, and that is not the same
    job in the two layouts. Either way it publishes on a gate miss -- the run you

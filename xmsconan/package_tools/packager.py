@@ -181,10 +181,26 @@ def only_msvc_version(platform_key: str) -> str:
         The compiler version as a string.
 
     Raises:
-        ValueError: When the matrix pins more or fewer than one version, which
-            would make "the version this job publishes" ambiguous.
+        ValueError: When *platform_key* is not a key, does not name an msvc
+            matrix, or pins more or fewer than one version -- each of which
+            makes "the version this job publishes" ambiguous or wrong.
     """
-    versions = configurations[platform_key]["compiler.version"]
+    if platform_key not in configurations:
+        raise ValueError(
+            f"no {platform_key!r} in the matrix; it holds "
+            f"{', '.join(sorted(configurations))}."
+        )
+    row = configurations[platform_key]
+    if row["compiler"] != ["msvc"]:
+        # The failure this function exists to prevent, one level up: a
+        # non-Windows key answers with its own compiler's version, and
+        # `conan upload -p compiler.version=13` on a Windows publish matches
+        # nothing and exits 0 having published nothing.
+        raise ValueError(
+            f"platform {platform_key!r} builds with {'/'.join(row['compiler'])}, not msvc; "
+            f"its compiler.version names no toolchain a Windows publish can restrict to."
+        )
+    versions = row["compiler.version"]
     if len(versions) != 1:
         raise ValueError(
             f"platform {platform_key!r} pins {len(versions)} compiler.version values "

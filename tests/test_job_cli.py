@@ -331,8 +331,12 @@ def test_deploy_refuses_to_publish_neither_half():
 
 def test_deploy_rejects_a_platform_outside_the_packager_matrix():
     """The choices are matrix keys, so a typo cannot silently mean "detect"."""
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         cli.build_parser().parse_args(["deploy", "--platform", "windows-vs2019"])
+
+    # Pinned for the reason given at the top of this file: an unpinned
+    # SystemExit also accepts a clean exit 0 from a --help that swallowed it.
+    assert excinfo.value.code == 2
 
 
 def test_main_dispatches_deploy_with_the_flags_it_parsed(tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ moved out of the template is that the shell could not tell a missing report
 from a copied one, so "what is on disk afterwards" is the property under test.
 """
 import pathlib
+import sys
 
 import pytest
 
@@ -53,9 +54,10 @@ def test_only_the_reports_that_exist_are_copied_and_linked(
 
     The pairing is the whole point. The shell version ran ``cp -r
     coverage-html-cpp public/cpp`` unconditionally and linked it
-    unconditionally, so a pipeline whose C++ layer did not measure printed one
-    line to stderr, carried on, and published an index whose first link 404s
-    -- green.
+    unconditionally, while guarding the Python half with a ``[ -d ]``, so a
+    pipeline whose C++ layer did not measure failed on the ``cp`` and
+    published nothing at all -- and one that left the directory behind empty
+    copied it, linked it, and served a 404, green.
 
     Asserted in both directions, because the C++ half is the one that was
     unconditional and a fix that merely swapped which half is assumed would
@@ -71,6 +73,60 @@ def test_only_the_reports_that_exist_are_copied_and_linked(
     assert not (destination / absent).exists()
     assert f'href="{linked}/index.html"' in _index(destination)
     assert absent not in _index(destination)
+
+
+def test_a_report_directory_without_an_index_is_not_published(tmp_path):
+    """A gcovr run can leave its output directory behind having rendered nothing.
+
+    That directory is what the shell's unconditional ``cp -r`` copied
+    happily, and the link printed beside it 404s -- the same broken page as a
+    missing report, without the failed job that would have said so. So the
+    question is the file the link resolves to, not the directory holding it.
+    """
+    source = _render(tmp_path / "src", "coverage-html-py")
+    (source / "coverage-html-cpp").mkdir()
+    destination = tmp_path / pages.PAGES_DIR
+
+    assert pages.write_pages("xmscore", source_dir=source,
+                             pages_dir=destination) == ["python"]
+
+    assert not (destination / "cpp").exists()
+    assert "cpp" not in _index(destination)
+
+
+def test_an_empty_report_directory_alone_is_no_report_at_all(tmp_path):
+    """The same question, asked where it decides the job's exit code."""
+    source = _render(tmp_path / "src")
+    (source / "coverage-html-cpp").mkdir()
+
+    with pytest.raises(ValueError, match="no coverage report to publish"):
+        pages.write_pages("xmscore", source_dir=source, pages_dir=tmp_path / "public")
+
+
+def test_a_destination_file_is_named_rather_than_removed(tmp_path):
+    """The tree is replaced wholesale, so the path has to be one this owns.
+
+    Saying which it found instead is the difference between "that is not the
+    directory you meant" and an error from inside ``shutil``.
+    """
+    source = _render(tmp_path / "src", "coverage-html-cpp")
+    destination = tmp_path / pages.PAGES_DIR
+    destination.write_text("not a site", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a directory this can replace"):
+        pages.write_pages("xmscore", source_dir=source, pages_dir=destination)
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="creating a symlink needs a privilege the runner may not hold")
+def test_a_destination_symlink_is_named_rather_than_removed(tmp_path):
+    """``shutil.rmtree`` refuses a symlink, with an OSError that reads as a bug here."""
+    source = _render(tmp_path / "src", "coverage-html-cpp")
+    destination = tmp_path / pages.PAGES_DIR
+    destination.symlink_to(_render(tmp_path / "elsewhere"), target_is_directory=True)
+
+    with pytest.raises(ValueError, match="not a directory this can replace"):
+        pages.write_pages("xmscore", source_dir=source, pages_dir=destination)
 
 
 def test_no_report_at_all_raises_rather_than_publishing_an_empty_index(tmp_path):
