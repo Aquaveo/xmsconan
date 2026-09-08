@@ -91,7 +91,7 @@ Repair Wheel:
     - Repair Wheel
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_wheel_deploy --wheel-dir wheelhouse
+    - xmsconan job deploy --wheels-only
   only:
     - tags
 
@@ -106,8 +106,7 @@ Repair Wheel:
     - python3 -m venv .venv
     - source .venv/bin/activate
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
-    - xmsconan_conan_deploy xmssnap --restore .export/xmssnap-linux-py3.13-{version}.tar.gz --upload
+    - xmsconan job deploy --conan-only
   only:
     - tags
 
@@ -119,7 +118,7 @@ Repair Wheel:
       artifacts: true
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_wheel_deploy --wheel-dir wheelhouse
+    - xmsconan job deploy --wheels-only
   only:
     - tags
 
@@ -127,36 +126,32 @@ Repair Wheel:
   stage: Deploy
   # GLR-UV and `uv venv`, for the reasons spelled out on "Conan Build -
   # Windows" above. This job only restores and uploads a cache tarball, so it
-  # does not compile against the interpreter -- it still builds the venv on
-  # the matrix ABI so both Windows jobs bootstrap identically and neither can
-  # be the one that rots.
+  # does not compile against the interpreter; it still bootstraps its venv the
+  # way the build job does so neither of the two can be the one that rots.
   image: GLR-UV
-  parallel:
-    matrix:
-      - PYTHON_TARGET_VERSION: '3.13'
+  variables:
+    # No `parallel: matrix` any more. Restoring and uploading is
+    # ABI-independent, and `needs: artifacts: true` on a fanned-out build hands
+    # every instance the whole set of tarballs -- so N deploy instances each
+    # restored all N and raced to upload the same Conan reference. The
+    # per-instance `--restore` name was what kept them apart, and it is gone
+    # now that `job deploy` globs `.export/`. The venv still needs *an*
+    # interpreter, so this pins the newest ABI the matrix builds.
+    PYTHON_TARGET_VERSION: '3.13'
   # Depend on the whole build job rather than selecting one parallel instance.
   # GitLab does not expand variables inside needs:parallel:matrix, so a selector
   # like "PYTHON_TARGET_VERSION: $PYTHON_TARGET_VERSION" is compared literally,
   # matches no job, and fails the whole pipeline at config time with
-  # "undefined need". Listing the matrix values instead would make every deploy
-  # instance need every build instance anyway, so this is equivalent and cannot
-  # drift out of sync with the matrix above.
+  # "undefined need".
   needs:
     - job: "Conan Build - Windows"
       artifacts: true
-  artifacts:
-    expire_in: '1d'
-    paths:
-      - conan_packages/
   script:
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/Scripts/activate
     - uv pip install --upgrade "xmsconan[ci]>=2.18.0,<3" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
-    - xmsconan_conan_deploy xmssnap --restore .export/xmssnap-windows-py${PYTHON_TARGET_VERSION}-{version}.tar.gz --upload --package-query compiler.version=194
-    - mkdir -p conan_packages
-    - cp -r ${HOME}/.conan2/p/* conan_packages/ || echo "warning - no Conan packages under ${HOME}/.conan2/p, conan_packages/ artifact will be empty"
+    - xmsconan job deploy --conan-only
   only:
     - tags
   tags:

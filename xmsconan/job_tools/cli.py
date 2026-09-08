@@ -5,10 +5,13 @@ these pipelines, ``build`` is already the library build, and what the argument
 names is a *job* in the pipeline the generator wrote -- the same word GitLab
 and GitHub both use for the thing whose ``script:`` this replaces.
 
-Only ``build`` and ``lint`` are implemented here. ``test`` and ``package`` are
-the existing ``test_shards`` and ``wheel_repair`` with their arguments filled
-in from ``build.toml`` and the fixed output layout, which is the whole reason
-the template rendered flags onto them; neither is rewritten.
+``build``, ``deploy``, ``lint`` and ``coverage --pages`` are implemented in
+this package. ``test`` and ``package`` are the existing ``test_shards`` and
+``wheel_repair`` with their arguments filled in from ``build.toml`` and the
+fixed output layout, which is the whole reason the template rendered flags onto
+them; neither is rewritten. ``coverage`` takes only ``--pages`` for now -- its
+measure and report phases are still ``xmsconan coverage --phase``, which the
+generated coverage jobs call directly.
 """
 import argparse
 import logging
@@ -23,8 +26,10 @@ from xmsconan.constants import VS2019_PLATFORM_KEY
 from xmsconan.exit_codes import EXIT_OK
 from xmsconan.generator_tools.build_file_generator import generate_build_files
 from xmsconan.generator_tools.version import FALLBACK_VERSION, VERSION_FLAG_HELP
-from xmsconan.job_tools import common, xvfb
+from xmsconan.job_tools import common, pages, xvfb
 from xmsconan.job_tools.build import job_build
+from xmsconan.job_tools.deploy import job_deploy
+from xmsconan.job_tools.pages import job_coverage_pages
 from xmsconan.package_tools import packager
 
 LOGGER = logging.getLogger(__name__)
@@ -143,6 +148,38 @@ def _add_build_arguments(parser):
     )
 
 
+def _add_deploy_arguments(parser):
+    """Flags for ``job deploy``."""
+    parser.add_argument(
+        "--platform", default=None, choices=sorted(packager.configurations),
+        help="Matrix whose remote this publishes to. Default: detect from the "
+             f"running machine. Only {VS2019_PLATFORM_KEY} changes the answer, "
+             "sending its binaries to the VS2019 remote instead of the CI one.",
+    )
+    # Mutually exclusive rather than two independent switches: passing both
+    # would ask for a deploy that publishes nothing, and the argument parser is
+    # a better place to learn that than a green job with an empty log.
+    halves = parser.add_mutually_exclusive_group()
+    halves.add_argument(
+        "--conan-only", action="store_true",
+        help="Publish the Conan packages and not the wheels. GitLab uploads "
+             "wheels from a separate job on a plain Python image.",
+    )
+    halves.add_argument(
+        "--wheels-only", action="store_true",
+        help="Publish the wheels and not the Conan packages.",
+    )
+    parser.add_argument(
+        "--cache-archive", default=None, metavar="PATH",
+        help="After uploading, write a Conan cache tarball here for a forge to "
+             "attach to the release.",
+    )
+    parser.add_argument(
+        "--version", default=None,
+        help=f"Package version string. {VERSION_FLAG_HELP}",
+    )
+
+
 def _add_toml_argument(parser):
     """The ``--toml`` flag, on every subcommand that reads build.toml."""
     parser.add_argument(
@@ -184,6 +221,23 @@ def build_parser():
     package = subparsers.add_parser("package", help="Repair the staged wheels for this platform.")
     add_verbosity_args(package)
 
+    deploy = subparsers.add_parser("deploy", help="Publish the exported packages and wheels.")
+    _add_deploy_arguments(deploy)
+    _add_toml_argument(deploy)
+    add_verbosity_args(deploy)
+
+    coverage = subparsers.add_parser(
+        "coverage", help="Assemble the coverage site from the rendered reports.")
+    coverage.add_argument(
+        "--pages", action="store_true", required=True,
+        help=f"Write the {pages.PAGES_DIR}/ tree and its index from the "
+             "coverage-html-* directories the coverage job rendered. Required: "
+             "the measure and report phases are `xmsconan coverage --phase`, "
+             "and this subcommand does not stand in for them.",
+    )
+    _add_toml_argument(coverage)
+    add_verbosity_args(coverage)
+
     lint = subparsers.add_parser("lint", help="Generate the build files and lint the package.")
     _add_toml_argument(lint)
     add_verbosity_args(lint)
@@ -218,6 +272,17 @@ def _main():
                         runner_args=args.runner_args, timeout=args.timeout)
     if args.kind == "package":
         return job_package()
+    if args.kind == "deploy":
+        return job_deploy(
+            platform=args.platform,
+            version=args.version,
+            toml_path=args.toml_path,
+            conan=not args.wheels_only,
+            wheels=not args.conan_only,
+            cache_archive=args.cache_archive,
+        )
+    if args.kind == "coverage":
+        return job_coverage_pages(read_build_toml(args.toml_path).library_name)
     return job_lint(toml_path=args.toml_path)
 
 

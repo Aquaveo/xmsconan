@@ -468,8 +468,11 @@ def test_disagreeing_configurations_refuse_to_save_rather_than_save_unqueried():
     Warning and returning None left the caller saving every binary in a
     runner's shared cache -- which on a fleet running both toolchains at once
     is how msvc 192 packages reach the remote that exists to keep them apart.
-    The generator raises on the same condition one layer up
-    (``ci_file_generator._only_msvc_version``), so this agrees with it.
+    :func:`~xmsconan.package_tools.packager.only_msvc_version` refuses the
+    same ambiguity from the other side -- it answers for a matrix *row*, and
+    raises when the row pins more than one version -- so a build's save and a
+    deploy's upload cannot disagree about what "the version this publishes"
+    means.
     """
     configurations = [
         {"build_type": "Release", "compiler.version": "194"},

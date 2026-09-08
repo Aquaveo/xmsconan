@@ -100,9 +100,9 @@ def export_package_query(configurations, platform=None):
         ValueError: A Windows build whose configurations do not agree on a
             single ``compiler.version``. Saving unqueried is the failure this
             query exists to prevent, so there is nothing safe to fall back to
-            -- the generator's own
-            :func:`~xmsconan.generator_tools.ci_file_generator._only_msvc_version`
-            raises on the same condition, one layer up.
+            -- :func:`~xmsconan.package_tools.packager.only_msvc_version`,
+            which the deploy's query and the generated template both read,
+            raises on the same condition one layer up.
     """
     platform = sys.platform if platform is None else platform
     if platform != "win32":

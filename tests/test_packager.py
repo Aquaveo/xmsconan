@@ -14,6 +14,7 @@ from xmsconan.constants import (
     DEFAULT_REMOTE_NAME,
     GENERATOR_FOLDER_SUFFIXES,
     MSVC_VS2019_VERSION,
+    VS2019_PLATFORM_KEY,
     VS2019_REMOTE_NAME,
 )
 from xmsconan.job_tools.common import SKIP_CXX_TESTS_VARIABLE
@@ -22,6 +23,7 @@ from xmsconan.package_tools.packager import (
     configurations,
     emitted_buildenv_keys,
     get_current_arch,
+    only_msvc_version,
     PUBLIC_BUILDENV_KEYS,
     summarize_filter_matches,
     validate_filter_dict,
@@ -2873,3 +2875,35 @@ def test_one_shard_without_an_artifacts_dir_is_still_allowed():
     p = XmsConanPackager("xmscore", test_shards=1)
 
     assert p is not None
+
+
+def test_only_msvc_version_reads_the_windows_rows():
+    """The two Windows matrices, which is the whole question it answers.
+
+    `xmsconan job deploy` restricts a Windows publish to this value rather than
+    to a literal rendered into the CI file, so the reading has to stay here for
+    a toolchain bump to reach the upload at all.
+    """
+    assert only_msvc_version("windows") == "194"
+    assert only_msvc_version(VS2019_PLATFORM_KEY) == MSVC_VS2019_VERSION
+
+
+def test_only_msvc_version_refuses_a_row_that_is_not_msvc():
+    """Answering for `linux` would hand a Windows publish gcc's version.
+
+    And that failure is the silent one this function exists to remove one level
+    up: `conan upload -p compiler.version=13` matches nothing and exits 0
+    having published no binaries at all. The name says msvc, so the row has to.
+    """
+    with pytest.raises(ValueError, match="not msvc"):
+        only_msvc_version("linux")
+
+
+def test_only_msvc_version_names_an_unknown_key_rather_than_raising_keyerror():
+    """A KeyError from a dict lookup reads as a bug in this module.
+
+    Every other refusal here is a ValueError carrying what was wrong and what
+    the alternatives are; a bare key name is neither.
+    """
+    with pytest.raises(ValueError, match="windows-vs2019"):
+        only_msvc_version("windows-vs2019")

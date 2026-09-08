@@ -46,10 +46,13 @@ def test_a_kind_is_required():
     assert excinfo.value.code == 2
 
 
-@pytest.mark.parametrize("kind", ["build", "test", "package", "lint"])
-def test_every_documented_kind_parses(kind):
-    """The four jobs a generated pipeline invokes."""
-    assert cli.build_parser().parse_args([kind]).kind == kind
+@pytest.mark.parametrize("kind, extra", [
+    ("build", []), ("test", []), ("package", []), ("deploy", []), ("lint", []),
+    ("coverage", ["--pages"]),
+])
+def test_every_documented_kind_parses(kind, extra):
+    """The six jobs a generated pipeline invokes."""
+    assert cli.build_parser().parse_args([kind] + extra).kind == kind
 
 
 def test_build_flags_default_to_the_whole_matrix():
@@ -293,6 +296,128 @@ def test_job_lint_does_not_raise_on_a_lint_failure(tmp_path):
         cli.job_lint(toml_path=_toml(tmp_path), runner=_runner)
 
     assert checks == [False]
+
+
+# --- deploy ---
+
+
+def test_deploy_defaults_to_publishing_both_halves():
+    """A bare ``job deploy`` is the GitHub shape: one job, everything it built.
+
+    Each narrowing is opt-in so a job that forgot a flag publishes too much
+    rather than silently publishing nothing -- the failure a deploy is worst
+    at reporting, because uploading no binaries exits 0.
+    """
+    args = cli.build_parser().parse_args(["deploy"])
+    assert args.platform is None
+    assert args.conan_only is False
+    assert args.wheels_only is False
+    assert args.cache_archive is None
+    assert args.version is None
+    assert args.toml_path == "build.toml"
+
+
+def test_deploy_refuses_to_publish_neither_half():
+    """``--conan-only --wheels-only`` asks for a deploy that publishes nothing.
+
+    Two independent switches would accept it and the job would go green with
+    an empty log; a mutually exclusive group says so at parse time.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.build_parser().parse_args(["deploy", "--conan-only", "--wheels-only"])
+
+    assert excinfo.value.code == 2
+
+
+def test_deploy_rejects_a_platform_outside_the_packager_matrix():
+    """The choices are matrix keys, so a typo cannot silently mean "detect"."""
+    with pytest.raises(SystemExit) as excinfo:
+        cli.build_parser().parse_args(["deploy", "--platform", "windows-vs2019"])
+
+    # Pinned for the reason given at the top of this file: an unpinned
+    # SystemExit also accepts a clean exit 0 from a --help that swallowed it.
+    assert excinfo.value.code == 2
+
+
+def test_main_dispatches_deploy_with_the_flags_it_parsed(tmp_path, monkeypatch):
+    """Every ``job deploy`` flag has to reach :func:`job_deploy`.
+
+    ``--conan-only`` and ``--wheels-only`` are the pair worth watching: they
+    are parsed as two switches and passed as two independent booleans, so an
+    inverted one publishes the wrong half from a job that looks right.
+    """
+    monkeypatch.setattr("sys.argv", [
+        "xmsconan job", "deploy", "--platform", "windows_vs2019", "--conan-only",
+        "--cache-archive", "release.tar.gz", "--version", "1.2.3",
+        "--toml", _toml(tmp_path),
+    ])
+
+    # autospec, so that renaming a job_deploy parameter fails here instead of
+    # being absorbed by a fake that accepts any keyword at all.
+    with patch.object(cli, "job_deploy", autospec=True) as job_deploy:
+        job_deploy.return_value = EXIT_OK
+        assert cli.main() == EXIT_OK
+
+    recorded = job_deploy.call_args.kwargs
+    assert recorded["platform"] == "windows_vs2019"
+    assert recorded["conan"] is True
+    assert recorded["wheels"] is False
+    assert recorded["cache_archive"] == "release.tar.gz"
+    assert recorded["version"] == "1.2.3"
+
+
+def test_main_dispatches_the_wheel_half_on_its_own(tmp_path, monkeypatch):
+    """The inverse pairing, because one inverted boolean passes the other test.
+
+    GitLab's "Wheel Deploy" runs on a plain python image with no Conan
+    artifacts at all, so a ``--wheels-only`` that left the Conan half on
+    fails there and nowhere else.
+    """
+    monkeypatch.setattr("sys.argv", [
+        "xmsconan job", "deploy", "--wheels-only", "--toml", _toml(tmp_path),
+    ])
+
+    with patch.object(cli, "job_deploy", autospec=True) as job_deploy:
+        job_deploy.return_value = EXIT_OK
+        assert cli.main() == EXIT_OK
+
+    recorded = job_deploy.call_args.kwargs
+    assert (recorded["conan"], recorded["wheels"]) == (False, True)
+
+
+# --- coverage ---
+
+
+def test_coverage_requires_pages():
+    """``job coverage`` alone must not stand in for the measure/report phases.
+
+    Those are still ``xmsconan coverage --phase collect/report``, which the
+    generated coverage jobs call directly. A ``job coverage`` that defaulted
+    to something would give a reader two spellings for one of them and no
+    spelling for the other.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        cli.build_parser().parse_args(["coverage"])
+
+    assert excinfo.value.code == 2
+
+
+def test_main_dispatches_coverage_pages_with_the_library_name(tmp_path, monkeypatch):
+    """The page's title comes from build.toml, not from a rendered flag.
+
+    The template used to interpolate ``<< library_name >>`` into the inline
+    markup; the tool reads the same file the rest of the job reads.
+    """
+    monkeypatch.setattr("sys.argv", [
+        "xmsconan job", "coverage", "--pages",
+        "--toml", _toml(tmp_path, 'library_name = "xmsgrid"\n'),
+    ])
+
+    with patch.object(cli, "job_coverage_pages", autospec=True) as job_pages:
+        job_pages.return_value = EXIT_OK
+        assert cli.main() == EXIT_OK
+
+    job_pages.assert_called_once_with("xmsgrid")
 
 
 # --- dispatch ---

@@ -28,36 +28,6 @@ from xmsconan.generator_tools.build_filter import (
     load_build_filter,
 )
 from xmsconan.generator_tools.output_plan import check_plan, describe_plan, write_plan
-from xmsconan.package_tools.packager import configurations as _platform_configurations
-
-
-def _only_msvc_version(platform_key: str) -> str:
-    """Return the single ``compiler.version`` the named Windows matrix pins.
-
-    Read from the packager's own matrix rather than written as a literal in the
-    template. The generated pipeline restricts every Windows publish to this
-    value, so a literal that fell behind a toolchain bump would not fail --
-    ``conan upload -p compiler.version=194`` after a move to 195 matches
-    nothing, and the job would go green having published no binaries at all.
-
-    Args:
-        platform_key: Key into the packager's ``configurations``.
-
-    Returns:
-        The compiler version as a string.
-
-    Raises:
-        ValueError: When the matrix pins more or fewer than one version, which
-            would make "the version this job publishes" ambiguous.
-    """
-    versions = _platform_configurations[platform_key]["compiler.version"]
-    if len(versions) != 1:
-        raise ValueError(
-            f"platform {platform_key!r} pins {len(versions)} compiler.version values "
-            f"({', '.join(versions)}); the generated publish steps restrict to exactly "
-            f"one, so this needs a decision rather than a guess."
-        )
-    return versions[0]
 
 
 LOGGER = logging.getLogger(__name__)
@@ -536,12 +506,11 @@ def plan_ci(
         "vs2019_remote_name": VS2019_REMOTE_NAME,
         "vs2019_remote_url": VS2019_REMOTE_URL,
         "vs2019_platform_key": VS2019_PLATFORM_KEY,
+        # Prose only, in the header on "Conan Build - Windows VS2019". No job
+        # renders a `--package-query` any more: `xmsconan job deploy` composes
+        # it from packager.only_msvc_version, so the version the query names
+        # cannot be one the matrix does not pin.
         "vs2019_msvc_version": MSVC_VS2019_VERSION,
-        # The msvc 194 jobs restrict their publishes too, not just the 192 ones.
-        # A runner's Conan cache is per machine, so the hazard is symmetric: an
-        # unqueried save/upload on this side would carry the VS2019 job's
-        # binaries onto the production `aquaveo` remote.
-        "windows_msvc_version": _only_msvc_version("windows"),
         # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
         # installable, so there is no equivalent switch for Linux or macOS. The
         # default follows ci_type -- see repairs_windows_wheel.
@@ -573,19 +542,12 @@ def plan_ci(
             else ci_linux_python_versions[0]
         ),
         "gitlab_linux_single_py": max(ci_linux_python_versions, key=version_sort_key),
-        # The ABI segment in "Conan Build"'s export tarball name, which the
-        # deploy job restores by. Always present now: `xmsconan job build`
-        # names the tarball from $PYTHON_TARGET_VERSION, and that variable is
-        # set in the build job either way -- by the `parallel: matrix` when
-        # several ABIs are built, and by `variables:` when one is. It used to
-        # be empty in the single-ABI case because the template rendered the
-        # name itself and had the version list in hand; the tool does not, and
-        # a suffix that appeared only sometimes is exactly the kind of
-        # agreement between two files that this refactor exists to remove.
-        "gitlab_linux_py_suffix": (
-            "-py${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1
-            else f"-py{ci_linux_python_versions[0]}"
-        ),
+        # The interpreter the Windows deploy jobs build their venv on. They
+        # restore and upload, which is ABI-independent, so they run once rather
+        # than fanning out over the matrix -- but `uv venv --python` still needs
+        # a version, and the newest ABI the build stage produced is one the
+        # runner is known to have.
+        "gitlab_windows_single_py": max(ci_python_versions, key=version_sort_key),
         "ci_linux_py_suffix": _py_suffix(ci_linux_python_versions),
         "ci_linux_name_py": _job_name_py(ci_linux_python_versions),
         "coverage": _coverage_context(config.coverage, library_name),
