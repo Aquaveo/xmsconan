@@ -114,13 +114,20 @@ def test_generate_ci_dry_run_does_not_write(ci_toml, tmp_path):
 
 
 def test_context_variables_rendered(ci_toml, tmp_path):
-    """library_name, version, and display_name are rendered in output."""
+    """display_name reaches the output; library_name no longer needs to.
+
+    The workflow named the library three times -- a LIBRARY_NAME nothing
+    read, and the two `xmsconan_conan_deploy <library>` lines. Every command
+    left reads it from build.toml, so the one name here is the display name
+    in the workflow's own title, and a library rename no longer has to
+    reach the generated file to be correct.
+    """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "2.3.5", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
     assert "XmsCore" in content
-    assert "xmscore" in content
+    assert "xmscore" not in content
 
 
 def test_ci_config_options_passed_to_template(tmp_path):
@@ -499,20 +506,32 @@ def test_github_ci_bakes_no_version_into_the_workflow(ci_toml, tmp_path):
 
     assert "7.0.1" not in content
     for gone in ("XMS_VERSION", "CONAN_REFERENCE", "CONAN_CHANNEL", "RELEASE_PYTHON",
-                 "get-git-tag", "set-env", "branch-name", "xmsconan_gen --version"):
+                 "get-git-tag", "set-env", "branch-name", "xmsconan_gen"):
         assert gone not in content, gone
-    assert "run: xmsconan_gen build.toml" in content
+    # The regeneration did not go away, it moved: `job build` and `job lint`
+    # each run it in-process, at the version they resolved themselves.
+    assert "run: xmsconan job build" in content
 
 
 def test_github_ci_uses_cli_commands(ci_toml, tmp_path):
-    """Rendered GitHub CI uses xmsconan CLI commands instead of inline scripts."""
+    """Rendered GitHub CI runs the job commands, as GitLab's does.
+
+    The entry points named as absences are the ones the job commands
+    replaced. Either reappearing means a step went back to spelling out a
+    wheel directory, a remote URL or a matrix filter that the tool reads
+    from build.toml and this job's environment.
+    """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "xmsconan_conan_setup" in content
-    assert "xmsconan_wheel_repair" in content
-    assert "xmsconan_wheel_deploy" in content
+    assert "xmsconan job build" in content
+    assert "xmsconan job lint" in content
+    assert "xmsconan job package" in content
+    assert "xmsconan job deploy" in content
+    for gone in ("xmsconan_conan_setup", "xmsconan_conan_deploy", "xmsconan_wheel_repair",
+                 "xmsconan_wheel_deploy", "build.py"):
+        assert gone not in content, gone
     # Inline conan profile detect / devpi commands should NOT appear
     assert "conan profile detect" not in content
     assert "devpi use $" not in content
@@ -646,13 +665,13 @@ def test_github_flake_job_uses_generated_flake8_config(ci_toml, tmp_path):
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
 
-    assert "flake8 _package" in content
+    # Both halves are `job lint`: it generates the build files and then runs
+    # flake8 over the generated package, in that order, in one process.
+    assert "run: xmsconan job lint" in content
     # --isolated makes flake8 ignore .flake8 entirely, which is what allowed
     # the two configs to diverge unnoticed.
     assert "--isolated" not in content
     assert "--max-line-length" not in content
-    # The config has to exist before flake8 runs.
-    assert "xmsconan_gen build.toml" in content
 
 
 def test_generate_ci_rejects_an_unknown_top_level_key(tmp_path):
@@ -676,13 +695,20 @@ def test_generate_ci_rejects_an_unknown_top_level_key(tmp_path):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
 
 
-def test_github_ci_includes_artifacts_dir_flag(ci_toml, tmp_path):
-    """Rendered GitHub CI build commands include --artifacts-dir test_artifacts."""
+def test_github_ci_uploads_the_directory_the_build_writes(ci_toml, tmp_path):
+    """No step names an artifacts directory; the upload still has to find it.
+
+    `job build` stages into common.ARTIFACTS_DIR, so the flag the build line
+    used to carry is gone -- but the upload step is a path in YAML that
+    nothing checks, and it is the one place the template still has to agree
+    with the tool about where the runner logs land.
+    """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
     ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
     content = ci_file.read_text(encoding="utf-8")
-    assert "--artifacts-dir test_artifacts" in content
+    assert "--artifacts-dir" not in content
+    assert f"path: {job_common.ARTIFACTS_DIR}/" in content
 
 
 def test_github_ci_includes_test_artifact_upload(ci_toml, tmp_path):
@@ -776,13 +802,30 @@ def test_gitlab_ci_leaves_the_ctest_level_to_the_job_command(tmp_path):
     assert job_common.CTEST_PARALLEL_VARIABLE not in content
 
 
-def test_github_ci_sets_ctest_parallel_level(ci_toml, tmp_path):
-    """Rendered GitHub CI sets CTEST_PARALLEL_LEVEL."""
+def test_github_ci_leaves_ctest_parallelism_to_the_tool(ci_toml, tmp_path):
+    """The job env set it on every leg; `set_job_environment` defaults it.
+
+    Only when the environment has not already chosen a value, which is what
+    the job-level `CTEST_PARALLEL_LEVEL: '8'` meant and what a runner that
+    wants a different number still gets. The GitLab template dropped its own
+    export for the same reason; this is the last copy.
+    """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
-    ci_file = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
-    content = ci_file.read_text(encoding="utf-8")
-    assert "CTEST_PARALLEL_LEVEL: '8'" in content
+    document = workflow_document(output_dir / ".github" / "workflows" / "XmsCore-CI.yaml")
+
+    settings = [
+        (name, mapping)
+        for name, job in document["jobs"].items()
+        for mapping in [job.get("env") or {}] + [step.get("env") or {} for step in job["steps"]]
+        if job_common.CTEST_PARALLEL_VARIABLE in mapping
+    ]
+    assert settings == []
+    # Anchored on the command that owns the variable, as the GitLab sibling
+    # is: the absence assertion alone also passes a workflow whose build
+    # steps stopped rendering.
+    assert [name for name, job in document["jobs"].items()
+            if steps_running(job, "xmsconan job build")]
 
 
 def test_gitlab_ci_split_tests_generates_separate_jobs(tmp_path):
@@ -2093,59 +2136,44 @@ def _step_runs(job):
     return [str(step.get("run", "")) for step in job["steps"]]
 
 
-def test_github_windows_repair_is_on_by_default(tmp_path):
-    """The Windows step must exist, asserted on the Windows job itself.
+def test_github_windows_repairs_inside_its_build_step(tmp_path):
+    """The Windows job has no repair step of its own, at either setting.
 
-    A whole-file substring check cannot make this claim: the Linux and macOS
-    steps also run xmsconan_wheel_repair, so the Windows step could vanish
-    entirely without the assertion noticing.
+    Only a Windows host can run delvewheel, so the repair happens in the
+    build job either way -- as a separate step before, and inside `job
+    build` now. [ci].windows_wheel_repair reaches that from build.toml, so
+    it renders nothing here and both settings produce the same workflow;
+    what the key does is covered in tests/test_job_build.py.
     """
-    windows, _jobs = _github_windows_job(tmp_path)
-    runs = _step_runs(windows)
+    on, _jobs = _github_windows_job(tmp_path)
+    off, jobs = _github_windows_job(tmp_path, windows_wheel_repair=False)
 
-    assert any("--platform windows" in run for run in runs)
-    assert not any("--skip-dependency-libs" in run for run in runs)
-
-
-def test_github_windows_repair_can_be_switched_off(tmp_path):
-    """The GitHub windows job honors the same key, for the same reason."""
-    windows, jobs = _github_windows_job(tmp_path, windows_wheel_repair=False)
-    runs = _step_runs(windows)
-
-    assert not any("--platform windows" in run for run in runs)
-    assert any("--skip-dependency-libs" in run for run in runs)
-    # Linux and macOS repair is untouched: a manylinux wheel has to be repaired,
-    # and their build steps must not have grown the skip flag either.
-    other_runs = [
-        run for name, job in jobs.items() if name != "windows"
-        for run in _step_runs(job)
+    assert _step_runs(on) == _step_runs(off)
+    assert not any("Repair" in str(step.get("name", "")) for step in on["steps"])
+    assert not any("--skip-dependency-libs" in run for run in _step_runs(on))
+    # Linux and macOS repair in a step of their own, in the image that can:
+    # a manylinux wheel has to be repaired to be installable.
+    other_repairs = [
+        step.get("name") for name, job in jobs.items() if name != "windows"
+        for step in job["steps"] if "xmsconan job package" in str(step.get("run", ""))
     ]
-    assert any("--platform linux" in run for run in other_runs)
-    assert any("--platform macos" in run for run in other_runs)
-    assert not any("--skip-dependency-libs" in run for run in other_runs)
+    assert other_repairs == ["Repair wheel", "Repair wheel"]
 
 
-#: The build step's wheel request, as the GitHub expression that gates it.
-#:
-#: Spelled out here rather than imported from ci_file_generator so the
-#: assertions below compare the rendered workflow against a literal. Importing
-#: the constant would assert the template against its own input, which stays
-#: green through any change to the expression itself.
-RELEASE_GATED_WHEEL_DIR = (
-    "${{ matrix.build_type == 'Release' && ' --wheel-dir wheelhouse' || '' }}"
-)
-
-#: The step that runs build.py, in every platform job.
+#: The step that builds the library, in every platform job.
 BUILD_STEP_NAME = "Build the Conan Packages"
 
 #: The GitHub jobs that build the library, as opposed to linting it.
 BUILDING_JOBS = ("mac", "linux", "linux-arm", "windows")
 
-#: Every (job, step) that reads the wheelhouse the build step fills.
+#: Every (job, step) that reads the wheel the build step staged. Windows has
+#: no "Repair wheel": delvewheel runs on a Windows host only, so `job build`
+#: repairs there in place rather than in a step of its own.
 WHEEL_CONSUMING_STEPS = sorted(
     (job, step)
     for job in BUILDING_JOBS
     for step in ("Repair wheel", "Upload wheel artifact", "Upload wheel to Aquapi")
+    if not (job == "windows" and step == "Repair wheel")
 )
 
 
@@ -2158,22 +2186,20 @@ def github_arm_jobs(tmp_path):
 def _is_build_step(step):
     """Whether a step compiles the library, rather than consuming what it built.
 
-    Matched on the prefix because a job may have more than one: the Windows job
-    emits a branch step and a tag step under mutually exclusive ``if:``
-    conditions, the tag one narrowing the filter to the configurations a
-    release publishes. It runs under ``shell: cmd``, where ``%VAR%`` expands
-    before the argument is parsed, so a filter held in a variable would break
-    its own quoting -- the other three legs carry one step and select the
-    filter with a ``env:`` expression instead.
+    Matched on the prefix rather than on equality because the Windows job used
+    to carry two, a branch one and a tag one under mutually exclusive ``if:``
+    conditions. Both spelled a JSON matrix filter inline, which is what made
+    them two: ``shell: cmd`` expands ``%VAR%`` before the argument is parsed,
+    so the ``env:`` expression the other legs selected would have broken its
+    own quoting there. There is no JSON left to quote -- and the prefix match
+    stays, so a second build step reappearing is a failure rather than an
+    invisible extra.
     """
     return str(step.get("name", "")).startswith(BUILD_STEP_NAME)
 
 
 def _build_step_run(job, job_name):
-    """Return the ``run:`` text of one job's build step.
-
-    The first, which is the branch-pipeline one wherever a job has two.
-    """
+    """Return the ``run:`` text of one job's build step."""
     for step in job["steps"]:
         if _is_build_step(step):
             return str(step["run"])
@@ -2181,15 +2207,15 @@ def _build_step_run(job, job_name):
 
 
 def _touches_the_wheelhouse(step):
-    """Whether a step names the wheelhouse, in its command or its inputs.
+    """Whether a step reads the wheel the build staged.
 
-    Matched on the directory rather than on a list of known commands, so a
-    wheel step added later under a different spelling is covered too. The
-    artifact upload is a ``uses:`` step that names it only in ``with.path``.
+    Matched on the step's name as well as its inputs. The directory alone no
+    longer finds them: `job package` and `job deploy --wheels-only` read
+    common.WHEEL_DIR themselves, so the path those commands used to spell out
+    appears in the workflow only in the artifact upload's ``with.path``.
     """
-    text = str(step.get("run", ""))
-    text += " ".join(str(value) for value in step.get("with", {}).values())
-    return "wheelhouse" in text
+    text = " ".join(str(value) for value in step.get("with", {}).values())
+    return "wheelhouse" in text or "wheel" in str(step.get("name", "")).lower()
 
 
 def test_github_every_platform_job_builds(github_arm_jobs):
@@ -2201,30 +2227,129 @@ def test_github_every_platform_job_builds(github_arm_jobs):
     assert sorted(building) == sorted(BUILDING_JOBS)
 
 
-@pytest.mark.parametrize("job_name", BUILDING_JOBS)
-def test_github_build_step_requests_a_wheel_only_on_the_release_leg(github_arm_jobs, job_name):
-    """The build step asks for a wheel dir on the Release leg and only there.
+def _github_leg_configurations(toml_path, job, job_name, release):
+    """What ``xmsconan job build`` actually builds when this GitHub job runs it.
 
-    build.py exits 1 when --wheel-dir extracts no complete set of wheels, and
-    [matrix].pybind_build_types defaults to Release only -- so an unguarded
-    --wheel-dir fails every Debug leg of every repository on the default
-    configuration. Parametrized by job so a failure names the platform, and
-    with the guard removed from the text so a second, unguarded request cannot
-    hide behind the guarded one.
+    The GitLab twin of this is :func:`_tool_export_name`, and the reason both
+    exist is the same: the template no longer states the matrix leg, so the
+    only thing that can say what a rendered job builds is the tool, given
+    that job's own ``env:``. Rendering assertions cannot reach it -- a job
+    whose command and environment are both exactly as intended can still
+    resolve to nothing, and a golden file pins that outcome as readily as any
+    other.
+
+    Composed the way :func:`~xmsconan.job_tools.build.job_build` composes it:
+    real packager, build.toml ``[filter]``, then the leg filter from the
+    job's environment. The environment is patched as well as passed, because
+    the packager resolves the ABI it fans pybind out over from the process
+    environment rather than from anything a caller hands it.
     """
-    run = _build_step_run(github_arm_jobs[job_name], job_name)
-    assert RELEASE_GATED_WHEEL_DIR in run
-    assert "--wheel-dir" not in run.replace(RELEASE_GATED_WHEEL_DIR, "")
+    # The packager's own platform keys, not sys.platform values: they are
+    # what name the matrix a `system_platform` selects.
+    platform = {"mac": "darwin", "windows": "windows"}.get(job_name, "linux")
+    run = _build_step_run(job, job_name)
+    environ = {key: _expand_matrix(str(value))
+               for key, value in (job.get("env") or {}).items()}
+
+    config = read_build_toml(str(toml_path))
+    with patch_env(environ):
+        builder = job_build._make_packager(config, str(toml_path), False, None)
+        builder.generate_configurations(system_platform=platform)
+    if config.filter:
+        builder.filter_configurations(config.filter)
+    leg_filter = job_common.resolve_leg(
+        leg=None,
+        release=release,
+        release_skips_testing="--release-skips-testing" in run.split(),
+        environ=environ,
+    )
+    if leg_filter:
+        builder.filter_configurations(leg_filter)
+    return builder.configurations
+
+
+def _expand_matrix(value, build_type="Debug", python_version="3.13"):
+    """Substitute the matrix expressions a job's ``env:`` interpolates.
+
+    GitHub expands ``${{ matrix.* }}`` per leg; a test standing in for the
+    runner has to pick one. Debug is the leg picked, because it is the one a
+    filter or a release rule is likeliest to empty -- ``pybind_build_types``
+    defaults to Release, so Debug is where a job can be left with nothing.
+    """
+    return (value.replace("${{ matrix.build_type }}", build_type)
+                 .replace("${{ matrix.python-version }}", python_version))
+
+
+@pytest.mark.parametrize("release", [pytest.param(False, id="branch"),
+                                     pytest.param(True, id="tag")])
+@pytest.mark.parametrize("job_name", BUILDING_JOBS)
+def test_every_github_leg_has_something_to_build(tmp_path, job_name, release):
+    """Each rendered platform job resolves to a non-empty matrix, tag or branch.
+
+    ``job build`` exits 1 on a leg that matches no configuration, and it
+    should: normally that means a ``[filter]`` and a job disagree. But the
+    job's environment is now the only thing narrowing the matrix, so the
+    generator can render a job that is empty by construction and nothing else
+    here would notice -- the command reads correctly, the ``env:`` reads
+    correctly, and the golden pins both.
+
+    The Debug leg on a tag is the interesting one: it is where the release
+    rule and ``[matrix].pybind_build_types`` can cancel out, and where a
+    branch pipeline stays green because ``0.0.0`` is not a release version.
+    """
+    toml_file = write_github_toml(tmp_path, linux_arm=True)
+    jobs = _github_jobs(toml_file, tmp_path)
+
+    configurations = _github_leg_configurations(toml_file, jobs[job_name], job_name, release)
+    assert configurations, (
+        "this job matches no configuration and would exit 1"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "Pre-existing, and unchanged by the move onto `job build`: under "
+    "[matrix].wheel_only the whole matrix is pybind (Release) plus testing, "
+    "so a Debug leg holds only testing configurations -- which is exactly "
+    "what a release drops. The old template rendered the same empty set as a "
+    "JSON --filter. Branch pipelines stay green because 0.0.0 is not a "
+    "release version, so only a tag shows it. The fix is a generator "
+    "decision about whether that leg should run on a tag at all, not a "
+    "relaxation of job build's empty-match guard."
+))
+def test_a_wheel_only_github_debug_leg_has_something_to_build_on_a_tag(tmp_path):
+    """Known gap, pinned so the fix flips this green loudly."""
+    toml_file = write_github_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_arm=True)
+    jobs = _github_jobs(toml_file, tmp_path)
+
+    assert _github_leg_configurations(toml_file, jobs["linux"], "linux", release=True)
+
+
+@pytest.mark.parametrize("job_name", BUILDING_JOBS)
+def test_github_build_step_asks_for_no_wheel_directory(github_arm_jobs, job_name):
+    """Whether a leg stages a wheel is read from what it built, not gated here.
+
+    The step used to append ``--wheel-dir wheelhouse`` behind
+    ``matrix.build_type == 'Release'``, because ``build.py --wheel-dir`` exits
+    1 when no wheel came out and [matrix].pybind_build_types defaults to
+    Release only. That gate was a proxy for a question `job build` now asks
+    directly -- did this job build a pybind configuration the recipe gives a
+    wheel -- and the proxy was wrong for the library that names Debug there:
+    on Windows the recipe builds no Debug wheel at all (USAGE 7.5).
+
+    Parametrized by job so a failure names the platform, and asserted as
+    equality so the four legs cannot drift into four different commands.
+    """
+    assert _build_step_run(github_arm_jobs[job_name], job_name) == "xmsconan job build"
 
 
 def test_github_wheel_steps_stay_release_only(github_arm_jobs):
     """Every step that reads the wheelhouse runs only where one is filled.
 
-    The guard above is only correct while this holds; if a consuming step lost
-    its ``if:`` it would run on a Debug leg with no wheelhouse at all. The
-    build step is excluded because it is the step that *creates* the
-    wheelhouse, and its own Release gate lives inside the run text rather than
-    in an ``if:``.
+    A consuming step that lost its ``if:`` would run on a Debug leg with no
+    wheelhouse at all -- `job package` raises on an empty one, and `job
+    deploy --wheels-only` refuses to publish nothing. The build step is
+    excluded because it is the step that *fills* the wheelhouse, and it runs
+    on every leg.
     """
     wheel_steps = [
         (name, step.get("name"), str(step.get("if", "")))
@@ -2526,9 +2651,9 @@ def test_github_keeps_wheel_steps_by_default(ci_toml, tmp_path):
     generate_ci(str(ci_toml), "1.0.0", str(tmp_path))
 
     _, content = _github_workflow(tmp_path)
-    assert "xmsconan_wheel_repair" in content
-    assert "xmsconan_wheel_deploy" in content
-    assert "--wheel-dir wheelhouse" in content
+    assert "xmsconan job package" in content
+    assert "xmsconan job deploy --wheels-only" in content
+    assert "path: wheelhouse/*.whl" in content
 
 
 def test_github_drops_wheel_steps_when_pybind_filtered_off(tmp_path):
@@ -2541,8 +2666,8 @@ def test_github_drops_wheel_steps_when_pybind_filtered_off(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(tmp_path))
 
     workflow, content = _github_workflow(tmp_path)
-    assert "xmsconan_wheel_repair" not in content
-    assert "xmsconan_wheel_deploy" not in content
+    assert "xmsconan job package" not in content
+    assert "--wheels-only" not in content
     assert "--wheel-dir" not in content, "build.py would warn about a wheel nobody wants"
     assert workflow["jobs"], "the rest of the pipeline survives"
 
@@ -2800,12 +2925,17 @@ def test_gitlab_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):
     assert "'Conan Build'" in warned[0]
 
 
-def test_github_ci_build_step_shards_the_suite(tmp_path):
-    """[ci].test_shards reaches build.py on every GitHub platform job.
+@pytest.mark.parametrize("shards", [0, 1, 4])
+def test_github_ci_renders_no_shard_flag_at_any_setting(tmp_path, shards):
+    """[ci].test_shards reaches the packager without passing through here.
 
     GitHub has no split-test job -- the runner that built the package is the
-    one that tests it -- so the shard count goes to build.py, which skips
-    cmake.test() during the build and then runs N in-process gtest shards.
+    one that tests it -- so the shard count still has to reach the packager,
+    which skips cmake.test() during the build and then runs N in-process
+    gtest shards. `job build` reads it from build.toml and decides, because
+    it is also what knows whether another job runs this suite. Rendering it
+    here as well would be a second answer to the same question, and the
+    template's copy is the one that goes stale in a checked-in workflow.
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
@@ -2814,51 +2944,7 @@ def test_github_ci_build_step_shards_the_suite(tmp_path):
         'ci_type = "github"\n'
         '\n'
         '[ci]\n'
-        'test_shards = 4\n',
-        encoding="utf-8",
-    )
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    workflow = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
-    content = workflow.read_text(encoding="utf-8")
-
-    build_steps = [line for line in content.splitlines()
-                   if "--artifacts-dir test_artifacts" in line]
-    assert build_steps
-    assert all("--test-shards 4" in line for line in build_steps)
-    # The upload-only invocation builds nothing, so a shard count there would
-    # be noise at best and a skipped-test claim at worst.
-    upload_steps = [line for line in content.splitlines()
-                    if "--skip-build --upload" in line]
-    assert upload_steps
-    assert all("--test-shards" not in line for line in upload_steps)
-
-
-def test_github_ci_omits_the_shard_flag_when_unset(ci_toml, tmp_path):
-    """Without [ci].test_shards the build command is unchanged.
-
-    ctest keeps its own parallelism in that case; adding `--test-shards 1`
-    would route the suite through the shard path for no benefit.
-    """
-    output_dir = tmp_path / "output"
-    generate_ci(str(ci_toml), "1.0.0", str(output_dir))
-    workflow = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
-    content = workflow.read_text(encoding="utf-8")
-
-    assert "--artifacts-dir test_artifacts" in content
-    assert "--test-shards" not in content
-
-
-def test_github_ci_shard_flag_needs_more_than_one_shard(tmp_path):
-    """test_shards = 1 is the same as not asking for shards."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n'
-        'description = "Core library"\n'
-        'ci_type = "github"\n'
-        '\n'
-        '[ci]\n'
-        'test_shards = 1\n',
+        f'test_shards = {shards}\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -2867,6 +2953,7 @@ def test_github_ci_shard_flag_needs_more_than_one_shard(tmp_path):
     content = workflow.read_text(encoding="utf-8")
 
     assert "--test-shards" not in content
+    assert "run: xmsconan job build" in content
 
 
 #: A single backslash, named so the escaping assertions below do not have
@@ -2997,52 +3084,41 @@ def test_gitlab_windows_tag_pipeline_narrows_its_filter(tmp_path):
     assert "--release-skips-testing" in _job_build_tokens(job)
 
 
-def test_github_build_legs_narrow_their_filter_on_a_tag(tmp_path):
-    """The three bash legs select the filter with a step-level expression."""
-    jobs = _github_jobs(write_github_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_arm=True), tmp_path)
+def test_github_build_legs_narrow_on_a_tag_with_one_flag(tmp_path):
+    """All four legs, one step each, and the tag test is the tool's.
 
-    for job_name in ("mac", "linux", "linux-arm"):
-        steps = [step for step in jobs[job_name]["steps"]
-                 if _is_build_step(step)]
-        assert len(steps) == 1, (job_name, steps)
-        step = steps[0]
-        assert '--filter=\"${BUILD_MATRIX_FILTER}\"' in str(step["run"]), job_name
-        expression = step["env"]["BUILD_MATRIX_FILTER"]
-        assert "startsWith(github.ref, 'refs/tags/')" in expression, job_name
-        assert '"options":{{"testing":false}}' in expression, job_name
-        assert BACKSLASH not in expression, (
-            "the JSON is written plainly inside the expression. An env "
-            "var is expanded by bash after both the YAML and the shell "
-            "have finished with the line, so it needs none of the escaping "
-            "the inline form carried -- that one spelled every quote it "
-            "contained as a backslash pyramid to survive all three layers."
-        )
+    This was a step-level ``env:`` expression on the three bash legs and a
+    second ``if:``-gated step on the Windows one, both spelling out "on a
+    tag, drop the testing configurations". ``--release-skips-testing`` is
+    that sentence: `job build` decides from the version it already resolved,
+    which is the same tag ``startsWith(github.ref, 'refs/tags/')`` tested.
 
-
-def test_github_windows_leg_narrows_with_two_gated_steps(tmp_path):
-    """The Windows leg gates two steps rather than selecting a variable.
-
-    ``%VAR%`` is substituted before the argument is parsed, so a filter held in
-    a variable would break its own quoting the moment it reached the command
-    line. The Windows leg keeps the filter inline and picks between two steps.
+    Windows is in the loop rather than in a test of its own now. It was
+    separate because ``shell: cmd`` expands ``%VAR%`` before the argument is
+    parsed, so it could not select a filter through a variable the way the
+    others did -- a difference that only existed while the filter was JSON.
     """
     jobs = _github_jobs(write_github_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_arm=True), tmp_path)
-    steps = [step for step in jobs["windows"]["steps"] if _is_build_step(step)]
 
-    assert len(steps) == 2, steps
-    branch, release = steps
-    assert branch["if"] == "!startsWith(github.ref, 'refs/tags/')"
-    assert release["if"] == "startsWith(github.ref, 'refs/tags/')"
-    assert all(step["shell"] == "cmd" for step in steps)
-    assert "BUILD_MATRIX_FILTER" not in str(steps), (
-        "cmd would substitute it before the argument is parsed"
-    )
-    assert "testing" not in str(branch["run"]), (
-        "a branch build takes the whole matrix for its build type"
-    )
-    assert "testing" in str(release["run"]), (
-        "and a tag build excludes the testing configurations"
-    )
+    for job_name in BUILDING_JOBS:
+        steps = [step for step in jobs[job_name]["steps"] if _is_build_step(step)]
+        assert len(steps) == 1, (job_name, steps)
+        assert str(steps[0]["run"]) == "xmsconan job build --release-skips-testing", job_name
+        assert "if" not in steps[0], job_name
+    assert "BUILD_MATRIX_FILTER" not in str(jobs)
+
+
+def test_github_build_legs_keep_every_configuration_without_wheel_only(tmp_path):
+    """A library that publishes Conan packages publishes them from those builds.
+
+    ``--release-skips-testing`` is a flag rather than an unconditional rule
+    because the tarball a library job exports has to carry the binaries the
+    release ships, testing configurations included.
+    """
+    jobs = _github_jobs(write_github_toml(tmp_path, linux_arm=True), tmp_path)
+
+    for job_name in BUILDING_JOBS:
+        assert _build_step_run(jobs[job_name], job_name) == "xmsconan job build", job_name
 
 
 # --- [matrix].wheel_only gates the concurrent build stage -------------------
@@ -3397,7 +3473,7 @@ AQUAPI_STEP_ENV = {
 #: Every step allowed to carry a secret, by name. A new entry here is a review
 #: question -- what does the step do with it -- not a formality.
 SECRET_BEARING_STEPS = frozenset({
-    "Setup Conan",
+    "Build the Conan Packages",
     "Upload Releases to Conan",
     "Upload wheel to Aquapi",
     "Get Release",
@@ -3411,7 +3487,7 @@ SECRET_BEARING_STEPS = frozenset({
 #: is true of a Coverage.yaml with no Conan login at all.
 SECRET_HOLDING_STEPS = {
     "XmsCore-CI.yaml": SECRET_BEARING_STEPS,
-    "Coverage.yaml": frozenset({"Setup Conan"}),
+    "Coverage.yaml": frozenset({"Run Coverage"}),
 }
 
 #: ``linux_arm`` is opt-in (``build_toml.py``), so the default job set leaves it
@@ -3448,6 +3524,23 @@ def _step_label(step):
     return step.get("name") or step.get("uses") or step.get("run") or "<unnamed step>"
 
 
+def _reaches_the_conan_remote(job):
+    """Whether this job runs something that has to authenticate to Conan.
+
+    Which is what decides whether it may hold a credential at all --
+    ``flake`` runs ``job lint``, builds nothing and must hold nothing. Two
+    commands because the two workflows reach the remote from different
+    steps, not because there are two rules: the CI workflow through ``job
+    build``, the coverage workflow through the run that resolves this
+    library's dependencies. ``Setup Conan`` is on neither list any more --
+    it writes the remote into the runner's Conan home and talks to nobody.
+    """
+    return any(
+        steps_running(job, command)
+        for command in ("xmsconan job build", "xmsconan_conan_setup")
+    )
+
+
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
 @pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS)
 def test_github_workflows_keep_secrets_off_the_job_environment(tmp_path, workflow, linux_arm):
@@ -3480,57 +3573,82 @@ def test_github_workflows_keep_secrets_off_the_job_environment(tmp_path, workflo
 
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
-@pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS)
-def test_github_workflows_give_the_conan_login_to_every_setup_conan(tmp_path, workflow, linux_arm):
-    """Every ``Setup Conan`` in either workflow carries the login, and carries only it.
+def test_github_ci_gives_the_conan_login_to_every_build_step(tmp_path, linux_arm):
+    """Every ``job build`` step carries the login, and carries only it.
 
-    Both workflows, because the coverage job logs in to the same remote from
-    its own copy of the step. Naming it in ``SECRET_HOLDING_STEPS`` pins only
-    that *something* secret sits on it; this pins *what*, so halving the env
-    block cannot pass on the strength of the surviving key.
+    It has to: the build resolves this library's dependencies from the
+    private remote, and nothing ahead of it logs in. ``conan remote login``
+    is not what happens instead -- conan reads the pair from the environment
+    when it needs it, and the same command with no credentials to hand it
+    prompts, which on a runner is a job that hangs rather than one that says
+    what is missing.
+
+    Naming the step in ``SECRET_HOLDING_STEPS`` pins only that *something*
+    secret sits on it; this pins *what*, so halving the env block cannot
+    pass on the strength of the surviving key.
     """
-    jobs = _secrets_workflow(tmp_path, workflow, linux_arm)["jobs"]
+    jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
 
-    logins = {
-        name: steps_running(job, "xmsconan_conan_setup")
+    builds = {
+        name: steps_running(job, "xmsconan job build")
         for name, job in jobs.items()
-        if steps_running(job, "xmsconan_conan_setup")
+        if steps_running(job, "xmsconan job build")
     }
-    assert logins
-    for name, steps in logins.items():
-        assert len(steps) == 1, f"{name}: {len(steps)} Setup Conan steps"
+    assert builds
+    for name, steps in builds.items():
+        assert len(steps) == 1, f"{name}: {len(steps)} build steps"
         assert steps[0].get("env") == CONAN_LOGIN_STEP_ENV, name
+
+
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+def test_github_coverage_gives_the_login_to_the_run_and_not_to_the_setup(tmp_path, linux_arm):
+    """The coverage workflow moved the pair one step later, for the same reason.
+
+    ``xmsconan_conan_setup`` writes the remote into this runner's Conan home
+    and reaches nothing, so the credentials it used to carry were a
+    credential on a step that could not have used them. The coverage run is
+    what resolves dependencies, so that is where they go.
+    """
+    jobs = _secrets_workflow(tmp_path, "Coverage.yaml", linux_arm)["jobs"]
+
+    setups = [step for job in jobs.values() for step in steps_running(job, "xmsconan_conan_setup")]
+    runs = [step for job in jobs.values() for step in steps_running(job, "xmsconan_coverage")]
+    assert len(setups) == 1
+    assert len(runs) == 1
+    assert "env" not in setups[0]
+    assert runs[0].get("env") == CONAN_LOGIN_STEP_ENV
 
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
 def test_github_ci_gives_the_conan_login_to_every_package_upload(tmp_path, linux_arm):
     """Every build job's Conan upload carries the login, and carries only it.
 
-    The upload keeps its own copy until a tag pipeline shows that the token
-    ``Setup Conan`` persisted carries ``conan upload`` on its own. There is no
+    Its own copy, rather than a login the build step left behind: the build
+    runs the Conan setup in-process and never writes credentials anywhere,
+    so each command that reaches the remote brings its own. There is no
     counterpart in ``Coverage.yaml``: that workflow builds nothing it publishes.
     """
     jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
 
     build_jobs = {
-        name: job for name, job in jobs.items() if steps_running(job, "xmsconan_conan_setup")
+        name: job for name, job in jobs.items() if steps_running(job, "xmsconan job build")
     }
     assert build_jobs
     for name, job in build_jobs.items():
-        upload = steps_running(job, "build.py --skip-build --upload")
+        upload = steps_running(job, "xmsconan job deploy --conan-only")
         assert len(upload) == 1, f"{name}: {len(upload)} Conan upload steps"
         assert upload[0].get("env") == CONAN_LOGIN_STEP_ENV, name
 
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
 def test_github_ci_gives_the_index_credentials_to_the_wheel_upload(tmp_path, linux_arm):
-    """Every ``xmsconan_wheel_deploy`` step carries the index credentials, and carries only them."""
+    """Every wheel upload carries the index credentials, and carries only them."""
     jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
 
     deploy_steps = [
         (name, step)
         for name, job in jobs.items()
-        for step in steps_running(job, "xmsconan_wheel_deploy")
+        for step in steps_running(job, "xmsconan job deploy --wheels-only")
     ]
     assert deploy_steps
     for name, step in deploy_steps:
@@ -3552,8 +3670,8 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
     dropping ``GITHUB_TOKEN`` from the linux-arm ``Get Release`` alone leaves
     a workflow-wide set of names identical, which is the copy-drift this
     section is here to catch. Whether a job holds credentials at all is keyed
-    on whether it logs in to Conan -- ``flake`` runs no build and must hold
-    nothing, and the same rule decides that without naming it.
+    on whether it reaches the Conan remote -- ``flake`` runs no build and
+    must hold nothing, and the same rule decides that without naming it.
     """
     document = _secrets_workflow(tmp_path, workflow, linux_arm)
 
@@ -3562,7 +3680,7 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
         for name, job in document["jobs"].items()
     }
     expected = {
-        name: SECRET_HOLDING_STEPS[workflow] if steps_running(job, "xmsconan_conan_setup") else frozenset()
+        name: SECRET_HOLDING_STEPS[workflow] if _reaches_the_conan_remote(job) else frozenset()
         for name, job in document["jobs"].items()
     }
 
@@ -3594,7 +3712,7 @@ def test_github_ci_reads_the_index_url_from_a_variable(tmp_path, linux_arm):
     urls = [
         (name, step["env"]["AQUAPI_URL"])
         for name, job in workflow_document(path)["jobs"].items()
-        for step in steps_running(job, "xmsconan_wheel_deploy")
+        for step in steps_running(job, "xmsconan job deploy --wheels-only")
     ]
     assert urls
     for name, url in urls:

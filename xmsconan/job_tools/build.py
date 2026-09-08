@@ -119,13 +119,19 @@ def export_package_query(configurations, platform=None):
     return f"compiler.version={versions.pop()}"
 
 
-def _make_packager(config, toml_path, build_missing, platform_key):
+def _make_packager(config, toml_path, build_missing, platform_key, test_shards=0):
     """Build the packager ``build.py`` would have built, from build.toml.
 
     ``LIBRARY_NAME``, ``CONAN_PROFILE_OPTIONS`` and ``CONAN_MATRIX`` in the
     generated ``conanfile.py`` are rendered straight from these same three
     fields, so reading them here reaches the same values without importing a
     generated module.
+
+    *test_shards* above 1 makes the recipe skip ``cmake.test()`` and the
+    packager run the staged runner as that many in-process gtest shards once
+    the build is done. It defaults to 0 -- no sharding -- because a caller
+    that has not thought about whether another job runs these tests should
+    not silently run them twice; :func:`job_build` is what decides.
     """
     # The msvc 192 matrix resolves the legacy third-party stack (the recipe
     # forks boost/zlib on compiler.version), and the boost defaults the
@@ -144,6 +150,7 @@ def _make_packager(config, toml_path, build_missing, platform_key):
         profile_options=config.conan_profile_options,
         matrix=config.matrix,
         apply_boost_defaults=apply_boost_defaults,
+        test_shards=test_shards,
     )
 
 
@@ -215,9 +222,10 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
         build_missing: Build missing dependencies from source. Implied by the
             VS2019 platform, whose legacy dependency graph is not prebuilt.
         defer_cxx_tests: A separate job in this pipeline runs the C++ suite
-            this build compiles, so it must not also run inline here. Passed
-            by the generator, which is the only layer that knows the job
-            graph; inert unless ``[ci].split_tests`` is on.
+            this build compiles, so it must not also run inline here, and
+            ``[ci].test_shards`` is that job's business rather than this
+            one's. Passed by the generator, which is the only layer that
+            knows the job graph; inert unless ``[ci].split_tests`` is on.
         steps: :class:`BuildSteps` instance (production defaults if omitted).
         environ: The environment to read and set; ``os.environ`` when None.
 
@@ -258,7 +266,15 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
         if generated:
             return generated
 
-    builder = steps.make_packager(config, toml_path, build_missing, platform)
+    # [ci].test_shards reaches the packager only when this job runs the suite
+    # it compiles. Deferred, `job test` runs those shards in another job from
+    # the staged runner, and asking for them here as well would run the whole
+    # suite twice on two runners. This is the GitHub path: it generates no
+    # separate test job, so the sharding its workflow used to render onto
+    # `build.py --test-shards` has to be decided here or not at all.
+    test_shards = 0 if common.defers_cxx_tests(config, defer_cxx_tests) \
+        else config.ci.test_shards
+    builder = steps.make_packager(config, toml_path, build_missing, platform, test_shards)
     builder.generate_configurations(system_platform=platform)
     if config.filter:
         print(f"Applying build.toml [filter]: {config.filter}")
@@ -310,14 +326,45 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
     return EXIT_OK
 
 
+def _recipe_builds_wheel(configuration):
+    """Whether the recipe leaves a wheel in this configuration's package.
+
+    A pybind configuration does, except on Windows Debug, and that exception is
+    the recipe's: for a library that advertises its module the Windows Debug
+    build is ``_<name>_d.<abi>.pyd``, which the shipped Python cannot import
+    under the name a wheel installs it as, so ``XmsConan2File.build()`` skips
+    the wheel and the Python tests there (USAGE section 7.5). Only a library
+    naming ``Debug`` in ``[matrix].pybind_build_types`` has such a
+    configuration at all.
+
+    Read off the configuration's own ``os``, which is what the recipe reads
+    (``str(self.settings.os) == 'Windows'``) and what the packager puts on
+    every combination it generates. The running interpreter's platform would
+    agree today and is a different question -- whether *this machine* is
+    Windows is what decides where delvewheel can run (:func:`_repair_wheel`),
+    not what the recipe built.
+
+    Restated here rather than shared: the recipe base is copied into each
+    library's checkout as a generated file and imports nothing from this
+    package. The GitHub template used to stand in for it, asking for a wheel
+    only on the Release leg -- so this is where that knowledge went when the
+    template stopped deciding, and asking for a wheel the recipe did not build
+    is what :func:`_stage_wheel` fails the job on.
+    """
+    if not configuration.get("options", {}).get("pybind"):
+        return False
+    windows_debug = configuration.get("os") == "Windows" and configuration.get("build_type") == "Debug"
+    return not windows_debug
+
+
 def _builds_wheel(configurations, platform_key):
     """Whether this job produced a wheel worth staging.
 
     Read off the configurations that survived the filters rather than from a
-    flag: a wheel exists exactly when a pybind configuration was built, which
-    is the same question the CI generator answers per platform when it decides
-    whether to emit the wheel steps -- asked here per job, against the
-    configurations actually built.
+    flag: a wheel exists exactly when a pybind configuration was built and the
+    recipe built its wheel, which is the same question the CI generator
+    answers per platform when it decides whether to emit the wheel steps --
+    asked here per job, against the configurations actually built.
 
     The VS2019 matrix is the one exception, and it is a publishing rule rather
     than a build one: a wheel's tags (``cp310-cp310-win_amd64``) say nothing
@@ -327,9 +374,7 @@ def _builds_wheel(configurations, platform_key):
     """
     if platform_key == VS2019_PLATFORM_KEY:
         return False
-    return any(
-        configuration.get("options", {}).get("pybind") for configuration in configurations
-    )
+    return any(_recipe_builds_wheel(configuration) for configuration in configurations)
 
 
 def _stage_wheel(builder, config, configurations, version, platform_key, environ=None):

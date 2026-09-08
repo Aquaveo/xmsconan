@@ -175,6 +175,13 @@ def _add_deploy_arguments(parser):
              "attach to the release.",
     )
     parser.add_argument(
+        "--from-cache", action="store_true",
+        help=f"Publish what this runner's Conan cache already holds rather "
+             f"than restoring {common.EXPORT_DIR}/. For a workflow whose build "
+             "and deploy are one job on one runner, which is every GitHub "
+             "platform job; GitLab's are separate runners and must restore.",
+    )
+    parser.add_argument(
         "--version", default=None,
         help=f"Package version string. {VERSION_FLAG_HELP}",
     )
@@ -280,6 +287,7 @@ def _main():
             conan=not args.wheels_only,
             wheels=not args.conan_only,
             cache_archive=args.cache_archive,
+            from_cache=args.from_cache,
         )
     if args.kind == "coverage":
         return job_coverage_pages(read_build_toml(args.toml_path).library_name)

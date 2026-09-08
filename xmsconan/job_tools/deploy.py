@@ -21,6 +21,14 @@ The two halves are separately selectable because the two forges run them
 differently: GitLab publishes wheels from a plain ``python`` image and Conan
 packages from a Windows VM, as different jobs, while GitHub does both in the
 one job that built them.
+
+That difference is also why the restore is a flag. On GitLab the packages
+arrive as artifacts from runners this job never shared, so restoring them is
+the whole hand-off and an empty ``.export/`` is a broken pipeline. On GitHub
+the build ran in this job, on this runner, into this cache -- there is no
+hand-off to check, and ``--from-cache`` says so. The caller states which
+world it is in rather than the tool guessing from an empty directory,
+because those two worlds want opposite answers from the same evidence.
 """
 from dataclasses import dataclass
 import os
@@ -143,14 +151,14 @@ class DeploySteps:
             self.wheel_deploy = _wheel_deploy
 
 
-def _deploy_conan(config, version, platform, steps, cache_archive, environ):
+def _deploy_conan(config, version, platform, steps, cache_archive, environ, from_cache):
     """Restore every exported tarball into this cache, then publish once."""
     remote, package_query = upload_target(platform_key=platform)
     # Read before `conan_setup`, not after: on a miss this job has nothing to
     # publish either way, and setup rewrites a `remotes.json` that several
     # jobs on a shared Windows runner write at once (USAGE 10.2). A failure
     # that touched nothing is one less concurrent writer for no benefit.
-    tarballs = exported_tarballs()
+    tarballs = () if from_cache else exported_tarballs()
 
     with common.log_section("Conan setup", environ=environ):
         # No login, for the reason `job build` states: Conan reads
@@ -164,10 +172,13 @@ def _deploy_conan(config, version, platform, steps, cache_archive, environ):
             steps.conan_setup(remote_name=VS2019_REMOTE_NAME,
                               remote_url=VS2019_REMOTE_URL, index=None, login=False)
 
-    with common.log_section("Restore exported packages", environ=environ):
-        for tarball in tarballs:
-            print(f"Restoring {tarball}")
-            steps.conan_deploy(config.library_name, version, restore=tarball)
+    if tarballs:
+        with common.log_section("Restore exported packages", environ=environ):
+            for tarball in tarballs:
+                print(f"Restoring {tarball}")
+                steps.conan_deploy(config.library_name, version, restore=tarball)
+    else:
+        print("Publishing this runner's own cache: --from-cache, nothing to restore.")
 
     # One upload after the whole set is restored, not one per tarball: `conan
     # upload <ref>:*` publishes every package id under the reference, so a
@@ -186,7 +197,7 @@ def _deploy_conan(config, version, platform, steps, cache_archive, environ):
 
 
 def job_deploy(platform=None, version=None, toml_path="build.toml", conan=True, wheels=True,
-               cache_archive=None, steps=None, environ=None):
+               cache_archive=None, from_cache=False, steps=None, environ=None):
     """Publish this pipeline's Conan packages and wheels.
 
     Args:
@@ -200,6 +211,10 @@ def job_deploy(platform=None, version=None, toml_path="build.toml", conan=True, 
         wheels: Upload the staged wheels.
         cache_archive: Write a ``conan cache save`` tarball at this path after
             the upload, for a forge that attaches it to a release.
+        from_cache: Publish what this runner's Conan cache already holds
+            instead of restoring ``.export/``. For a forge whose build and
+            deploy are the same job on the same runner; see the module
+            docstring.
         steps: Injected callables; the production ones when None.
         environ: Environment to read; ``os.environ`` when None.
 
@@ -209,8 +224,9 @@ def job_deploy(platform=None, version=None, toml_path="build.toml", conan=True, 
 
     Raises:
         ValueError: The version is not one a release names, or -- from
-            :func:`exported_tarballs`, which is the likelier fault --
-            ``.export/`` is missing or holds no tarball.
+            :func:`exported_tarballs`, which is the likelier fault, and
+            which *from_cache* does not consult -- ``.export/`` is missing
+            or holds no tarball.
     """
     steps = DeploySteps() if steps is None else steps
     environ = os.environ if environ is None else environ
@@ -233,7 +249,7 @@ def job_deploy(platform=None, version=None, toml_path="build.toml", conan=True, 
     print(f"Deploying {config.library_name} {version}.")
 
     if conan:
-        _deploy_conan(config, version, platform, steps, cache_archive, environ)
+        _deploy_conan(config, version, platform, steps, cache_archive, environ, from_cache)
 
     if wheels:
         # The wheel half never asks what platform it is on: GitLab publishes

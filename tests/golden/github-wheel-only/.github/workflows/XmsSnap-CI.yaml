@@ -68,7 +68,7 @@
 # job on one runner, so the packages are already in the cache that built
 # them and there is nothing to restore.
 
-name: XmsCore-CI
+name: XmsSnap-CI
 
 on:
   push:
@@ -159,7 +159,7 @@ jobs:
           python -m pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: xmsconan job build
+        run: xmsconan job build --release-skips-testing
         shell: bash
         env:
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
@@ -255,7 +255,7 @@ jobs:
           pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: xmsconan job build
+        run: xmsconan job build --release-skips-testing
         shell: bash
         env:
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
@@ -276,6 +276,102 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ runner.os }}
+          path: wheelhouse/*.whl
+        if: matrix.build_type == 'Release'
+      # Upload wheel to Aquapi
+      - name: Upload wheel to Aquapi
+        run: xmsconan job deploy --wheels-only
+        shell: bash
+        env:
+          AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
+          AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+        if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
+      # Upload Release to Conan, and archive what was uploaded
+      - name: Upload Releases to Conan
+        run: xmsconan job deploy --conan-only --from-cache --cache-archive ${{ env.MATRIX_NAME }}.tar.gz
+        shell: bash
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
+        if: startsWith(github.ref, 'refs/tags/')
+      # Get the Release Data
+      - name: Get Release
+        id: git_release
+        uses: bruceadams/get-release@74c3d60f5a28f358ccf241a00c9021ea16f0569f  # v1.3.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
+        if: startsWith(github.ref, 'refs/tags/')
+      # Upload Zipped Conan Packages
+      - name: Upload Zipped Conan Packages
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.git_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/${{ env.MATRIX_NAME }}.tar.gz
+          asset_name: ${{ env.MATRIX_NAME }}.tar.gz
+          asset_content_type: application/zip
+        if: startsWith(github.ref, 'refs/tags/')
+
+  # ----------------------------------------------------------------------------------------------
+  # LINUX ARM
+  # ----------------------------------------------------------------------------------------------
+  linux-arm:
+    name: GCC-13 (${{ matrix.build_type }}, Linux ARM)
+    runs-on: ubuntu-24.04-arm
+
+    container:
+      image: ghcr.io/aquaveo/conan-gcc13-py${{ matrix.python-version }}:latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: ["Release", "Debug"]
+        python-version: ["3.13"]
+
+    env:
+      MATRIX_NAME: linux-arm-GCC13-${{ matrix.build_type }}
+      # What this leg builds. `job build` narrows the matrix by $BUILD_TYPE
+      # and fans its pybind configuration out over $PYTHON_TARGET_VERSION,
+      # which together are the JSON `--filter` this job used to interpolate.
+      # The remote URL and the library name were job env too and are
+      # build.toml's to state; CTEST_PARALLEL_LEVEL is defaulted by the
+      # tool, and only when the runner has not already chosen a value.
+      BUILD_TYPE: ${{ matrix.build_type }}
+      PYTHON_TARGET_VERSION: ${{ matrix.python-version }}
+
+    steps:
+      # Checkout Sources
+      - name: Checkout Source
+        uses: actions/checkout@v4
+      # Install Python Dependencies
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+      # Build the Conan Package
+      - name: Build the Conan Packages
+        run: xmsconan job build --release-skips-testing
+        shell: bash
+        env:
+          CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
+          CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ env.MATRIX_NAME }}
+          path: test_artifacts/
+          if-no-files-found: ignore
+        if: always()
+      # Repair wheel (Release only)
+      - name: Repair wheel
+        run: xmsconan job package
+        shell: bash
+        if: matrix.build_type == 'Release'
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ runner.os }}-arm64
           path: wheelhouse/*.whl
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
@@ -364,7 +460,7 @@ jobs:
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce  # v2
       # Build the Conan Package
       - name: Build the Conan Packages
-        run: xmsconan job build
+        run: xmsconan job build --release-skips-testing
         shell: cmd
         env:
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
