@@ -313,6 +313,7 @@ def test_deploy_defaults_to_publishing_both_halves():
     assert args.conan_only is False
     assert args.wheels_only is False
     assert args.cache_archive is None
+    assert args.from_cache is False
     assert args.version is None
     assert args.toml_path == "build.toml"
 
@@ -327,6 +328,38 @@ def test_deploy_refuses_to_publish_neither_half():
         cli.build_parser().parse_args(["deploy", "--conan-only", "--wheels-only"])
 
     assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("flags, named", [
+    pytest.param(["--from-cache"], ["--from-cache"], id="from-cache"),
+    pytest.param(["--cache-archive", "release.tar.gz"], ["--cache-archive"],
+                 id="cache-archive"),
+    pytest.param(["--from-cache", "--cache-archive", "release.tar.gz"],
+                 ["--from-cache", "--cache-archive"], id="both"),
+])
+def test_deploy_refuses_cache_flags_the_wheel_half_would_ignore(capsys, flags, named):
+    """``--wheels-only`` consults neither ``--from-cache`` nor ``--cache-archive``.
+
+    Both are read only while the Conan half is published, so accepting them
+    beside ``--wheels-only`` is the same failure the group above refuses: the
+    job runs something other than what its flags asked for and exits 0.
+
+    Each flag separately, because one entry dropped from the refusal leaves
+    the other still refusing and a single case still passing; and both
+    together, because the message names what it refuses and a reader who
+    passed two has to be told about two.
+    """
+    parser = cli.build_parser()
+    args = parser.parse_args(["deploy", "--wheels-only"] + flags)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.check_deploy_arguments(parser, args)
+
+    assert excinfo.value.code == 2
+    message = capsys.readouterr().err
+    for name in named:
+        assert name in message
+    assert "--wheels-only" in message
 
 
 def test_deploy_rejects_a_platform_outside_the_packager_matrix():
@@ -348,7 +381,7 @@ def test_main_dispatches_deploy_with_the_flags_it_parsed(tmp_path, monkeypatch):
     """
     monkeypatch.setattr("sys.argv", [
         "xmsconan job", "deploy", "--platform", "windows_vs2019", "--conan-only",
-        "--cache-archive", "release.tar.gz", "--version", "1.2.3",
+        "--cache-archive", "release.tar.gz", "--from-cache", "--version", "1.2.3",
         "--toml", _toml(tmp_path),
     ])
 
@@ -363,6 +396,7 @@ def test_main_dispatches_deploy_with_the_flags_it_parsed(tmp_path, monkeypatch):
     assert recorded["conan"] is True
     assert recorded["wheels"] is False
     assert recorded["cache_archive"] == "release.tar.gz"
+    assert recorded["from_cache"] is True
     assert recorded["version"] == "1.2.3"
 
 

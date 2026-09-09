@@ -2253,7 +2253,10 @@ def _github_leg_configurations(toml_path, job, job_name, release):
 
     config = read_build_toml(str(toml_path))
     with patch_env(environ):
-        builder = job_build._make_packager(config, str(toml_path), False, None)
+        # test_shards passed rather than defaulted: it is job_build's other
+        # argument to this call and reaches no configuration, so leaving it off
+        # would let a reordered signature keep composing something plausible.
+        builder = job_build._make_packager(config, str(toml_path), False, None, 0)
         builder.generate_configurations(system_platform=platform)
     if config.filter:
         builder.filter_configurations(config.filter)
@@ -2306,7 +2309,7 @@ def test_every_github_leg_has_something_to_build(tmp_path, job_name, release):
     )
 
 
-@pytest.mark.xfail(strict=True, reason=(
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
     "Pre-existing, and unchanged by the move onto `job build`: under "
     "[matrix].wheel_only the whole matrix is pybind (Release) plus testing, "
     "so a Debug leg holds only testing configurations -- which is exactly "
@@ -3531,9 +3534,11 @@ def _reaches_the_conan_remote(job):
     ``flake`` runs ``job lint``, builds nothing and must hold nothing. Two
     commands because the two workflows reach the remote from different
     steps, not because there are two rules: the CI workflow through ``job
-    build``, the coverage workflow through the run that resolves this
-    library's dependencies. ``Setup Conan`` is on neither list any more --
-    it writes the remote into the runner's Conan home and talks to nobody.
+    build``, which sets the remote up itself, and the coverage workflow
+    through its separate ``Setup Conan``, the one GitHub step still running
+    ``xmsconan_conan_setup`` on its own (GitLab keeps two). The credential does not sit on that step --
+    it goes to ``Run Coverage``, which is what resolves this library's
+    dependencies -- but the step is what marks the job as reaching the remote.
     """
     return any(
         steps_running(job, command)

@@ -230,7 +230,7 @@ These commands replace inline shell scripts in CI templates, reducing duplicatio
 # Default: detect profile, add Aquaveo remote
 xmsconan conan-setup
 
-# GitHub Actions: also login and remove conancenter
+# Also log in, and drop conancenter so only the Aquaveo remote resolves
 xmsconan conan-setup --remote-url https://conan2.aquaveo.com/... --login --remove-conancenter
 
 # Log in from a workstation with the password read from a file
@@ -257,9 +257,9 @@ xmsconan wheel-repair --wheel-dir wheelhouse --platform macos
 ```
 
 Windows repair can be switched off per library with
-`[ci].windows_wheel_repair`, which drops it from the **Windows build job** of the
-generated CI — that is where it runs, since only a Windows host can run
-delvewheel — and from `xmsconan publish` and the `xmsconan vs2019` track. The
+`[ci].windows_wheel_repair`, which turns it off inside the **Windows build job**
+of the generated CI — that is where it runs, since only a Windows host can run
+delvewheel — and in `xmsconan publish` and the `xmsconan vs2019` track. The
 default follows `ci_type` — on for `github` (public wheels need their DLLs
 bundled), off for `gitlab` (internal wheels are loaded by a host that supplies
 the C++ runtime itself). See `docs/USAGE.md` §12.1.

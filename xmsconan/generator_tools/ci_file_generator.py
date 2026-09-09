@@ -471,12 +471,10 @@ def plan_ci(
 
     # Build template context
     context = {
-        "xmsconan_version": xmsconan_version,
         "xmsconan_requirement": xmsconan_requirement(xmsconan_version),
         "library_name": library_name,
         "display_name": display,
         "version": version,
-        "python_namespaced_dir": config.python_namespaced_dir,
         "ci_windows": config.ci.windows_enabled,
         # Opt-in second Windows toolchain. Not derived from windows_enabled:
         # the msvc 192 matrix resolves a different third-party stack (the

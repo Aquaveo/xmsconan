@@ -187,6 +187,35 @@ def _add_deploy_arguments(parser):
     )
 
 
+def check_deploy_arguments(parser, args):
+    """Refuse ``job deploy`` flags the half being published would never read.
+
+    ``--from-cache`` and ``--cache-archive`` are consulted only while the Conan
+    half publishes, so beside ``--wheels-only`` they are accepted and then
+    ignored. Refused for the reason the ``--conan-only``/``--wheels-only``
+    group is: a deploy that quietly did something other than what its flags
+    asked for goes green saying nothing.
+
+    A function rather than parser configuration because ``argparse`` cannot
+    state a rule spanning two flags that are not mutually exclusive with each
+    other; it lives here so the whole deploy contract stays in one place.
+
+    Args:
+        parser: The parser to report a usage error through.
+        args: The parsed arguments.
+    """
+    if args.kind != "deploy" or not args.wheels_only:
+        return
+    unread = [name for name, value in (("--from-cache", args.from_cache),
+                                       ("--cache-archive", args.cache_archive))
+              if value]
+    if unread:
+        parser.error(
+            f"{' and '.join(unread)} {'is' if len(unread) == 1 else 'are'} read only "
+            "when the Conan half is published, which --wheels-only turns off"
+        )
+
+
 def _add_toml_argument(parser):
     """The ``--toml`` flag, on every subcommand that reads build.toml."""
     parser.add_argument(
@@ -262,6 +291,7 @@ def _main():
     parser = build_parser()
     args = parser.parse_args()
     configure_logging(args)
+    check_deploy_arguments(parser, args)
 
     if args.kind == "build":
         return job_build(

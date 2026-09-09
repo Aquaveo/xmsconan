@@ -384,6 +384,15 @@ def _stage_wheel(builder, config, configurations, version, platform_key, environ
     repair that consumes it is Windows-only, and that is :func:`_repair_wheel`.
     """
     if not _builds_wheel(configurations, platform_key):
+        # Named for the reason the empty-matrix exit above is: a job that was
+        # expected to produce a wheel and produced none otherwise says nothing at
+        # all, and an absent "Stage wheel" section reads the same in the log as a
+        # leg that never had a wheel to stage.
+        reason = (f"the {VS2019_PLATFORM_KEY} matrix publishes none"
+                  if platform_key == VS2019_PLATFORM_KEY else
+                  "no configuration it built leaves one in its package")
+        print(f"No wheel to stage from this job's {len(configurations)} "
+              f"configuration(s): {reason}.")
         return EXIT_OK
 
     with common.log_section("Stage wheel", environ=environ):

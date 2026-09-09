@@ -7,8 +7,10 @@ repository records that the generate has to happen before the packager is
 built, and it is the ordering constraint that a refactor is most likely to
 lose.
 """
+import collections
 import contextlib
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +21,13 @@ from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
 from xmsconan.job_tools import build, common
 from xmsconan.job_tools.build import BuildSteps
 from .job_helpers import write_build_toml as _toml
+
+#: What ``job_build`` handed the packager factory. Named rather than a bare
+#: tuple because the shard count is the field these tests assert, and a
+#: positional index is the one way to read it that a reordered signature
+#: cannot invalidate loudly.
+_MakePackagerArgs = collections.namedtuple(
+    "_MakePackagerArgs", "config toml_path build_missing platform_key test_shards")
 
 
 def _library_configuration(build_type="Release"):
@@ -118,8 +127,8 @@ class _Recorder:
 
     def _make_packager(self, config, toml_path, build_missing, platform_key, test_shards):
         self.calls.append("make_packager")
-        self.make_packager_args = (config, toml_path, build_missing, platform_key,
-                                   test_shards)
+        self.make_packager_args = _MakePackagerArgs(config, toml_path, build_missing,
+                                                    platform_key, test_shards)
         return self.packager
 
     @contextlib.contextmanager
@@ -283,11 +292,16 @@ def test_a_pybind_leg_stages_its_wheel(tmp_path):
     assert recorder.packager.dependency_lib_dirs == [os.path.join("wheelhouse", "libs")]
 
 
-def test_a_library_leg_stages_no_wheel(tmp_path):
-    """Read off the configurations built, not off a flag the template set."""
+def test_a_library_leg_stages_no_wheel(tmp_path, capsys):
+    """Read off the configurations built, not off a flag the template set.
+
+    And said out loud: an absent "Stage wheel" section reads the same in the
+    log as a leg that was expected to produce a wheel and produced none.
+    """
     recorder = _Recorder(packager=_FakePackager(configurations=[_library_configuration()]))
     job_build_in(tmp_path, recorder, leg="library", version="1.2.3")
     assert recorder.packager.wheel_dirs == []
+    assert "no configuration it built leaves one in its package" in capsys.readouterr().out
 
 
 def test_an_incomplete_wheel_extraction_fails_the_job(tmp_path, capsys):
@@ -378,6 +392,70 @@ def test_a_debug_pybind_leg_off_windows_keeps_its_wheel(tmp_path):
     assert recorder.packager.wheel_dirs == [("wheelhouse", "1.2.3")]
 
 
+def _recipe_class():
+    """Import the recipe base lazily.
+
+    Deliberately not a module-level import: ``xms_conan2_file`` imports the
+    real conan package, and ``tests/test_xms_conan2_file.py`` installs
+    MagicMock conan stubs with ``sys.modules.setdefault()``, which silently
+    no-ops if conan is already imported. This module collects first
+    alphabetically, so a module-level import here would disable those stubs
+    for the whole run. ``tests/test_packager.py`` imports it the same way and
+    for the same reason.
+    """
+    from xmsconan.xms_conan2_file import XmsConan2File
+    return XmsConan2File
+
+
+def _recipe_wheel_stub(pybind, os_name, build_type):
+    """Minimal stand-in for the ConanFile surface ``_builds_wheel()`` touches.
+
+    Binds the real method rather than instantiating the recipe, the way
+    ``tests/test_packager.py``'s parity stub does: ``ConanFile.output`` is a
+    read-only property, so an ``object.__new__`` instance cannot be handed
+    one -- it works only while ``tests/test_xms_conan2_file.py``'s conan stubs
+    happen to be installed, and a test that passes for a reason outside itself
+    is one collection order away from passing for none.
+    """
+    class _Stub:
+        _builds_wheel = _recipe_class()._builds_wheel
+        options = SimpleNamespace(pybind=pybind)
+        settings = SimpleNamespace(os=os_name, build_type=build_type)
+        output = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    return _Stub()
+
+
+@pytest.mark.parametrize("pybind", [True, False])
+@pytest.mark.parametrize("os_name", ["Windows", "Linux", "Macos"])
+@pytest.mark.parametrize("build_type", ["Debug", "Release"])
+def test_the_wheel_rule_agrees_with_the_recipe_it_restates(pybind, os_name, build_type):
+    """The job's copy of the rule and the recipe's original must not drift.
+
+    :func:`~xmsconan.job_tools.build._recipe_builds_wheel` is a restatement,
+    not a call: the recipe base is copied into each library's checkout as a
+    generated file and imports nothing from this package, so there is no
+    shared function to reach for. That leaves two spellings of one rule with
+    nothing between them, and either direction of drift is silent -- the job
+    stages a wheel the recipe never built and fails the leg on "no complete
+    set of wheels", or it skips one the recipe did build and the release ships
+    without it.
+
+    Compared against the recipe's *composed* condition rather than
+    ``_builds_wheel`` alone, because ``xms_conan2_file.build()`` gates on
+    ``self.options.pybind and self._builds_wheel()`` and the restatement
+    carries both halves. Over the whole grid rather than at the Windows Debug
+    corner it was written for: a rule that agreed only where someone
+    remembered to check is what drift looks like on the way out.
+    """
+    configuration = {"os": os_name, "build_type": build_type,
+                     "options": {"pybind": pybind}}
+    recipe = _recipe_wheel_stub(pybind, os_name, build_type)
+
+    assert build._recipe_builds_wheel(configuration) == bool(
+        recipe.options.pybind and recipe._builds_wheel())
+
+
 def test_the_wheel_rule_reads_the_configuration_not_the_running_machine(tmp_path):
     """A Windows Debug configuration is skipped wherever the job runs.
 
@@ -411,12 +489,11 @@ def test_vs2019_appends_its_remote_and_builds_missing_dependencies(tmp_path):
     assert recorder.conan_setup_kwargs[0] == {"login": False}
     assert recorder.conan_setup_kwargs[1]["remote_name"] == VS2019_REMOTE_NAME
     assert recorder.conan_setup_kwargs[1]["index"] is None
-    _, _, build_missing, platform_key, _ = recorder.make_packager_args
-    assert build_missing is True
-    assert platform_key == VS2019_PLATFORM_KEY
+    assert recorder.make_packager_args.build_missing is True
+    assert recorder.make_packager_args.platform_key == VS2019_PLATFORM_KEY
 
 
-def test_vs2019_stages_no_wheel(tmp_path):
+def test_vs2019_stages_no_wheel(tmp_path, capsys):
     """A wheel's tags say nothing about which MSVC built it.
 
     An msvc 192 wheel and an msvc 194 wheel are the same filename on the
@@ -425,6 +502,9 @@ def test_vs2019_stages_no_wheel(tmp_path):
     recorder = _Recorder(packager=_FakePackager(configurations=[_pybind_configuration()]))
     job_build_in(tmp_path, recorder, platform=VS2019_PLATFORM_KEY, version="1.2.3")
     assert recorder.packager.wheel_dirs == []
+    # The other branch of the same message: this leg built a wheel and is not
+    # publishing it, which is a different thing to say than "none was built".
+    assert f"the {VS2019_PLATFORM_KEY} matrix publishes none" in capsys.readouterr().out
 
 
 # --- export ---
@@ -728,7 +808,7 @@ def test_the_shard_count_reaches_the_packager_when_this_job_runs_the_tests(tmp_p
     job_build_in(tmp_path, recorder, version="1.2.3",
                  body='library_name = "xmscore"\n[ci]\ntest_shards = 4\n')
 
-    assert recorder.make_packager_args[4] == 4
+    assert recorder.make_packager_args.test_shards == 4
 
 
 def test_a_deferred_suite_leaves_the_shards_to_the_job_that_runs_them(tmp_path):
@@ -744,7 +824,7 @@ def test_a_deferred_suite_leaves_the_shards_to_the_job_that_runs_them(tmp_path):
                  body='library_name = "xmscore"\n'
                       '[ci]\ntest_shards = 4\nsplit_tests = true\n')
 
-    assert recorder.make_packager_args[4] == 0
+    assert recorder.make_packager_args.test_shards == 0
 
 
 def test_the_real_packager_takes_the_shard_count_by_that_name(tmp_path):
