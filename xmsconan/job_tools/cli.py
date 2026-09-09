@@ -175,9 +175,45 @@ def _add_deploy_arguments(parser):
              "attach to the release.",
     )
     parser.add_argument(
+        "--from-cache", action="store_true",
+        help=f"Publish what this runner's Conan cache already holds rather "
+             f"than restoring {common.EXPORT_DIR}/. For a workflow whose build "
+             "and deploy are one job on one runner, which is every GitHub "
+             "platform job; GitLab's are separate runners and must restore.",
+    )
+    parser.add_argument(
         "--version", default=None,
         help=f"Package version string. {VERSION_FLAG_HELP}",
     )
+
+
+def check_deploy_arguments(parser, args):
+    """Refuse ``job deploy`` flags the half being published would never read.
+
+    ``--from-cache`` and ``--cache-archive`` are consulted only while the Conan
+    half publishes, so beside ``--wheels-only`` they are accepted and then
+    ignored. Refused for the reason the ``--conan-only``/``--wheels-only``
+    group is: a deploy that quietly did something other than what its flags
+    asked for goes green saying nothing.
+
+    A function rather than parser configuration because ``argparse`` cannot
+    state a rule spanning two flags that are not mutually exclusive with each
+    other; it lives here so the whole deploy contract stays in one place.
+
+    Args:
+        parser: The parser to report a usage error through.
+        args: The parsed arguments.
+    """
+    if args.kind != "deploy" or not args.wheels_only:
+        return
+    unread = [name for name, value in (("--from-cache", args.from_cache),
+                                       ("--cache-archive", args.cache_archive))
+              if value]
+    if unread:
+        parser.error(
+            f"{' and '.join(unread)} {'is' if len(unread) == 1 else 'are'} read only "
+            "when the Conan half is published, which --wheels-only turns off"
+        )
 
 
 def _add_toml_argument(parser):
@@ -255,6 +291,7 @@ def _main():
     parser = build_parser()
     args = parser.parse_args()
     configure_logging(args)
+    check_deploy_arguments(parser, args)
 
     if args.kind == "build":
         return job_build(
@@ -280,6 +317,7 @@ def _main():
             conan=not args.wheels_only,
             wheels=not args.conan_only,
             cache_archive=args.cache_archive,
+            from_cache=args.from_cache,
         )
     if args.kind == "coverage":
         return job_coverage_pages(read_build_toml(args.toml_path).library_name)

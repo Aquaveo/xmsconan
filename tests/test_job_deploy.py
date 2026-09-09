@@ -61,14 +61,23 @@ def _exported(tmp_path, *names):
     return export_dir
 
 
-def job_deploy_in(tmp_path, recorder, monkeypatch, **kwargs):
+def job_deploy_in(tmp_path, recorder, monkeypatch, host="linux", **kwargs):
     """Run :func:`job_deploy` with *tmp_path* as the working directory.
 
     The export glob is relative, like every other path in the fixed output
     layout, so the working directory is part of what is under test rather
     than something to thread past it as a parameter.
+
+    *host* is the ``sys.platform`` this deploy runs on, pinned rather than
+    inherited. ``upload_target`` reads the running interpreter's platform
+    when no caller names one, and nothing between here and there passes it,
+    so a test that leaves it to the machine asserts whichever laptop wrote
+    it and fails on the Windows leg of CI. Non-Windows is the default
+    because most of these tests are about what a deploy *does* rather than
+    where it runs; the ones that mean Windows say so.
     """
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(deploy.sys, "platform", host)
     kwargs.setdefault("version", "1.2.3")
     return deploy.job_deploy(toml_path=_toml(tmp_path), steps=recorder.steps(),
                              environ={}, **kwargs)
@@ -424,3 +433,85 @@ def test_the_recorded_calls_are_calls_the_production_functions_accept():
                package_query="compiler.version=194")
 
     inspect.signature(deploy._wheel_deploy).bind(wheel_dir=common.WHEEL_DIR)
+
+
+# --- the forge whose build and deploy are the same runner ---
+
+
+def test_from_cache_uploads_without_restoring_anything(tmp_path, monkeypatch):
+    """The build and the publish are one job, so there is nothing to hand over.
+
+    The packages this uploads are already in the cache that built them. A
+    restore would be a `conan cache save` of that cache followed by a restore
+    of the same content into itself -- minutes of a release job's wall clock
+    to arrive where it started.
+    """
+    recorder = _Recorder()
+    job_deploy_in(tmp_path, recorder, monkeypatch, from_cache=True, wheels=False)
+
+    assert [kwargs for _, _, kwargs in recorder.deploy_kwargs] == [
+        {"upload": True, "remote": DEFAULT_REMOTE_NAME, "package_query": None},
+    ]
+
+
+def test_from_cache_does_not_need_an_export_directory(tmp_path, monkeypatch):
+    """The absent directory is the normal case here, not the broken one.
+
+    Without the flag an empty `.export/` is a build job whose artifacts never
+    arrived, which is why it raises. The same evidence means the opposite on a
+    single-runner workflow, so the caller says which world it is in rather
+    than the tool reading the difference out of an empty directory.
+    """
+    recorder = _Recorder()
+
+    assert not (tmp_path / common.EXPORT_DIR).exists()
+    assert job_deploy_in(tmp_path, recorder, monkeypatch,
+                         from_cache=True, wheels=False) == EXIT_OK
+
+
+def test_without_from_cache_a_missing_export_directory_still_refuses(tmp_path, monkeypatch):
+    """The flag opts out of the check; it does not weaken it for everyone else."""
+    recorder = _Recorder()
+
+    with pytest.raises(ValueError, match="none arrived"):
+        job_deploy_in(tmp_path, recorder, monkeypatch, wheels=False)
+
+
+def test_from_cache_still_archives_the_release_asset(tmp_path, monkeypatch):
+    """The archive is the step GitHub actually wants from a deploy.
+
+    It is what `upload-release-asset` attaches, and it is written from the
+    same cache the upload read -- so skipping the restore must not skip it.
+
+    Asserted on Windows, because that is the leg this archive name belongs
+    to and the one where the save carries a query: a Windows runner's
+    Conan cache is per machine, so an unqueried save would tarball
+    whichever toolchain a neighbouring job left in it. The pairing this
+    used to assert -- a Windows archive saved unqueried -- is one no
+    runner can produce.
+    """
+    recorder = _Recorder()
+    job_deploy_in(tmp_path, recorder, monkeypatch, host="win32", from_cache=True,
+                  wheels=False,
+                  cache_archive="windows-2022-VS17-Release-py3.13.tar.gz")
+
+    assert recorder.deploy_kwargs[-1][2] == {
+        "save": "windows-2022-VS17-Release-py3.13.tar.gz",
+        "package_query": "compiler.version=194",
+    }
+
+
+def test_from_cache_restores_nothing_even_when_an_export_directory_exists(
+        tmp_path, monkeypatch):
+    """A leftover `.export/` from an earlier step must not change the plan.
+
+    `job build --export` and `job deploy --from-cache` are not a pairing any
+    workflow generates, but a hand-run replay can leave the directory behind,
+    and a flag that means "do not restore" has to mean it.
+    """
+    recorder = _Recorder()
+    _exported(tmp_path, "xmscore-linux-py3.13-1.2.3.tar.gz")
+
+    job_deploy_in(tmp_path, recorder, monkeypatch, from_cache=True, wheels=False)
+
+    assert not [kwargs for _, _, kwargs in recorder.deploy_kwargs if "restore" in kwargs]

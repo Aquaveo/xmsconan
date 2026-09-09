@@ -1,0 +1,9 @@
+library_name = "xmssnap"
+description = "Snap"
+ci_type = "github"
+
+[ci]
+linux_arm = true
+
+[matrix]
+wheel_only = true

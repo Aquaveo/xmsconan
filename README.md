@@ -230,7 +230,7 @@ These commands replace inline shell scripts in CI templates, reducing duplicatio
 # Default: detect profile, add Aquaveo remote
 xmsconan conan-setup
 
-# GitHub Actions: also login and remove conancenter
+# Also log in, and drop conancenter so only the Aquaveo remote resolves
 xmsconan conan-setup --remote-url https://conan2.aquaveo.com/... --login --remove-conancenter
 
 # Log in from a workstation with the password read from a file
@@ -242,9 +242,9 @@ The password reaches Conan through the child process's environment
 command line. `--password-file` falls back to `$CONAN_PASSWORD` and then the
 `[conan]` section of `~/.xmsconan.toml`; there is deliberately no `--password`
 flag. In CI, nothing is passed at all — `CONAN_LOGIN_USERNAME` /
-`CONAN_PASSWORD` are read by Conan itself, from the `Setup Conan` step's own
-`env:` on GitHub (the job holds no secrets; see `docs/USAGE.md` §10.1) and
-from the project's CI/CD variables on GitLab.
+`CONAN_PASSWORD` are read by Conan itself, from the `env:` of each GitHub step
+that reaches the remote (the job holds no secrets; see `docs/USAGE.md` §10.1)
+and from the project's CI/CD variables on GitLab.
 
 #### Wheel Repair
 
@@ -257,8 +257,9 @@ xmsconan wheel-repair --wheel-dir wheelhouse --platform macos
 ```
 
 Windows repair can be switched off per library with
-`[ci].windows_wheel_repair`, which drops the step from the **Windows job** of the
-generated CI, from `xmsconan publish`, and from the `xmsconan vs2019` track. The
+`[ci].windows_wheel_repair`, which turns it off inside the **Windows build job**
+of the generated CI — that is where it runs, since only a Windows host can run
+delvewheel — and in `xmsconan publish` and the `xmsconan vs2019` track. The
 default follows `ci_type` — on for `github` (public wheels need their DLLs
 bundled), off for `gitlab` (internal wheels are loaded by a host that supplies
 the C++ runtime itself). See `docs/USAGE.md` §12.1.

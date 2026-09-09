@@ -10,7 +10,6 @@ from jinja2 import Environment, StrictUndefined
 # 3. Aquaveo modules
 from xmsconan._cli import add_verbosity_args, configure_logging, run_main
 from xmsconan.build_toml import BuildToml, CiTable, CoverageTable, read_build_toml
-from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.constants import (
     MSVC_VS2019_VERSION,
     SUPPORTED_PYTHON_VERSIONS,
@@ -31,26 +30,6 @@ from xmsconan.generator_tools.output_plan import check_plan, describe_plan, writ
 
 
 LOGGER = logging.getLogger(__name__)
-
-#: The GitHub build step's wheel request, gated to the leg that publishes one.
-#:
-#: Every step that consumes the wheel -- repair, artifact upload, devpi deploy
-#: -- is gated on ``matrix.build_type == 'Release'``, and
-#: ``[matrix].pybind_build_types`` defaults to Release only, so a Debug leg has
-#: no pybind configuration to extract a wheel from. ``build.py`` exits 1 when
-#: ``--wheel-dir`` yields no complete set of wheels, which is the right answer
-#: on a Release leg and wrong on a Debug one: on Windows a Debug pybind
-#: configuration produces no wheel by design (USAGE section 7.5), and on Linux
-#: and macOS a Debug wheel would only be built and discarded. Asking for the
-#: wheel where one is expected keeps that check at full strength where it
-#: matters.
-#:
-#: GitLab needs no equivalent: its build step runs the whole matrix in one
-#: invocation with no build-type filter, so the Release pybind configuration is
-#: always in scope.
-RELEASE_ONLY_WHEEL_DIR = (
-    "${{ matrix.build_type == 'Release' && ' --wheel-dir wheelhouse' || '' }}"
-)
 
 
 def xmsconan_requirement(version: str) -> str:
@@ -382,14 +361,16 @@ def plan_ci(
                 "windows_vs2019."
             )
     if ci_type == "github":
-        # Every wheel step in the GitHub workflow is gated on
-        # `matrix.build_type == 'Release'` -- including the build step's
-        # --wheel-dir -- so a library whose pybind configurations exclude
-        # Release publishes nothing: the Release leg is the only leg that asks
-        # for a wheel and it has no pybind configuration to get one from, so it
-        # dies in build.py with "no complete set of wheels was extracted". The
-        # Debug leg that could have produced one never stages it. Same class of
-        # check as the two above.
+        # Every step that *consumes* the wheel in the GitHub workflow is gated
+        # on `matrix.build_type == 'Release'`, so a library whose pybind
+        # configurations exclude Release publishes nothing: the Release leg is
+        # the only leg those steps run on and it has no pybind configuration to
+        # get a wheel from, so `job package` dies on an empty wheelhouse. The
+        # Debug leg that could have produced one stages it and nothing reads it.
+        # The build step used to carry the gate too, as a Release-only
+        # --wheel-dir; it reads the configurations now, which is why this check
+        # is about the consuming steps rather than about the build. Same class
+        # of check as the two above.
         pybind_build_types = config.matrix.get("pybind_build_types")
         if pybind_build_types and "Release" not in pybind_build_types:
             raise ValueError(
@@ -490,12 +471,10 @@ def plan_ci(
 
     # Build template context
     context = {
-        "xmsconan_version": xmsconan_version,
         "xmsconan_requirement": xmsconan_requirement(xmsconan_version),
         "library_name": library_name,
         "display_name": display,
         "version": version,
-        "python_namespaced_dir": config.python_namespaced_dir,
         "ci_windows": config.ci.windows_enabled,
         # Opt-in second Windows toolchain. Not derived from windows_enabled:
         # the msvc 192 matrix resolves a different third-party stack (the
@@ -511,10 +490,6 @@ def plan_ci(
         # it from packager.only_msvc_version, so the version the query names
         # cannot be one the matrix does not pin.
         "vs2019_msvc_version": MSVC_VS2019_VERSION,
-        # Windows-scoped on purpose: a manylinux wheel has to be repaired to be
-        # installable, so there is no equivalent switch for Linux or macOS. The
-        # default follows ci_type -- see repairs_windows_wheel.
-        "ci_windows_wheel_repair": repairs_windows_wheel(config),
         "ci_linux": config.ci.linux_enabled,
         # Whether this repository gets the concurrent build stage. `wheel_only`
         # is the flag it is keyed to because that is the shape the restructure
@@ -530,12 +505,10 @@ def plan_ci(
         "ci_linux_arm": config.ci.linux_arm,
         "docker_image": config.ci.docker_image,
         "ci_split_tests": config.ci.split_tests,
-        "ci_test_shards": config.ci.test_shards,
         "ci_python_versions": ci_python_versions,
         "ci_mac_python_versions": ci_mac_python_versions,
         "ci_linux_python_versions": ci_linux_python_versions,
         "ci_mac_py_suffix": _py_suffix(ci_mac_python_versions),
-        "ci_wheel_dir_flag": RELEASE_ONLY_WHEEL_DIR,
         "gitlab_linux_fanout": len(ci_linux_python_versions) > 1,
         "gitlab_linux_image_py": (
             "${PYTHON_TARGET_VERSION}" if len(ci_linux_python_versions) > 1

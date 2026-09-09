@@ -7,8 +7,10 @@ repository records that the generate has to happen before the packager is
 built, and it is the ordering constraint that a refactor is most likely to
 lose.
 """
+import collections
 import contextlib
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -20,15 +22,28 @@ from xmsconan.job_tools import build, common
 from xmsconan.job_tools.build import BuildSteps
 from .job_helpers import write_build_toml as _toml
 
+#: What ``job_build`` handed the packager factory. Named rather than a bare
+#: tuple because the shard count is the field these tests assert, and a
+#: positional index is the one way to read it that a reordered signature
+#: cannot invalidate loudly.
+_MakePackagerArgs = collections.namedtuple(
+    "_MakePackagerArgs", "config toml_path build_missing platform_key test_shards")
+
 
 def _library_configuration(build_type="Release"):
     """A configuration with no pybind and no testing."""
     return {"build_type": build_type, "options": {"testing": False, "pybind": False}}
 
 
-def _pybind_configuration(build_type="Release", python_version="3.13"):
-    """A configuration that produces a wheel."""
+def _pybind_configuration(build_type="Release", python_version="3.13", os_name="Linux"):
+    """A configuration that produces a wheel.
+
+    ``os`` is carried because the packager carries it on every combination it
+    generates and the recipe's wheel rule reads it. Defaulted to Linux so the
+    tests that are not about that rule say nothing about it.
+    """
     return {"build_type": build_type,
+            "os": os_name,
             "options": {"pybind": True, "testing": False, "python_version": python_version}}
 
 
@@ -110,9 +125,10 @@ class _Recorder:
         self.generated = (toml_file_path, version)
         return self.generate_result
 
-    def _make_packager(self, config, toml_path, build_missing, platform_key):
+    def _make_packager(self, config, toml_path, build_missing, platform_key, test_shards):
         self.calls.append("make_packager")
-        self.make_packager_args = (config, toml_path, build_missing, platform_key)
+        self.make_packager_args = _MakePackagerArgs(config, toml_path, build_missing,
+                                                    platform_key, test_shards)
         return self.packager
 
     @contextlib.contextmanager
@@ -276,11 +292,16 @@ def test_a_pybind_leg_stages_its_wheel(tmp_path):
     assert recorder.packager.dependency_lib_dirs == [os.path.join("wheelhouse", "libs")]
 
 
-def test_a_library_leg_stages_no_wheel(tmp_path):
-    """Read off the configurations built, not off a flag the template set."""
+def test_a_library_leg_stages_no_wheel(tmp_path, capsys):
+    """Read off the configurations built, not off a flag the template set.
+
+    And said out loud: an absent "Stage wheel" section reads the same in the
+    log as a leg that was expected to produce a wheel and produced none.
+    """
     recorder = _Recorder(packager=_FakePackager(configurations=[_library_configuration()]))
     job_build_in(tmp_path, recorder, leg="library", version="1.2.3")
     assert recorder.packager.wheel_dirs == []
+    assert "no configuration it built leaves one in its package" in capsys.readouterr().out
 
 
 def test_an_incomplete_wheel_extraction_fails_the_job(tmp_path, capsys):
@@ -319,6 +340,140 @@ def test_dependency_libs_are_skipped_when_repair_is_off(tmp_path):
     assert recorder.repair_kwargs == []
 
 
+def test_a_windows_debug_pybind_leg_stages_no_wheel(tmp_path):
+    """The recipe builds no wheel there, so asking for one fails the job.
+
+    ``XmsConan2File.build()`` skips the wheel and the Python tests for a
+    Windows Debug pybind build, because an opted-in library's module is
+    ``_<name>_d.<abi>.pyd`` and the shipped Python cannot import it under the
+    name the wheel installs (USAGE 7.5). The GitHub template used to stand in
+    for that by passing ``--wheel-dir`` on the Release leg only; ``job build``
+    reads the configurations instead, so the rule has to be here or a library
+    naming Debug in [matrix].pybind_build_types loses its Windows Debug leg to
+    "no complete set of wheels".
+    """
+    recorder = _Recorder(packager=_FakePackager(
+        configurations=[_pybind_configuration(build_type="Debug", os_name="Windows")]))
+    with patch.object(build.sys, "platform", "win32"):
+        job_build_in(tmp_path, recorder, version="1.2.3")
+
+    assert recorder.packager.wheel_dirs == []
+    assert recorder.repair_kwargs == []
+
+
+def test_a_windows_debug_leg_still_stages_the_release_wheel_beside_it(tmp_path):
+    """One skipped configuration must not cancel the job's other one.
+
+    A job that builds a platform's whole matrix -- GitLab's Windows job -- has
+    both, and the Release half is the wheel that ships.
+    """
+    recorder = _Recorder(packager=_FakePackager(configurations=[
+        _pybind_configuration(build_type="Debug", os_name="Windows"),
+        _pybind_configuration(build_type="Release", os_name="Windows"),
+    ]))
+    with patch.object(build.sys, "platform", "win32"):
+        job_build_in(tmp_path, recorder, version="1.2.3")
+
+    assert recorder.packager.wheel_dirs == [("wheelhouse", "1.2.3")]
+
+
+def test_a_debug_pybind_leg_off_windows_keeps_its_wheel(tmp_path):
+    """Off Windows the module keeps the name the shipped Python imports.
+
+    The skip is a Windows naming rule, not a build-type one: a library that
+    asks for a Debug module expects its wheel and its Python tests everywhere
+    else, and the old Release-only gate had no way to say that.
+    """
+    recorder = _Recorder(packager=_FakePackager(
+        configurations=[_pybind_configuration(build_type="Debug", os_name="Linux")]))
+    with patch.object(build.sys, "platform", "linux"):
+        job_build_in(tmp_path, recorder, version="1.2.3")
+
+    assert recorder.packager.wheel_dirs == [("wheelhouse", "1.2.3")]
+
+
+def _recipe_class():
+    """Import the recipe base lazily.
+
+    Deliberately not a module-level import: ``xms_conan2_file`` imports the
+    real conan package, and ``tests/test_xms_conan2_file.py`` installs
+    MagicMock conan stubs with ``sys.modules.setdefault()``, which silently
+    no-ops if conan is already imported. This module collects first
+    alphabetically, so a module-level import here would disable those stubs
+    for the whole run. ``tests/test_packager.py`` imports it the same way and
+    for the same reason.
+    """
+    from xmsconan.xms_conan2_file import XmsConan2File
+    return XmsConan2File
+
+
+def _recipe_wheel_stub(pybind, os_name, build_type):
+    """Minimal stand-in for the ConanFile surface ``_builds_wheel()`` touches.
+
+    Binds the real method rather than instantiating the recipe, the way
+    ``tests/test_packager.py``'s parity stub does: ``ConanFile.output`` is a
+    read-only property, so an ``object.__new__`` instance cannot be handed
+    one -- it works only while ``tests/test_xms_conan2_file.py``'s conan stubs
+    happen to be installed, and a test that passes for a reason outside itself
+    is one collection order away from passing for none.
+    """
+    class _Stub:
+        _builds_wheel = _recipe_class()._builds_wheel
+        options = SimpleNamespace(pybind=pybind)
+        settings = SimpleNamespace(os=os_name, build_type=build_type)
+        output = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    return _Stub()
+
+
+@pytest.mark.parametrize("pybind", [True, False])
+@pytest.mark.parametrize("os_name", ["Windows", "Linux", "Macos"])
+@pytest.mark.parametrize("build_type", ["Debug", "Release"])
+def test_the_wheel_rule_agrees_with_the_recipe_it_restates(pybind, os_name, build_type):
+    """The job's copy of the rule and the recipe's original must not drift.
+
+    :func:`~xmsconan.job_tools.build._recipe_builds_wheel` is a restatement,
+    not a call: the recipe base is copied into each library's checkout as a
+    generated file and imports nothing from this package, so there is no
+    shared function to reach for. That leaves two spellings of one rule with
+    nothing between them, and either direction of drift is silent -- the job
+    stages a wheel the recipe never built and fails the leg on "no complete
+    set of wheels", or it skips one the recipe did build and the release ships
+    without it.
+
+    Compared against the recipe's *composed* condition rather than
+    ``_builds_wheel`` alone, because ``xms_conan2_file.build()`` gates on
+    ``self.options.pybind and self._builds_wheel()`` and the restatement
+    carries both halves. Over the whole grid rather than at the Windows Debug
+    corner it was written for: a rule that agreed only where someone
+    remembered to check is what drift looks like on the way out.
+    """
+    configuration = {"os": os_name, "build_type": build_type,
+                     "options": {"pybind": pybind}}
+    recipe = _recipe_wheel_stub(pybind, os_name, build_type)
+
+    assert build._recipe_builds_wheel(configuration) == bool(
+        recipe.options.pybind and recipe._builds_wheel())
+
+
+def test_the_wheel_rule_reads_the_configuration_not_the_running_machine(tmp_path):
+    """A Windows Debug configuration is skipped wherever the job runs.
+
+    ``XmsConan2File.build()`` decides on ``settings.os``, so this does too --
+    the running interpreter's platform answers a different question, which is
+    where delvewheel can run. They agree on a real runner and would only come
+    apart under cross-compilation, but the two are asked separately: a build
+    that read ``sys.platform`` for both would call a configuration's wheel
+    into existence by moving the job to another machine.
+    """
+    recorder = _Recorder(packager=_FakePackager(
+        configurations=[_pybind_configuration(build_type="Debug", os_name="Windows")]))
+    with patch.object(build.sys, "platform", "linux"):
+        job_build_in(tmp_path, recorder, version="1.2.3")
+
+    assert recorder.packager.wheel_dirs == []
+
+
 # --- VS2019 ---
 
 
@@ -334,12 +489,11 @@ def test_vs2019_appends_its_remote_and_builds_missing_dependencies(tmp_path):
     assert recorder.conan_setup_kwargs[0] == {"login": False}
     assert recorder.conan_setup_kwargs[1]["remote_name"] == VS2019_REMOTE_NAME
     assert recorder.conan_setup_kwargs[1]["index"] is None
-    _, _, build_missing, platform_key = recorder.make_packager_args
-    assert build_missing is True
-    assert platform_key == VS2019_PLATFORM_KEY
+    assert recorder.make_packager_args.build_missing is True
+    assert recorder.make_packager_args.platform_key == VS2019_PLATFORM_KEY
 
 
-def test_vs2019_stages_no_wheel(tmp_path):
+def test_vs2019_stages_no_wheel(tmp_path, capsys):
     """A wheel's tags say nothing about which MSVC built it.
 
     An msvc 192 wheel and an msvc 194 wheel are the same filename on the
@@ -348,6 +502,9 @@ def test_vs2019_stages_no_wheel(tmp_path):
     recorder = _Recorder(packager=_FakePackager(configurations=[_pybind_configuration()]))
     job_build_in(tmp_path, recorder, platform=VS2019_PLATFORM_KEY, version="1.2.3")
     assert recorder.packager.wheel_dirs == []
+    # The other branch of the same message: this leg built a wheel and is not
+    # publishing it, which is a different thing to say than "none was built".
+    assert f"the {VS2019_PLATFORM_KEY} matrix publishes none" in capsys.readouterr().out
 
 
 # --- export ---
@@ -633,3 +790,54 @@ def test_windows_wheel_repair_can_be_turned_off(tmp_path):
 
     assert recorder.repair_kwargs == []
     assert recorder.packager.dependency_lib_dirs == []
+
+
+# --- who decides the shard count ---
+
+
+def test_the_shard_count_reaches_the_packager_when_this_job_runs_the_tests(tmp_path):
+    """[ci].test_shards was reaching nothing on the forge that needs it.
+
+    GitHub generates no separate test job, so its workflow rendered
+    ``build.py --test-shards N`` to get the packager to skip ``cmake.test()``
+    and run the staged runner as N in-process shards. Nothing carried that
+    across when the build became ``xmsconan job build``, so the setting would
+    have gone quietly inert -- the suite still passing, on one core.
+    """
+    recorder = _Recorder()
+    job_build_in(tmp_path, recorder, version="1.2.3",
+                 body='library_name = "xmscore"\n[ci]\ntest_shards = 4\n')
+
+    assert recorder.make_packager_args.test_shards == 4
+
+
+def test_a_deferred_suite_leaves_the_shards_to_the_job_that_runs_them(tmp_path):
+    """Sharding here as well would run every test twice, on two runners.
+
+    ``--defer-cxx-tests`` means a "Run C++ Tests" job downstream runs these
+    shards from the artifacts this build stages, and it reads the same
+    ``[ci].test_shards``. The recipe is already told to skip the suite; the
+    packager has to be told the same thing or it runs it anyway, sharded.
+    """
+    recorder = _Recorder()
+    job_build_in(tmp_path, recorder, version="1.2.3", defer_cxx_tests=True,
+                 body='library_name = "xmscore"\n'
+                      '[ci]\ntest_shards = 4\nsplit_tests = true\n')
+
+    assert recorder.make_packager_args.test_shards == 0
+
+
+def test_the_real_packager_takes_the_shard_count_by_that_name(tmp_path):
+    """A renamed keyword would pass every assertion above and fail in CI.
+
+    ``XmsConanPackager`` refuses ``test_shards`` above 1 without an artifacts
+    directory to stage the runner into, so this also pins that ``job build``
+    always passes one.
+    """
+    toml_path = _toml(tmp_path)
+    config = read_build_toml(toml_path)
+
+    packager = build._make_packager(config, toml_path, build_missing=False,
+                                    platform_key=None, test_shards=4)
+
+    assert packager._test_shards == 4

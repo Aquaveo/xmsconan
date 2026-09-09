@@ -134,6 +134,27 @@ def resolve_leg(leg=None, release=False, release_skips_testing=False, environ=No
     return selection
 
 
+def defers_cxx_tests(config, defer_cxx_tests=False):
+    """Whether a separate job in this pipeline runs the suite this build compiles.
+
+    Which jobs hand their runner to a separate test job is a fact about the
+    pipeline's shape, so the generator states it with ``--defer-cxx-tests``
+    rather than the tool inferring it from ``--leg``. Inferring it was wrong
+    in both directions: the ``--leg``-less Linux build feeds the "Run C++
+    Tests" jobs and got no skip, while the Windows build renders the same
+    flagless command and must keep running its suite inline, because no
+    Windows test job is generated to run it. ``[ci].split_tests`` still
+    gates, so turning sharding off takes effect without regenerating.
+
+    Two decisions read this and they have to agree: the recipe is told to
+    skip the tests (:data:`SKIP_CXX_TESTS_VARIABLE`), and the packager is
+    told not to shard them here (:func:`~xmsconan.job_tools.build.job_build`).
+    A build that did one without the other would run the suite twice, or
+    compile a runner nothing ever executes.
+    """
+    return bool(config.ci.split_tests and defer_cxx_tests)
+
+
 def set_job_environment(config, defer_cxx_tests=False, environ=None):
     """Set the variables a generated job used to ``export`` before its build.
 
@@ -165,15 +186,7 @@ def set_job_environment(config, defer_cxx_tests=False, environ=None):
     if python_version:
         _default(UV_PYTHON_VARIABLE, python_version)
 
-    # Which jobs hand their runner to a separate test job is a fact about the
-    # pipeline's shape, so the generator states it with `--defer-cxx-tests`
-    # rather than the tool inferring it from `--leg`. Inferring it was wrong in
-    # both directions: the `--leg`-less Linux build feeds the "Run C++ Tests"
-    # jobs and got no skip, while the Windows build renders the same flagless
-    # command and must keep running its suite inline, because no Windows test
-    # job is generated to run it. [ci].split_tests still gates, so turning
-    # sharding off takes effect without regenerating.
-    if config.ci.split_tests and defer_cxx_tests:
+    if defers_cxx_tests(config, defer_cxx_tests):
         _default(SKIP_CXX_TESTS_VARIABLE, "1")
 
     return set_names
