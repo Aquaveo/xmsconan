@@ -61,14 +61,23 @@ def _exported(tmp_path, *names):
     return export_dir
 
 
-def job_deploy_in(tmp_path, recorder, monkeypatch, **kwargs):
+def job_deploy_in(tmp_path, recorder, monkeypatch, host="linux", **kwargs):
     """Run :func:`job_deploy` with *tmp_path* as the working directory.
 
     The export glob is relative, like every other path in the fixed output
     layout, so the working directory is part of what is under test rather
     than something to thread past it as a parameter.
+
+    *host* is the ``sys.platform`` this deploy runs on, pinned rather than
+    inherited. ``upload_target`` reads the running interpreter's platform
+    when no caller names one, and nothing between here and there passes it,
+    so a test that leaves it to the machine asserts whichever laptop wrote
+    it and fails on the Windows leg of CI. Non-Windows is the default
+    because most of these tests are about what a deploy *does* rather than
+    where it runs; the ones that mean Windows say so.
     """
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(deploy.sys, "platform", host)
     kwargs.setdefault("version", "1.2.3")
     return deploy.job_deploy(toml_path=_toml(tmp_path), steps=recorder.steps(),
                              environ={}, **kwargs)
@@ -473,13 +482,22 @@ def test_from_cache_still_archives_the_release_asset(tmp_path, monkeypatch):
 
     It is what `upload-release-asset` attaches, and it is written from the
     same cache the upload read -- so skipping the restore must not skip it.
+
+    Asserted on Windows, because that is the leg this archive name belongs
+    to and the one where the save carries a query: a Windows runner's
+    Conan cache is per machine, so an unqueried save would tarball
+    whichever toolchain a neighbouring job left in it. The pairing this
+    used to assert -- a Windows archive saved unqueried -- is one no
+    runner can produce.
     """
     recorder = _Recorder()
-    job_deploy_in(tmp_path, recorder, monkeypatch, from_cache=True, wheels=False,
+    job_deploy_in(tmp_path, recorder, monkeypatch, host="win32", from_cache=True,
+                  wheels=False,
                   cache_archive="windows-2022-VS17-Release-py3.13.tar.gz")
 
     assert recorder.deploy_kwargs[-1][2] == {
-        "save": "windows-2022-VS17-Release-py3.13.tar.gz", "package_query": None,
+        "save": "windows-2022-VS17-Release-py3.13.tar.gz",
+        "package_query": "compiler.version=194",
     }
 
 
