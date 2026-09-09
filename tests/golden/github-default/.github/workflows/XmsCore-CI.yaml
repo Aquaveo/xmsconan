@@ -4,11 +4,23 @@
 #   AQUAPI_USERNAME_SECRET - devpi username for wheel uploads
 #   AQUAPI_PASSWORD_SECRET - devpi password for wheel uploads
 #   AQUAVEO_GITHUB_TOKEN   - GitHub token for release asset uploads
-# Optional repository variable (Settings > Secrets and variables > Variables):
-#   AQUAPI_URL_DEV         - devpi index URL for wheel uploads; defaults to the
-#                            public dev index. A variable, not a secret: the
-#                            URL is public, and masking it only turns the
-#                            upload target into `***` in the log.
+# Optional setting, readable as either a variable or a secret
+# (Settings > Secrets and variables > Actions), on the repository or the
+# organization:
+#   AQUAPI_URL_DEV         - devpi index URL for wheel uploads. Resolved in
+#                            this order: the *variable* AQUAPI_URL_DEV, then
+#                            the *secret* of the same name, then the public
+#                            dev index. Both names are read because the
+#                            secret is where this value has always lived,
+#                            and editing it there has to keep working.
+#
+#                            Mind the precedence -- it is the one way to get
+#                            this wrong. If the variable exists it wins, and
+#                            editing the secret then changes nothing, with
+#                            no error to say so. Change the value where it
+#                            is actually set, or delete the variable. Note
+#                            also that a variable prints the upload target
+#                            in the job log, where a secret shows `***`.
 #
 # Each secret is set on the steps that use it, never on the job. Job-level
 # env is inherited by every step, including the one that runs the library's
@@ -189,7 +201,7 @@ jobs:
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
       # Upload Release to Conan, and archive what was uploaded
       - name: Upload Releases to Conan
@@ -285,7 +297,7 @@ jobs:
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
       # Upload Release to Conan, and archive what was uploaded
       - name: Upload Releases to Conan
@@ -389,7 +401,7 @@ jobs:
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
-          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
       # Upload Release to Conan, and archive what was uploaded
       - name: Upload Releases to Conan
