@@ -2,10 +2,68 @@
 
 | | |
 |---|---|
-| **Status** | Draft — sequencing proposed, nothing started |
-| **Date** | 2026-09-03 |
+| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0, 2.30.1); Phase 5 exit criteria partly met; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
+| **Date** | 2026-09-03; status reconciled 2026-09-10 |
 | **Inputs** | [REVIEW-2026-09-03.md](REVIEW-2026-09-03.md) (R1–R24, S1–S6) and [DESIGN-ci-job-commands.md](DESIGN-ci-job-commands.md) |
-| **Anchored to** | xmsconan `8084d9a` |
+| **Anchored to** | xmsconan `8084d9a` (the plan); master `94664ea` (the status) |
+
+## Status
+
+Reconciled against master `94664ea` on 2026-09-10. Every commit between the
+anchor and master is one of #134–#145, and each row marked Done was checked
+against the code on master, not only against the PR title.
+
+| Phase | Status | Landed as |
+|---|---|---|
+| 0 | Not tracked here — an owner action in GitLab settings, which git does not record | — |
+| 1 | Done | #134 `1d6844a` |
+| 2a | Done; the `--client devpi` fallback is still in place | #135 `4298061` |
+| 2b | Done; S6 as written superseded by #143 | #136 `e10ab49`, #143 `81d5b1e` |
+| 3 | Done | #137 `eaa2ca0` |
+| 4 | Done; the `print_ascci_art` alias is still in place | #138 `0eef40d` |
+| 5.1 | Done | #139 `815a4d4` |
+| 5.2 | Done | #140 `94a6158` |
+| 5.3 | Done | #141 `e62763b` |
+| 5.4 | Done; two parts dropped by decision | #142 `a492ba1`; follow-ups #144 `1078397`, #145 `94664ea` |
+| 5, exit | Partly met | [Phase 5 exit criteria](#phase-5-exit-criteria) |
+| 6 | Not started | — |
+| 7 | 7.1, 7.6, 7.9 and 7.10 partly done; the rest not started | — |
+
+**Releases.** 2.30.0 (`a492ba1`) is the first release carrying any phase;
+2.29.2 predates the `xmsconan job` CLI. 2.30.1 (`81d5b1e`) adds #143. #144
+and #145 are on master and not yet released.
+
+**Consumer verification**, against 2.30.1, on a branch and on a tag per
+host: xmsgrid `9.1.2` on GitHub (15 legs; wheels, Conan packages and release
+assets uploaded) and xmsconstraint `6.0.14` on GitLab (all five tag-gated
+deploy jobs). Both tag logs show the version coming from the tag —
+`Version from GITHUB_REF_NAME: 9.1.2`, `Version from CI_COMMIT_TAG: 6.0.14`
+— which is what let 5.1 delete the version and branch actions.
+
+### What's left, in order
+
+1. **Close Phase 5** against its [exit criteria](#phase-5-exit-criteria):
+   remove three `pip install --upgrade pip` lines (in the same PR as 7.6, so
+   consumers regenerate once), run criterion 2 on a workstation, and decide
+   criteria 3 and 4.
+2. **Remove the two one-release fallbacks.** Both have shipped in 2.30.0 and
+   2.30.1:
+   - 2a.1's `--client devpi` (`ci_tools/wheel_deploy.py:270`). Its own
+     docstring calls it the last place xmsconan puts a password on a
+     subprocess's argv.
+   - 4.4's `print_ascci_art` alias (`package_tools/printer.py:42`).
+3. **Phase 6**, starting with 6.1 (R1). It changes no template, so no
+   consumer needs regenerating.
+4. **Phase 7**, the rows still open.
+5. **Phase 0** stays with the project owner.
+
+### Outside the plan
+
+- `docs/USAGE.md:706` and `:1382` say only the tag-time deploy needs
+  `CONAN_LOGIN_USERNAME_AQUAVEO_VS2019` / `CONAN_PASSWORD_AQUAVEO_VS2019`.
+  #130, closed unmerged on 2026-09-02 with no comment, said the msvc 192
+  build needs them too. One of the two is wrong; unresolved.
+- #78 (`xmsconan format`) is open and is not part of this plan.
 
 ## How to read this
 
@@ -53,9 +111,14 @@ Phase 7  cleanup (R9 R10 R14 R15 R20–R24)  — anytime, mostly after 5
 Done when: a tag pipeline in one GitLab consumer still deploys with the
 flags set.
 
+**Status:** open. The flags are GitLab project settings, so git cannot show
+whether they are set. The doc half (2a.4) is done.
+
 ---
 
 ## Phase 1 — Foundations: xmsconan's own CI and dev tooling
+
+**Status:** Done — #134 (`1d6844a`).
 
 One PR. Nothing here changes generated output.
 
@@ -80,6 +143,10 @@ Phase 5 rewrites.
 
 ### PR 2a — tool side
 
+**Status:** Done — #135 (`4298061`). The `--client devpi` fallback that
+2a.1 keeps "for one release" is still in place and is now due for removal
+(see [What's left](#whats-left-in-order)).
+
 | # | Item | Change | Test |
 |---|---|---|---|
 | 2a.1 | **S2** Remove the argv password | `ci_tools/wheel_deploy.py`: replace `devpi use/login/upload` with `uv publish --publish-url <index> wheelhouse/*.whl`, passing `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` in the child environment (same pattern as `conan_setup._login_environment`). Keep the `devpi-client` path behind `--client devpi` for one release, defaulting to `uv`. | A fake `subprocess.run` records argv and env; assert the password appears in env only. `test_main_has_no_password_flag`-style guard on argv |
@@ -88,6 +155,20 @@ Phase 5 rewrites.
 | 2a.4 | **S1** docs | USAGE §10.2: next to each variable, "set **Masked** and **Protected**"; one sentence on `CI_DEBUG_TRACE`. USAGE §13: replace the "devpi has no env var" exception with the `uv publish` variables. | `test_usage_documents_*` style drift test if one fits; otherwise the PR checklist |
 
 ### PR 2b — template side
+
+**Status:** Done — #136 (`e10ab49`), with two changes since:
+
+- **S6 as written is superseded by #143** (`81d5b1e`). The index URL now
+  resolves from the variable `AQUAPI_URL_DEV`, then the secret of the same
+  name, then a built-in default. The secret is where maintainers have always
+  edited the URL, and reading only the variable left that edit silently
+  ignored. While the secret holds the URL the log still shows `***`, so the
+  deploy step echoes which of the three supplied it instead.
+- The `build.py --upload` step that 2b.1 left `CONAN_PASSWORD` on no longer
+  exists; 5.4 replaced it with `job deploy`.
+
+S3 verified on a tag pipeline per host (xmsgrid `9.1.2`, xmsconstraint
+`6.0.14`).
 
 | # | Item | Change | Test |
 |---|---|---|---|
@@ -100,6 +181,8 @@ pipeline per host before declaring S3 closed.
 ---
 
 ## Phase 3 — Template safety net
+
+**Status:** Done — #137 (`eaa2ca0`).
 
 One PR, before any template is restructured.
 
@@ -114,6 +197,10 @@ Size: M. Docs: USAGE §4 (`--check`), `CONTRIBUTING`-style note in README on
 ---
 
 ## Phase 4 — CLI consolidation (mechanical)
+
+**Status:** Done — #138 (`0eef40d`). The `print_ascci_art` alias that 4.4
+keeps "for one release" is still in place (`package_tools/printer.py:42`)
+and is now due for removal.
 
 One PR. Pure refactor; a prerequisite for Phase 5 because the `job`
 commands need one logging setup and one exit-code vocabulary to build on.
@@ -149,7 +236,14 @@ xmsconan/job_tools/
 the existing `test_shards`, `wheel_repair` and `coverage_generator` mains;
 they are not rewritten.
 
+**As built:** the module layout landed as drawn. `job coverage --leg/--report`
+was dropped by decision — no new CLI surface for coverage — so the coverage
+jobs still run `xmsconan_coverage` directly (the `job_tools/cli.py`
+docstring says so). `job coverage --pages` exists as 5.3 describes.
+
 ### PR 5.1 — `[ci]` extra and version from the CI environment
+
+**Status:** Done — #139 (`815a4d4`).
 
 | Change | Test |
 |---|---|
@@ -160,6 +254,8 @@ they are not rewritten.
 No build behavior changes. Size: M.
 
 ### PR 5.2 — `job build` on GitLab (+ `job test`, `job package`, `job lint`)
+
+**Status:** Done — #140 (`94a6158`).
 
 | Change | Test |
 |---|---|
@@ -173,7 +269,14 @@ No build behavior changes. Size: M.
 Size: L. Verify: one GitLab consumer (`xmsgrid` — it has `windows_vs2019`,
 `coverage` and `test_shards`) on a branch and on a tag before merging.
 
+xmsgrid is a GitHub consumer, so that line could not be followed as
+written. The GitLab side was verified on xmsconstraint, which has
+`windows_vs2019`, against 2.30.x on a branch and on tag `6.0.14`.
+
 ### PR 5.3 — `job deploy` and `job coverage --pages`
+
+**Status:** Done — #141 (`e62763b`). Verified on xmsconstraint's tag
+`6.0.14`: all five tag-gated deploy jobs green.
 
 | Change | Test |
 |---|---|
@@ -185,6 +288,14 @@ Size: M. Verify on a tag in the same consumer as 5.2.
 
 ### PR 5.4 — GitHub
 
+**Status:** Done — #142 (`a492ba1`); follow-ups #144 (`1078397`, the
+secret-holding step table keyed per job rather than per workflow) and #145
+(`94664ea`). Two parts dropped by decision: `github-coverage.yaml.jinja` →
+`job coverage --leg/--report` (see *As built* above), and the mac job's
+`--remove-conancenter`, so the four platform jobs stay one identical step
+list. Verified on xmsgrid rather than xmscore: tag `9.1.2`, 15 legs, 14
+release assets.
+
 | Change | Test |
 |---|---|
 | `github-ci.yaml.jinja`: the four platform jobs become one step list parametrized by matrix + toolchain action (design §3.4): install → `job build` (secrets on this step) → upload test artifacts → `job deploy --cache-archive` on tags (secrets on this step) → `upload-release-asset`. Windows loses its second build step. `github-coverage.yaml.jinja` → `job coverage --leg/--report`. | Golden diff |
@@ -194,15 +305,12 @@ Size: M. Verify on one GitHub consumer (`xmscore`) on a branch and a tag.
 
 ### Phase 5 exit criteria
 
-- Both templates contain no `pip install` other than the `[ci]` line, no
-  `export`, no `xvfb-run`, no `--filter`, no inline HTML.
-- `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.13 xmsconan job build` on a
-  workstation produces the same `.export/` tarball name a CI leg does.
-- `tests/test_ci_file_generator.py` shrinks; the removed assertions are
-  covered by `job_tools` unit tests and the golden files.
-- Open questions in the design §7 are each answered in the PR that touches
-  them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in
-  5.2, upload client in 2a).
+| Criterion | Status (2026-09-10) |
+|---|---|
+| Both templates contain no `pip install` other than the `[ci]` line, no `export`, no `xvfb-run`, no `--filter`, no inline HTML. | **Partly met.** No `xvfb-run`, no inline HTML, and `--filter` survives only in comments. Left to remove: `python -m pip install --upgrade pip` at `github-ci.yaml.jinja:128`, `:183` and `:508` — do it with 7.6. Two recorded exceptions, each explained by a comment in the template: `export CTEST_PARALLEL_LEVEL` in the instrumented coverage jobs (`gitlab-ci.yml.jinja:144`, `:896`), which follows from dropping `job coverage --leg/--report`; and `pip install … flake8-aquaveo` in the GitLab lint job (`:552`), kept out of `[ci]` so the GitHub flake job does not gain the AQU rules. Revisit that one if the two hosts should lint alike. |
+| `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.13 xmsconan job build` on a workstation produces the same `.export/` tarball name a CI leg does. | **Not run.** `export_tarball_name` (`job_tools/build.py`) builds the name from `build.toml`, `PYTHON_TARGET_VERSION` and the platform, so only the version segment can differ. |
+| `tests/test_ci_file_generator.py` shrinks; the removed assertions are covered by `job_tools` unit tests and the golden files. | **Not met.** 3300 lines at `8084d9a`, 3904 on master. Decide whether to move the assertions the golden files already pin, or retire the criterion. |
+| Open questions in the design §7 are each answered in the PR that touches them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in 5.2, upload client in 2a). | **4 of 5.** Name: `xmsconan job`. Pin policy: `>=X,<X+1`. Release asset: stays on `upload-release-asset`. Upload client: `uv publish`. `build.py` is still open — the design says keep it for one release cycle, then decide — and `build.py.jinja` still ships. |
 
 ---
 
@@ -211,12 +319,18 @@ Size: M. Verify on one GitHub consumer (`xmscore`) on a branch and a tag.
 Independent of Phase 5 in code, but R1 is easier once `job build` has
 pulled the CI orchestration out of `XmsConanPackager`'s callers.
 
+**Status:** not started. `packager.py` is 2259 lines, `package_tools/`
+still holds only `__init__.py`, `packager.py` and `printer.py`, and
+`__del__` is at `packager.py:736`. `copy_xms_conan2_file` still copies the
+recipe base verbatim with `shutil.copy2`. `credentials.py` has no
+`resolve`. Line anchors in the table are refreshed to master `94664ea`.
+
 | # | Item | Shape | Size |
 |---|---|---|---|
 | 6.1 | **R1** Split `XmsConanPackager` | One PR per seam, each a pure move with the class delegating to the new module: `package_tools/matrix.py` (generation, filtering), `profiles.py` (serialization, presets), `conan_runner.py` (run, sharded tests, upload), `wheels.py` (extraction, dependency libs, Linux repair) — line anchors in R1. Last PR: `__del__` → context manager / `weakref.finalize`. | L (4–5 PRs) |
-| 6.2 | **R2** Recipe constants | Step 1: render `xms_conan2_file.py` through jinja in `copy_xms_conan2_file` (`build_file_generator.py:275`) with `SUPPORTED_PYTHON_VERSIONS`, `TESTING_FRAMEWORKS`, `PYTHON_BINDING_TYPES`, `GENERATOR_FOLDER_SUFFIXES`, `MSVC_VS2019_VERSION` injected; delete the four pinning tests. Step 2 (separate decision): publish as a Conan 2 `python_requires`. | M, then L |
-| 6.3 | **R3** One credential resolver | `ci_tools/credentials.py` gains `resolve(kind: "conan" \| "aquapi", *, explicit, password_file, env, config_file)` with one documented precedence (explicit → file → env → `~/.xmsconan.toml`). `vs2019_build.resolve_credentials`, `conan_setup._resolve_password`, `wheel_deploy` become callers. USAGE §17 documents the order once. | M |
-| 6.4 | **R4** `vs2019_build` data | `LIBRARIES` (`:198`) moves to `xmsconan/data/vs2019_libraries.toml` (or a `--libraries FILE` input); `os.environ["XMS_VERSION"]` (`:1051`) becomes a parameter; `CONAN_PIN` (`:130`) reads the `[ci]` extra's pin. | M |
+| 6.2 | **R2** Recipe constants | Step 1: render `xms_conan2_file.py` through jinja in `copy_xms_conan2_file` (`build_file_generator.py:288`) with `SUPPORTED_PYTHON_VERSIONS`, `TESTING_FRAMEWORKS`, `PYTHON_BINDING_TYPES`, `GENERATOR_FOLDER_SUFFIXES`, `MSVC_VS2019_VERSION` injected; delete the four pinning tests. Step 2 (separate decision): publish as a Conan 2 `python_requires`. | M, then L |
+| 6.3 | **R3** One credential resolver | `ci_tools/credentials.py` gains `resolve(kind: "conan" \| "aquapi", *, explicit, password_file, env, config_file)` with one documented precedence (explicit → file → env → `~/.xmsconan.toml`). `vs2019_build.resolve_credentials` (`:324`), `conan_setup._resolve_password` (`:122`), `wheel_deploy` become callers. USAGE §17 documents the order once. | M |
+| 6.4 | **R4** `vs2019_build` data | `LIBRARIES` (`:201`) moves to `xmsconan/data/vs2019_libraries.toml` (or a `--libraries FILE` input); `os.environ["XMS_VERSION"]` (`:1054`) becomes a parameter; `CONAN_PIN` (`:138`) reads the `[ci]` extra's pin. | M |
 
 ---
 
@@ -224,18 +338,18 @@ pulled the CI orchestration out of `XmsConanPackager`'s callers.
 
 Any time; each row is its own small PR.
 
-| # | Item | Change | Size |
-|---|---|---|---|
-| 7.1 | **R9** | Commit `uv.lock`; SHA-pin every Action; add Dependabot for pip and actions. | S |
-| 7.2 | **R10** | `workflow_dispatch` + weekly schedule job running `pytest -m integration`. | S |
-| 7.3 | **R14** | `pyrightconfig.json` in basic mode over `build_toml`, `build_filter`, `test_shards`, `coverage_generator`, `job_tools`; add to CI; widen a module at a time. | M |
-| 7.4 | **R15** | Modernize `build_library.py` or fold it into `publish` / `job build`; its coverage target is in 7.10. | M |
-| 7.5 | **R20** | README = install + quickstart + link; delete its `build.toml` table in favour of USAGE §5. | S |
-| 7.6 | **R21** | Templates emit `xmsconan <cmd>` (Phase 5 does this for every job it touches); `xmsconan_*` scripts stay as documented aliases. | S |
-| 7.7 | **R22** | Prune the 58 profiles to the ones the matrix and `xmsconan_build --profile` users need; USAGE §9.2 lists what remains. | S |
-| 7.8 | **R23** | `.gitignore` and `.flake8` exclude lists trimmed to what exists. | S |
-| 7.9 | **R24** | Delete `conan1`, `stable`, `pr117`, merged `task/*` and `fix/*`, the `pre-rebase-backup` tag. | S |
-| 7.10 | Coverage | `wheel_deploy` (rewritten in 2a.1), `profile_generator` and `build_library` to ≥ 90 %. | S |
+| # | Item | Change | Size | Status (2026-09-10) |
+|---|---|---|---|---|
+| 7.1 | **R9** | Commit `uv.lock`; SHA-pin every Action; add Dependabot for pip and actions. | S | Partly. In `.github/workflows/xmsconan-ci.yaml`, `setup-uv` and `get-git-tag` are SHA-pinned; `actions/checkout@v4` and `actions/setup-python@v5` are not. No `uv.lock`, no Dependabot. |
+| 7.2 | **R10** | `workflow_dispatch` + weekly schedule job running `pytest -m integration`. | S | Not started. |
+| 7.3 | **R14** | `pyrightconfig.json` in basic mode over `build_toml`, `build_filter`, `test_shards`, `coverage_generator`, `job_tools`; add to CI; widen a module at a time. | M | Not started. |
+| 7.4 | **R15** | Modernize `build_library.py` or fold it into `publish` / `job build`; its coverage target is in 7.10. | M | Not started. |
+| 7.5 | **R20** | README = install + quickstart + link; delete its `build.toml` table in favour of USAGE §5. | S | Not started; the README still carries the `build.toml` schema tables. |
+| 7.6 | **R21** | Templates emit `xmsconan <cmd>` (Phase 5 does this for every job it touches); `xmsconan_*` scripts stay as documented aliases. | S | Partly. Every job Phase 5 rewrote calls `xmsconan job`. The coverage jobs still call `xmsconan_conan_setup` / `xmsconan_coverage` (`gitlab-ci.yml.jinja:140`, `:145`, `:829`, `:895`, `:897`, `:940`; `github-coverage.yaml.jinja:64`, `:68`). The dispatcher already registers `conan-setup` and `coverage`, so this is a spelling change with no new CLI surface. Do it with Phase 5's three `pip` lines. |
+| 7.7 | **R22** | Prune the 58 profiles to the ones the matrix and `xmsconan_build --profile` users need; USAGE §9.2 lists what remains. | S | Not started; still 58 profiles. |
+| 7.8 | **R23** | `.gitignore` and `.flake8` exclude lists trimmed to what exists. | S | Not started; neither file has changed since `8084d9a`. |
+| 7.9 | **R24** | Delete `conan1`, `stable`, `pr117`, merged `task/*` and `fix/*`, the `pre-rebase-backup` tag. | S | Partly. `pr117` and `pre-rebase-backup` are gone. Still on the remote: `conan1`, `stable`, `fix/conan-deploy-save-binaries` (merged as #92), `fix/upload-package-pattern` (#132, still open, but its change landed as `8084d9a`; close it), `fix/vs2019-credentials-doc` (#130, closed unmerged). Keep `fix/xvfb-repair-wheel-interpreter`: #99 left it in place for #100, still open. The `cp313-cp313` hardcode #100 describes is still at `gitlab-ci.yml.jinja:591`, though the branch predates Phase 5's rewrite of those lines. Not named in this row, and each carries commits master lacks, so check before deleting: `conan2-vtk` (1 commit, 2025-01-29), `feature/build-toml-filter-rebased` (3, 2026-08-26), `limit_numpy` (1, 2024-08-30), and `format/format-code` (#78, open). |
+| 7.10 | Coverage | `wheel_deploy` (rewritten in 2a.1), `profile_generator` and `build_library` to ≥ 90 %. | S | Partly. `wheel_deploy` is at 100 % and `profile_generator` at 98 %. `build_library` is at 79 %; settle 7.4 first, since folding it away removes the target. |
 
 ---
 
