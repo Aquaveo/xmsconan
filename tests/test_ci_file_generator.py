@@ -3470,7 +3470,15 @@ CONAN_LOGIN_STEP_ENV = {
 AQUAPI_STEP_ENV = {
     "AQUAPI_USERNAME": "${{ secrets.AQUAPI_USERNAME_SECRET }}",
     "AQUAPI_PASSWORD": "${{ secrets.AQUAPI_PASSWORD_SECRET }}",
-    "AQUAPI_URL": "${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}",
+    "AQUAPI_URL": (
+        "${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV"
+        " || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}"
+    ),
+    "AQUAPI_URL_SOURCE": (
+        "${{ vars.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV variable'"
+        " || secrets.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV secret'"
+        " || 'the built-in default' }}"
+    ),
 }
 
 #: Every step allowed to carry a secret, by name. A new entry here is a review
@@ -3647,7 +3655,16 @@ def test_github_ci_gives_the_conan_login_to_every_package_upload(tmp_path, linux
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
 def test_github_ci_gives_the_index_credentials_to_the_wheel_upload(tmp_path, linux_arm):
-    """Every wheel upload carries the index credentials, and carries only them."""
+    """Every wheel upload carries the index credentials, and carries only them.
+
+    The ``run:`` assertion is not decoration. ``AQUAPI_URL_SOURCE`` says which
+    of the variable, the secret, or the built-in default supplied the URL --
+    the one line in the job log that tells a maintainer whether the place they
+    just edited is the place being read, because the URL itself renders as
+    ``***`` whenever the secret still holds it. An env entry no step echoes
+    answers nobody, and without this assertion deleting the echo would red
+    only the whole-file golden, whose failure text offers ``--update-golden``.
+    """
     jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
 
     deploy_steps = [
@@ -3658,6 +3675,7 @@ def test_github_ci_gives_the_index_credentials_to_the_wheel_upload(tmp_path, lin
     assert deploy_steps
     for name, step in deploy_steps:
         assert step.get("env") == AQUAPI_STEP_ENV, name
+        assert "$AQUAPI_URL_SOURCE" in step["run"], f"{name}: source not echoed"
 
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
@@ -3693,14 +3711,27 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
 
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
-def test_github_ci_reads_the_index_url_from_a_variable(tmp_path, linux_arm):
-    """``AQUAPI_URL_DEV`` is a repository *variable* with a public default.
+def test_github_ci_reads_the_index_url_from_a_variable_then_a_secret(tmp_path, linux_arm):
+    """``AQUAPI_URL_DEV`` resolves variable, then secret, then a public default.
 
-    The URL is public -- the GitLab template and every ``pip install -i`` line
-    carry it in clear -- so storing it as a secret only turned the upload
-    target into ``***`` in the log. The default keeps a repository that never
-    defined the variable uploading to the dev index, and the old secret is
-    referenced nowhere, so it can be deleted.
+    The secret is where this value lived before any of this was generated, so
+    reading it keeps a maintainer who edits it there in control of the upload
+    target. Dropping it would not have broken a pipeline -- the default is the
+    same URL the secret holds -- it would have broken the next person who
+    edited the secret and waited for an effect that never came.
+
+    The variable is offered first because the URL is public: a secret renders
+    the upload target as ``***`` in the log, which is where an upload to the
+    wrong index would have to be noticed.
+
+    ``||`` yields the first *truthy* operand and the empty string is falsy, so
+    the order *is* the behaviour -- create a non-empty variable and the secret
+    stops mattering, silently. What keeps that from being a new trap is the
+    header and the source label -- the header by
+    ``test_github_ci_header_documents_the_index_url_precedence``, the label by
+    ``test_github_ci_gives_the_index_credentials_to_the_wheel_upload``, which
+    pins both the ``AQUAPI_URL_SOURCE`` expression and the ``echo`` that makes
+    it visible.
 
     The expression is spelled out here rather than read from
     ``AQUAPI_STEP_ENV``: that constant is what the sibling tests compare
@@ -3712,8 +3743,6 @@ def test_github_ci_reads_the_index_url_from_a_variable(tmp_path, linux_arm):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     path = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
 
-    assert "secrets.AQUAPI_URL_DEV" not in path.read_text(encoding="utf-8")
-
     urls = [
         (name, step["env"]["AQUAPI_URL"])
         for name, job in workflow_document(path)["jobs"].items()
@@ -3721,7 +3750,62 @@ def test_github_ci_reads_the_index_url_from_a_variable(tmp_path, linux_arm):
     ]
     assert urls
     for name, url in urls:
-        assert url == "${{ vars.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}", name
+        assert url == (
+            "${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV"
+            " || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}"
+        ), name
+
+
+def _flatten_comment(header):
+    """*header* with its ``#`` markers and hard wrapping collapsed to one line."""
+    return " ".join(header.replace("#", " ").split())
+
+
+def test_github_ci_header_documents_the_index_url_precedence(tmp_path):
+    """The generated header names the resolution order and what defeats it.
+
+    This is the half of the change a maintainer actually meets: the expression
+    makes editing the secret work again, and the header is what stops a later
+    variable from silently taking that back. Deleting the explanation has to
+    fail the suite, or the trap moves instead of closing.
+
+    Asserted against flattened prose rather than the file's own lines. The
+    comment is hard-wrapped, so a verbatim needle matches only at today's wrap
+    width -- adding a word upstream reflows the block and reds the test with
+    the explanation fully intact. Flattening pins the sentences and leaves the
+    wrapping free.
+
+    Scoped to the ``AQUAPI_URL_DEV`` paragraph rather than the whole header,
+    so the ordering assertion keeps meaning it if some later paragraph above
+    this one starts talking about a variable or a secret of its own.
+
+    Not parametrized over ``linux_arm``: the header is the same text whether
+    or not the fourth build job renders, and
+    ``test_gitlab_header_lists_the_conan_login_variables`` is unparametrized
+    for the same reason.
+    """
+    toml_file = write_github_toml(tmp_path, coverage=True)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    path = output_dir / ".github" / "workflows" / "XmsCore-CI.yaml"
+
+    prose = _flatten_comment(slice_between(
+        path.read_text(encoding="utf-8"),
+        "# Required repository secrets:", "# Generated by xmsconan_ci", path.name,
+    ))
+    start = "AQUAPI_URL_DEV - devpi index URL"
+    assert start in prose, start
+    paragraph = prose[prose.index(start):]
+
+    for needle in (
+        "*variable* AQUAPI_URL_DEV",
+        "*secret* of the same name",
+        "A non-empty variable wins",
+        "An empty variable does not win",
+        "Masking follows the secret's value",
+    ):
+        assert needle in paragraph, needle
+    assert paragraph.index("*variable*") < paragraph.index("*secret*"), "variable first"
 
 
 @pytest.mark.parametrize("writer, ci_flags, workflow", [
