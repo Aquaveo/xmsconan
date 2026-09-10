@@ -3481,9 +3481,10 @@ AQUAPI_STEP_ENV = {
     ),
 }
 
-#: Every step allowed to carry a secret, by name. A new entry here is a review
-#: question -- what does the step do with it -- not a formality.
-SECRET_BEARING_STEPS = frozenset({
+#: Every step of one platform build job allowed to carry a secret, by name. A
+#: new entry here is a review question -- what does the step do with it -- not
+#: a formality.
+PLATFORM_BUILD_SECRET_STEPS = frozenset({
     "Build the Conan Packages",
     "Upload Releases to Conan",
     "Upload wheel to Aquapi",
@@ -3491,15 +3492,49 @@ SECRET_BEARING_STEPS = frozenset({
     "Upload Zipped Conan Packages",
 })
 
-#: What each generated workflow must be handing a credential to, exactly. An
-#: allow-list on its own is only an upper bound, and a workflow that lost every
-#: credential satisfies it -- the coverage workflow in particular has one
-#: secret-bearing step and no wheel or release work, so "no job-level secrets"
-#: is true of a Coverage.yaml with no Conan login at all.
+#: What each generated workflow must be handing a credential to, exactly, per
+#: job. An allow-list on its own is only an upper bound, and a workflow that
+#: lost every credential satisfies it -- the coverage workflow in particular
+#: has one secret-bearing step and no wheel or release work, so "no job-level
+#: secrets" is true of a Coverage.yaml with no Conan login at all.
+#:
+#: Keyed by ``(workflow, job)`` rather than by workflow, so the table names the
+#: jobs as well as their steps. A per-workflow set says which steps may hold a
+#: credential but not which jobs must, leaving the guard to ask each rendered
+#: job whether it still reaches the Conan remote -- and a job stripped of its
+#: credentials stops qualifying, as the guard's docstring spells out. A leg
+#: that legitimately differs, one that publishes no wheel, also gets a row of
+#: its own.
+#:
+#: Written out per job rather than built from a list of build jobs, so that the
+#: table reads as the answer to "which steps may hold credentials in which job"
+#: without the reader running a comprehension in their head. ``flake`` is in it
+#: for the same reason: an empty set is a claim about that job, and one made
+#: here rather than inferred from the job's own contents -- it runs ``job
+#: lint``, builds nothing and must hold nothing.
+#:
+#: ``Coverage.yaml`` names ``Run Coverage`` and not the ``Setup Conan`` beside
+#: it. That is the one GitHub step still running ``xmsconan_conan_setup`` on
+#: its own (GitLab keeps two), but ``Run Coverage`` is what resolves this
+#: library's dependencies, so that is where the credential goes.
 SECRET_HOLDING_STEPS = {
-    "XmsCore-CI.yaml": SECRET_BEARING_STEPS,
-    "Coverage.yaml": frozenset({"Run Coverage"}),
+    ("XmsCore-CI.yaml", "flake"): frozenset(),
+    ("XmsCore-CI.yaml", "mac"): PLATFORM_BUILD_SECRET_STEPS,
+    ("XmsCore-CI.yaml", "linux"): PLATFORM_BUILD_SECRET_STEPS,
+    ("XmsCore-CI.yaml", "linux-arm"): PLATFORM_BUILD_SECRET_STEPS,
+    ("XmsCore-CI.yaml", "windows"): PLATFORM_BUILD_SECRET_STEPS,
+    ("Coverage.yaml", "coverage"): frozenset({"Run Coverage"}),
 }
+
+#: The jobs the table names that render only when ``linux_arm`` is on. Every
+#: other entry is expected in both legs, so a job that stops rendering is a
+#: failure rather than a key the test quietly skips.
+ARM_ONLY_JOBS = frozenset({"linux-arm"})
+
+#: Every step name the table allows a credential on, anywhere. Derived, so the
+#: USAGE prose check below and the per-job guard stay one statement about one
+#: set: a step added to the table is a step the docs must then name.
+SECRET_BEARING_STEPS = frozenset().union(*SECRET_HOLDING_STEPS.values())
 
 #: ``linux_arm`` is opt-in (``build_toml.py``), so the default job set leaves it
 #: out -- and it is a fourth, separately maintained copy of the build job, the
@@ -3533,25 +3568,6 @@ def _secret_env(mapping, label):
 def _step_label(step):
     """A name for *step* that exists even when the step has none."""
     return step.get("name") or step.get("uses") or step.get("run") or "<unnamed step>"
-
-
-def _reaches_the_conan_remote(job):
-    """Whether this job runs something that has to authenticate to Conan.
-
-    Which is what decides whether it may hold a credential at all --
-    ``flake`` runs ``job lint``, builds nothing and must hold nothing. Two
-    commands because the two workflows reach the remote from different
-    steps, not because there are two rules: the CI workflow through ``job
-    build``, which sets the remote up itself, and the coverage workflow
-    through its separate ``Setup Conan``, the one GitHub step still running
-    ``xmsconan_conan_setup`` on its own (GitLab keeps two). The credential does not sit on that step --
-    it goes to ``Run Coverage``, which is what resolves this library's
-    dependencies -- but the step is what marks the job as reaching the remote.
-    """
-    return any(
-        steps_running(job, command)
-        for command in ("xmsconan job build", "xmsconan_conan_setup")
-    )
 
 
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
@@ -3692,9 +3708,21 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
     maintained copies, so a union over all of them is satisfied by three:
     dropping ``GITHUB_TOKEN`` from the linux-arm ``Get Release`` alone leaves
     a workflow-wide set of names identical, which is the copy-drift this
-    section is here to catch. Whether a job holds credentials at all is keyed
-    on whether it reaches the Conan remote -- ``flake`` runs no build and
-    must hold nothing, and the same rule decides that without naming it.
+    section is here to catch.
+
+    ``expected`` is read out of the table alone -- nothing about it is computed
+    from the document under test. Keying it on the rendered job instead, by
+    asking whether that job still reaches the Conan remote, makes the guard
+    agree with whatever rendered: a job that stops running ``job build`` stops
+    being a job that must hold credentials, and the leg that dropped them
+    reports no holders against an expectation of none. Both the jobs in
+    ``expected`` and the steps each must hold have to come from the table for
+    an absence to fail, so every job is named there, including ``flake``,
+    which runs no build and must hold nothing.
+
+    That also makes the job set itself part of the assertion: a build job that
+    stops rendering fails as a missing key, and a new one fails as an extra,
+    rather than either slipping past a guard that only walks what it was given.
     """
     document = _secrets_workflow(tmp_path, workflow, linux_arm)
 
@@ -3703,8 +3731,9 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
         for name, job in document["jobs"].items()
     }
     expected = {
-        name: SECRET_HOLDING_STEPS[workflow] if _reaches_the_conan_remote(job) else frozenset()
-        for name, job in document["jobs"].items()
+        job: set(steps)
+        for (table_workflow, job), steps in SECRET_HOLDING_STEPS.items()
+        if table_workflow == workflow and (linux_arm or job not in ARM_ONLY_JOBS)
     }
 
     assert holders == expected
