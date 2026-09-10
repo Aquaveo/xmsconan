@@ -318,6 +318,32 @@ def test_an_incomplete_wheel_extraction_fails_the_job(tmp_path, capsys):
     assert "no complete set of wheels" in capsys.readouterr().out
 
 
+def test_a_failed_extraction_stages_no_dependency_libs(tmp_path):
+    """The staging half returns at the failure rather than running on.
+
+    The libraries are collected solely so a repair can resolve imports
+    against them, and a failed extraction leaves no wheel to repair -- so
+    neither the collection below it nor the repair after it should be
+    reached. The repair is switched on explicitly under Windows, the one
+    setting where both would otherwise run, so the empty lists below can only
+    mean the early return.
+    """
+    recorder = _Recorder(packager=_FakePackager(
+        configurations=[_pybind_configuration()], extracted=False))
+    with patch.object(build.sys, "platform", "win32"):
+        result = job_build_in(
+            tmp_path, recorder, leg="pybind", version="1.2.3",
+            body='library_name = "xmscore"\n[ci]\nwindows_wheel_repair = true\n',
+        )
+
+    assert result == EXIT_ERROR
+    # Pinned so the two empty lists below cannot pass by the job having
+    # stopped before it ever reached the staging this test is about.
+    assert "extract_wheel" in recorder.packager.events
+    assert recorder.packager.dependency_lib_dirs == []
+    assert recorder.repair_kwargs == []
+
+
 def test_dependency_libs_are_skipped_when_repair_is_off(tmp_path):
     """[ci].windows_wheel_repair is a Windows rule and must not reach Linux.
 
@@ -771,12 +797,18 @@ def test_windows_repairs_its_wheel_in_the_build_job(tmp_path):
     A manylinux container cannot stand in for it, and the alternative to
     repairing here is a second WinVM allocation. The Linux wheel is repaired
     by ``job package`` instead, in the image whose glibc auditwheel needs.
+
+    The libraries delvewheel resolves against are staged first, and both the
+    staging and the repair answer to the module's ``sys.platform``, so a
+    Windows job that repairs has also collected them -- the mirror of the
+    opt-out below, which gets neither.
     """
     recorder = _Recorder(packager=_FakePackager(configurations=[_pybind_configuration()]))
     with patch.object(build.sys, "platform", "win32"):
         job_build_in(tmp_path, recorder, leg="pybind", version="1.2.3")
 
     assert recorder.repair_kwargs == [{"wheel_dir": "wheelhouse", "platform": "windows"}]
+    assert recorder.packager.dependency_lib_dirs == [os.path.join("wheelhouse", "libs")]
 
 
 def test_windows_wheel_repair_can_be_turned_off(tmp_path):

@@ -378,10 +378,26 @@ def _builds_wheel(configurations, platform_key):
 
 
 def _stage_wheel(builder, config, configurations, version, platform_key, environ=None):
-    """Extract this leg's wheel and stage the libraries its repair will need.
+    """Extract this leg's wheel, and stage repair inputs where repair will run.
 
-    The staging half runs on every platform that built a wheel; only the
-    repair that consumes it is Windows-only, and that is :func:`_repair_wheel`.
+    Extraction runs wherever :func:`_builds_wheel` says this job has a wheel
+    to stage -- every leg that built one except the VS2019 matrix, which
+    publishes none -- and an absent or incomplete set fails the job: a leg
+    whose wheel is the artifact it exists to produce cannot report success
+    having produced none, which is what :func:`_recipe_builds_wheel` leans on
+    to catch a job that asked for a wheel the recipe does not build.
+
+    The library staging is narrower than the extraction it follows. Those
+    libraries exist only for the repair tools to resolve imports against, so
+    they are collected only when
+    :func:`~xmsconan.ci_options.repairs_wheel` says this platform repairs --
+    and a failed extraction returns before reaching them. Their consumers are
+    not all on Windows: ``job package`` repairs the Linux wheel against them.
+    Only the in-job repair, :func:`_repair_wheel`, is Windows-only.
+
+    Returns:
+        ``EXIT_OK``, including when this job built no wheel to stage, or
+        ``EXIT_ERROR`` when the wheels it was expected to produce are missing.
     """
     if not _builds_wheel(configurations, platform_key):
         # Named for the reason the empty-matrix exit above is: a job that was
@@ -411,7 +427,7 @@ def _stage_wheel(builder, config, configurations, version, platform_key, environ
     return EXIT_OK
 
 
-def _repair_wheel(config, configurations, platform_key, steps, environ=None, platform=None):
+def _repair_wheel(config, configurations, platform_key, steps, environ=None):
     """Repair this job's wheel in place, on the one platform that can.
 
     Windows repairs in place; Linux does not. delvewheel resolves the DLL
@@ -420,14 +436,19 @@ def _repair_wheel(config, configurations, platform_key, steps, environ=None, pla
     the alternative. The Linux wheel is repaired by ``job package``, in the
     manylinux image, because auditwheel needs that image's glibc.
 
-    *platform* is threaded in rather than read here and again inside
-    :func:`~xmsconan.ci_options.repairs_wheel`: one value has to answer both,
-    or a caller can reach a repair whose staged libraries were skipped.
+    ``sys.platform`` is read once into a local and handed to
+    :func:`~xmsconan.ci_options.repairs_wheel` rather than left to default
+    there: one value answers both the host guard and the opt-out, so the two
+    cannot disagree about which platform is being decided for. It is not a
+    parameter, because no caller has a second platform to pass -- the module
+    attribute is the seam, and :func:`_stage_wheel` reads the same one, so
+    patching it moves the staging and the repair together rather than letting
+    a test reach a repair whose staged libraries were skipped.
     """
-    platform = sys.platform if platform is None else platform
-    if platform != "win32" or not _builds_wheel(configurations, platform_key):
+    host_platform = sys.platform
+    if host_platform != "win32" or not _builds_wheel(configurations, platform_key):
         return
-    if not repairs_wheel(config, platform=platform):
+    if not repairs_wheel(config, platform=host_platform):
         return
     with common.log_section("Repair wheel", environ=environ):
         steps.wheel_repair(wheel_dir=common.WHEEL_DIR, platform="windows")
