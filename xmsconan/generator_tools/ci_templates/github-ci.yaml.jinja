@@ -15,12 +15,19 @@
 #                            and editing it there has to keep working.
 #
 #                            Mind the precedence -- it is the one way to get
-#                            this wrong. If the variable exists it wins, and
+#                            this wrong. A non-empty variable wins, and
 #                            editing the secret then changes nothing, with
-#                            no error to say so. Change the value where it
-#                            is actually set, or delete the variable. Note
-#                            also that a variable prints the upload target
-#                            in the job log, where a secret shows `***`.
+#                            no error to say so. An empty variable does not
+#                            win: it falls through to the secret. The
+#                            deploy step logs which of the three supplied
+#                            the URL, so read that before editing either.
+#
+#                            Masking follows the secret's value, not the
+#                            name it was read under: while the secret holds
+#                            this URL, the log shows `***` even when the
+#                            variable supplied it. Delete the secret once
+#                            the variable is authoritative, and the upload
+#                            target reads in clear.
 #
 # Each secret is set on the steps that use it, never on the job. Job-level
 # env is inherited by every step, including the one that runs the library's
@@ -203,12 +210,15 @@ jobs:
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
       - name: Upload wheel to Aquapi
-        run: xmsconan job deploy --wheels-only
+        run: |
+          echo "AQUAPI_URL supplied by $AQUAPI_URL_SOURCE"
+          xmsconan job deploy --wheels-only
         shell: bash
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
           AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL_SOURCE: ${{ vars.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV variable' || secrets.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV secret' || 'the built-in default' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan, and archive what was uploaded
@@ -306,12 +316,15 @@ jobs:
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
       - name: Upload wheel to Aquapi
-        run: xmsconan job deploy --wheels-only
+        run: |
+          echo "AQUAPI_URL supplied by $AQUAPI_URL_SOURCE"
+          xmsconan job deploy --wheels-only
         shell: bash
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
           AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL_SOURCE: ${{ vars.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV variable' || secrets.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV secret' || 'the built-in default' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan, and archive what was uploaded
@@ -410,12 +423,15 @@ jobs:
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
       - name: Upload wheel to Aquapi
-        run: xmsconan job deploy --wheels-only
+        run: |
+          echo "AQUAPI_URL supplied by $AQUAPI_URL_SOURCE"
+          xmsconan job deploy --wheels-only
         shell: bash
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
           AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL_SOURCE: ${{ vars.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV variable' || secrets.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV secret' || 'the built-in default' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan, and archive what was uploaded
@@ -529,12 +545,15 @@ jobs:
         if: matrix.build_type == 'Release'
       # Upload wheel to Aquapi
       - name: Upload wheel to Aquapi
-        run: xmsconan job deploy --wheels-only
+        run: |
+          echo "AQUAPI_URL supplied by $AQUAPI_URL_SOURCE"
+          xmsconan job deploy --wheels-only
         shell: bash
         env:
           AQUAPI_USERNAME: ${{ secrets.AQUAPI_USERNAME_SECRET }}
           AQUAPI_PASSWORD: ${{ secrets.AQUAPI_PASSWORD_SECRET }}
           AQUAPI_URL: ${{ vars.AQUAPI_URL_DEV || secrets.AQUAPI_URL_DEV || 'https://public.aquapi.aquaveo.com/aquaveo/dev/' }}
+          AQUAPI_URL_SOURCE: ${{ vars.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV variable' || secrets.AQUAPI_URL_DEV && 'the AQUAPI_URL_DEV secret' || 'the built-in default' }}
         if: startsWith(github.ref, 'refs/tags/') && matrix.build_type == 'Release'
 <% endif %>
       # Upload Release to Conan, and archive what was uploaded
