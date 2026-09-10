@@ -3498,12 +3498,13 @@ PLATFORM_BUILD_SECRET_STEPS = frozenset({
 #: has one secret-bearing step and no wheel or release work, so "no job-level
 #: secrets" is true of a Coverage.yaml with no Conan login at all.
 #:
-#: Keyed by ``(workflow, job)`` rather than by workflow, because one set shared
-#: across a workflow's jobs only holds while every job renders the same steps.
-#: The four platform jobs happen to agree today; the first one that does not --
-#: a leg that publishes no wheel, an extra deploy step on one runner -- would
-#: keep passing against a shared set while asserting nothing about the leg that
-#: moved. Naming the four separately costs four lines and pins each copy.
+#: Keyed by ``(workflow, job)`` rather than by workflow, so the table names the
+#: jobs as well as their steps. A per-workflow set says which steps may hold a
+#: credential but not which jobs must, leaving the guard to ask each rendered
+#: job whether it still reaches the Conan remote -- and a job stripped of its
+#: credentials stops qualifying, as the guard's docstring spells out. A leg
+#: that legitimately differs, one that publishes no wheel, also gets a row of
+#: its own.
 #:
 #: Written out per job rather than built from a list of build jobs, so that the
 #: table reads as the answer to "which steps may hold credentials in which job"
@@ -3513,8 +3514,8 @@ PLATFORM_BUILD_SECRET_STEPS = frozenset({
 #: lint``, builds nothing and must hold nothing.
 #:
 #: ``Coverage.yaml`` names ``Run Coverage`` and not the ``Setup Conan`` beside
-#: it. That step is the one GitHub job still running ``xmsconan_conan_setup``
-#: on its own (GitLab keeps two), but it is ``Run Coverage`` that resolves this
+#: it. That is the one GitHub step still running ``xmsconan_conan_setup`` on
+#: its own (GitLab keeps two), but ``Run Coverage`` is what resolves this
 #: library's dependencies, so that is where the credential goes.
 SECRET_HOLDING_STEPS = {
     ("XmsCore-CI.yaml", "flake"): frozenset(),
@@ -3714,15 +3715,14 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
     asking whether that job still reaches the Conan remote, makes the guard
     agree with whatever rendered: a job that stops running ``job build`` stops
     being a job that must hold credentials, and the leg that dropped them
-    reports no holders against an expectation of none. Both halves of the
-    comparison have to come from the table for an absence to fail, so every job
-    is named there, including ``flake``, which runs no build and must hold
-    nothing.
+    reports no holders against an expectation of none. Both the jobs in
+    ``expected`` and the steps each must hold have to come from the table for
+    an absence to fail, so every job is named there, including ``flake``,
+    which runs no build and must hold nothing.
 
     That also makes the job set itself part of the assertion: a build job that
     stops rendering fails as a missing key, and a new one fails as an extra,
     rather than either slipping past a guard that only walks what it was given.
-
     """
     document = _secrets_workflow(tmp_path, workflow, linux_arm)
 
@@ -3732,8 +3732,8 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
     }
     expected = {
         job: set(steps)
-        for (rendered, job), steps in SECRET_HOLDING_STEPS.items()
-        if rendered == workflow and (linux_arm or job not in ARM_ONLY_JOBS)
+        for (table_workflow, job), steps in SECRET_HOLDING_STEPS.items()
+        if table_workflow == workflow and (linux_arm or job not in ARM_ONLY_JOBS)
     }
 
     assert holders == expected
