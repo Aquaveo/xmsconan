@@ -40,9 +40,10 @@ def resolve_version(explicit_version=None, environ=None):
     4. setuptools-scm, for a developer's checkout.
     5. ``0.0.0``.
 
-    Every generated CI command reads the version this way, so ``xmsconan_gen``,
-    ``build.py``, ``xmsconan_coverage`` and ``xmsconan_conan_deploy`` agree on
-    it without a job exporting a variable between them.
+    Every generated CI command reads the version this way, so
+    ``xmsconan job build``, ``build.py``, ``xmsconan coverage`` and
+    ``xmsconan job deploy`` agree on it without a job exporting a variable
+    between them.
 
     Args:
         explicit_version: Version string from --version flag, or None.

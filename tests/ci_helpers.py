@@ -71,6 +71,11 @@ def write_gitlab_toml(tmp_path, **ci_flags):
 #: is exactly what these tests are about.
 WHEEL_ONLY = {"wheel_only": True}
 
+#: A legacy ``xmsconan_*`` console script's name, as a generated command line
+#: would spell it. The scripts stay installed as aliases; what this guards is a
+#: generated job calling one instead of ``xmsconan <cmd>``.
+LEGACY_SCRIPT = re.compile(r"\bxmsconan_\w+")
+
 
 def write_github_toml(tmp_path, **ci_flags):
     """Write a minimal GitHub build.toml."""

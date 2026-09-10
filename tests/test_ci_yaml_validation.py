@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from xmsconan.generator_tools.ci_file_generator import generate_ci
-from .ci_helpers import NON_JOB_SHAPE_KEYS, write_build_toml
+from .ci_helpers import LEGACY_SCRIPT, NON_JOB_SHAPE_KEYS, WHEEL_ONLY, write_build_toml
 
 
 # All boolean CI options and their possible values.
@@ -330,6 +330,39 @@ def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
             f"floor without --upgrade is a no-op when the runner image "
             f"already carries a satisfying xmsconan: {line}"
         )
+
+
+#: The install check's cases, plus every GitLab one again under ``[matrix]
+#: wheel_only``: that layout renders its own build and measure jobs, which no
+#: ``[ci]`` flag reaches.
+_COMMAND_CASES = _INSTALL_CASES + [("gitlab", {**combo, "matrix_table": WHEEL_ONLY}) for combo in _GITLAB_COMBOS]
+
+
+@pytest.mark.parametrize("ci_type,options", _COMMAND_CASES,
+                         ids=lambda value: value if isinstance(value, str) else _combo_id(value))
+def test_no_flag_combination_calls_a_legacy_script(ci_type, options, tmp_path):
+    """No flag combination renders a job calling an ``xmsconan_*`` script.
+
+    test_ci_commands pins ``xmsconan <cmd>`` on the shapes that carry each
+    command. This sweeps every ``[ci]`` flag combination on both hosts, and
+    each GitLab one again under ``wheel_only``, so a step that only some flag
+    or layout renders -- deploy, xvfb, the arm leg, Windows wheel repair, the
+    wheel_only build jobs -- cannot bring an old name back unnoticed. As in
+    the install check, comment lines are skipped: the header still names
+    ``xmsconan_ci`` as the generator.
+    """
+    toml_file = write_build_toml(tmp_path, ci_type, library_name='xmscore', description='Core library', **options)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    legacy = [
+        f"{path.name}: {stripped}"
+        for path in sorted(output_dir.rglob("*")) if path.is_file()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+        if LEGACY_SCRIPT.search(stripped)
+    ]
+    assert legacy == []
 
 
 #: Python fan-out shapes to YAML-validate. The boolean sweep above cannot reach

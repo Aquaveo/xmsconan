@@ -125,7 +125,6 @@ jobs:
       # Install Python Dependencies
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
           # The plugins the generated .flake8 relies on ride in on the [ci]
           # extra; xmsconan's pyproject.toml says which, and why each one.
           pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
@@ -180,7 +179,6 @@ jobs:
       # Install Python Dependencies
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
           python -m pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Build the Conan Package
       - name: Build the Conan Packages
@@ -505,7 +503,6 @@ jobs:
       # Install Python Dependencies
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
           python -m pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
       # Setup Visual Studio
       - name: Setup Visual Studio

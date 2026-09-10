@@ -254,7 +254,7 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
 
         ``test_labels`` names the Linux ``test_artifacts/<label>/`` directories
         the build stages, one per surviving testing configuration, and is what
-        the split-out GitLab test jobs pass to ``xmsconan_test_shards --label``.
+        the split-out GitLab test jobs pass to ``xmsconan job test --label``.
         It is deliberately not derived from ``build_types``: that axis counts
         every surviving configuration, so a filter selecting only pybind or only
         plain-library builds leaves a build type listed there with no test
@@ -359,7 +359,7 @@ def ci_build_jobs(build_filter: dict, config: BuildToml,
             Whether this job compiles with coverage instrumentation, and so
             whether it measures and publishes a coverage tracefile.
         ``coverage_leg``
-            The ``xmsconan_coverage --leg`` value this job measures, or None
+            The ``xmsconan coverage --leg`` value this job measures, or None
             when it is not instrumented.
         ``kind``
             ``"testing"``, ``"pybind"`` or ``"library"``.
@@ -440,7 +440,7 @@ def ci_build_jobs(build_filter: dict, config: BuildToml,
                     "options": selector,
                 }, separators=(",", ":")),
                 "instrumented": instrumented,
-                # The `xmsconan_coverage --leg` selector for this job, or None
+                # The `xmsconan coverage --leg` selector for this job, or None
                 # when it builds nothing coverage reads. Carried on the job
                 # rather than derived in the template, so the one place that
                 # decides a job is instrumented is also the place that says

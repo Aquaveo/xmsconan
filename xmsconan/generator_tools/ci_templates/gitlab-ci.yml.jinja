@@ -54,7 +54,7 @@ stages:
    does, rather than at its stage's turn -- and each job requests exactly the
    shape its consumer needs, so nothing is compiled twice.
 
-   The instrumented jobs run `xmsconan_coverage --phase measure` rather than
+   The instrumented jobs run `xmsconan coverage --phase measure` rather than
    build.py directly. That keeps the whole instrumented path (regenerating with
    XMS_COVERAGE set, pinning the coverage ABI, running the suite, reading .gcda
    beside the .gcno that were written next to it) inside the tool that already
@@ -91,7 +91,7 @@ stages:
    -- which meant a leg was described in two places, here and in the tool that
    had to agree with it.
 
-   Not on an instrumented job: that one runs `xmsconan_coverage`, which pins
+   Not on an instrumented job: that one runs `xmsconan coverage`, which pins
    its own build types, so $BUILD_TYPE there names a leg nothing reads. #>
 <% if not job.instrumented %>
     BUILD_TYPE: '<< job.build_type >>'
@@ -137,12 +137,12 @@ stages:
   script:
 <% if job.instrumented %>
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
+    - xmsconan conan-setup
 <# Per-case ctest entries are registered for instrumented builds, so there is
    something for -j8 to schedule: measured against xmsvtk's suite, per-case
    ctest -j8 ran it in 303.5s where the single whole-binary entry took 1438s. #>
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - xmsconan_coverage --phase measure --leg << job.coverage_leg >> build.toml
+    - xmsconan coverage --phase measure --leg << job.coverage_leg >> build.toml
 <% else %>
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
 <# One call, where there were eight lines. The tool prints the toolchain
@@ -235,7 +235,7 @@ Conan Build:
    measured in minutes that overhead was most of the wall clock, and it scaled
    with the shard count instead of against it.
 
-   xmsconan_test_shards is what makes one container viable: N runners writing
+   `xmsconan job test` is what makes one container viable: N runners writing
    to one log interleave line by line, so it buffers each shard's output and
    replays it whole, then merges the per-shard gtest XML into the single
    TEST-cxxtest.xml reported below. It also does the artifact spelunking that
@@ -297,7 +297,7 @@ Conan Build:
    measured in minutes that overhead was most of the wall clock, and it scaled
    with the shard count instead of against it.
 
-   xmsconan_test_shards is what makes one container viable: N runners writing
+   `xmsconan job test` is what makes one container viable: N runners writing
    to one log interleave line by line, so it buffers each shard's output and
    replays it whole, then merges the per-shard gtest XML into the single
    TEST-cxxtest.xml reported below. It also does the artifact spelunking that
@@ -716,8 +716,7 @@ Repair Wheel:
    toolchain's binaries beside this job's -- unreliable for the one question it
    existed to answer, and nothing consumed it. `xmsconan job deploy
    --cache-archive PATH` writes the queried equivalent for anyone who wants a
-   snapshot back. Nothing generated passes it yet: the GitHub workflows still
-   archive their release asset with `xmsconan_conan_deploy --save`. #>
+   snapshot back; the GitHub workflows' release asset is that archive. #>
   script:
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
@@ -826,7 +825,7 @@ Coverage:
   image: python:<< coverage_python_version >>
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_coverage --phase report build.toml
+    - xmsconan coverage --phase report build.toml
   artifacts:
 <# `when: always` because a gate miss still has a report worth reading -- and
    it is now rendered *here*, so without this the run you most want to look at
@@ -885,16 +884,16 @@ Coverage:
   # so on those two branches the container interpreter and the ABI the build
   # targets cannot drift apart. Under an explicit [ci].docker_image the image
   # is whatever the repo named and only this pin is resolved, so keeping that
-  # image's interpreter in step is the repo's job. xmsconan_coverage exports
+  # image's interpreter in step is the repo's job. xmsconan coverage exports
   # the same value itself; declaring it here keeps the job readable without
   # tracing into the packager.
   variables:
     PYTHON_TARGET_VERSION: '<< coverage_python_version >>'
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
+    - xmsconan conan-setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - xmsconan_coverage --phase collect build.toml
+    - xmsconan coverage --phase collect build.toml
   artifacts:
     expire_in: '1d'
 <# `when: always` because the gate below has to run even when collection came
@@ -937,7 +936,7 @@ Coverage:
   image: python:<< coverage_python_version >>
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_coverage --phase report build.toml
+    - xmsconan coverage --phase report build.toml
   artifacts:
     reports:
       coverage_report:

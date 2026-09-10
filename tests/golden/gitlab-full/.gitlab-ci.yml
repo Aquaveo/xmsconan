@@ -255,16 +255,16 @@ Repair Wheel:
   # so on those two branches the container interpreter and the ABI the build
   # targets cannot drift apart. Under an explicit [ci].docker_image the image
   # is whatever the repo named and only this pin is resolved, so keeping that
-  # image's interpreter in step is the repo's job. xmsconan_coverage exports
+  # image's interpreter in step is the repo's job. xmsconan coverage exports
   # the same value itself; declaring it here keeps the job readable without
   # tracing into the packager.
   variables:
     PYTHON_TARGET_VERSION: '3.13'
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
+    - xmsconan conan-setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - xmsconan_coverage --phase collect build.toml
+    - xmsconan coverage --phase collect build.toml
   artifacts:
     expire_in: '1d'
     when: always
@@ -297,7 +297,7 @@ Coverage:
   image: python:3.13
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_coverage --phase report build.toml
+    - xmsconan coverage --phase report build.toml
   artifacts:
     reports:
       coverage_report:

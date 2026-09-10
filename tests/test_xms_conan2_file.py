@@ -581,7 +581,7 @@ class TestCoverageWiring:
             self, mock_cmake_cls):
         """An instrumented build is the one shape ctest still schedules.
 
-        Every other shape reaches the runner through xmsconan_test_shards,
+        Every other shape runs the binary directly, in shards,
         which is why the generated CMakeLists registers the whole binary as a
         single ctest entry. ctest cannot parallelize one entry, so the
         coverage job's CTEST_PARALLEL_LEVEL had nothing to act on and ran the

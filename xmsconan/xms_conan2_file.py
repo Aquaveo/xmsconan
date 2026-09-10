@@ -616,9 +616,9 @@ class XmsConan2File(ConanFile):
         if self.options.coverage:
             variables["XMS_COVERAGE"] = "1"
             # An instrumented build is the one shape that still runs its suite
-            # through ctest. Everything else reaches the runner through
-            # xmsconan_test_shards, which supplies its own concurrency and is
-            # why the default registration is a single whole-binary entry --
+            # through ctest. Everything else runs the binary directly, in
+            # shards that supply their own concurrency, which is why the
+            # default registration is a single whole-binary entry --
             # but ctest cannot parallelize one entry, so the coverage job's
             # CTEST_PARALLEL_LEVEL had nothing to act on and the suite ran
             # serially. Per-case entries hand it something to schedule.

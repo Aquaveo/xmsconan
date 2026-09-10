@@ -71,11 +71,13 @@ def test_generated_jobs_install_the_toolchain_only_through_the_extra(tmp_path, w
 
     A line that installed conan, cmake, gcovr or a flake8 plugin by name again
     would be a second copy of a version that lives in pyproject.toml, which is
-    the drift the extra exists to end. Two lines are allowed to name something
-    else: pip upgrading itself, and the GitLab Lint job's flake8-aquaveo, which
-    the extra leaves out on purpose -- the GitHub flake job has never run the
-    AQU rules, and whether both hosts should is the lint command's decision to
-    make, not this extra's to preempt.
+    the drift the extra exists to end. One line is allowed to name something
+    else: the GitLab Lint job's flake8-aquaveo, which the extra leaves out on
+    purpose -- the GitHub flake job has never run the AQU rules, and whether
+    both hosts should is the lint command's decision to make, not this extra's
+    to preempt. The GitHub flake, mac and windows jobs no longer upgrade pip
+    first: that was an unpinned download in each of them, and the GitLab
+    jobs install the extra without it.
     """
     toml_file = writer(tmp_path, **ci_flags)
     output_dir = tmp_path / "output"
@@ -89,5 +91,4 @@ def test_generated_jobs_install_the_toolchain_only_through_the_extra(tmp_path, w
     assert [line for line in install_lines if requirement_names(line) & carried] == []
     assert [line for line in install_lines if "xmsconan" in line and "xmsconan[ci]" not in line] == []
     others = [line for line in install_lines if "xmsconan[ci]" not in line]
-    assert [line for line in others
-            if not line.endswith("pip install --upgrade pip") and "flake8-aquaveo" not in line] == []
+    assert [line for line in others if "flake8-aquaveo" not in line] == []

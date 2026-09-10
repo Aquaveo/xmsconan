@@ -235,7 +235,7 @@ if (BUILD_TESTING)
     # the binary directly, gtest runs every case in one process.
     #
     # Parallelism is not lost, it moves: `build.py --test-shards N` and the
-    # generated CI's `xmsconan_test_shards` job run N shards, each one process
+    # generated CI's `xmsconan job test` jobs run N shards, each one process
     # covering many cases -- the same concurrency at 1/Nth the spawn count.
     # That is also why CTEST_PARALLEL_LEVEL stops mattering here.
     #

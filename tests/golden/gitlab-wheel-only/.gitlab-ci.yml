@@ -61,9 +61,9 @@ stages:
       - coverage-html-py/
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
+    - xmsconan conan-setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - xmsconan_coverage --phase measure --leg python build.toml
+    - xmsconan coverage --phase measure --leg python build.toml
 
 "Python Build - py3.13":
   stage: Test
@@ -118,9 +118,9 @@ stages:
       - coverage-status-cpp.json
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_conan_setup
+    - xmsconan conan-setup
     - export CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL:-8}
-    - xmsconan_coverage --phase measure --leg cpp build.toml
+    - xmsconan coverage --phase measure --leg cpp build.toml
 
 "Conan Build - Windows":
   stage: Test
@@ -265,7 +265,7 @@ Coverage:
   image: python:3.13
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan_coverage --phase report build.toml
+    - xmsconan coverage --phase report build.toml
   artifacts:
     when: always
     reports:
