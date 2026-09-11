@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0, 2.30.1); Phase 5 exit criteria partly met; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
-| **Date** | 2026-09-03; status reconciled 2026-09-10 |
+| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0–2.30.2); Phase 5 exit criterion 1 met, 2–4 open; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
+| **Date** | 2026-09-03; status reconciled 2026-09-11 |
 | **Inputs** | [REVIEW-2026-09-03.md](REVIEW-2026-09-03.md) (R1–R24, S1–S6) and [DESIGN-ci-job-commands.md](DESIGN-ci-job-commands.md) |
-| **Anchored to** | xmsconan `8084d9a` (the plan); master `94664ea` (the status) |
+| **Anchored to** | xmsconan `8084d9a` (the plan); master `7195bc0` (the status) |
 
 ## Status
 
-Reconciled against master `94664ea` on 2026-09-10. Every commit between the
-anchor and master is one of #134–#145, and each row marked Done was checked
+Reconciled against master `7195bc0` on 2026-09-11. Every commit between the
+anchor and master is one of #134–#146, and each row marked Done was checked
 against the code on master, not only against the PR title.
 
 | Phase | Status | Landed as |
@@ -25,13 +25,13 @@ against the code on master, not only against the PR title.
 | 5.2 | Done | #140 `94a6158` |
 | 5.3 | Done | #141 `e62763b` |
 | 5.4 | Done; two parts dropped by decision | #142 `a492ba1`; follow-ups #144 `1078397`, #145 `94664ea` |
-| 5, exit | Partly met | [Phase 5 exit criteria](#phase-5-exit-criteria) |
+| 5, exit | Criterion 1 met; 2–4 open | #146 `7195bc0`; see [Phase 5 exit criteria](#phase-5-exit-criteria) |
 | 6 | Not started | — |
-| 7 | 7.1, 7.6, 7.9 and 7.10 partly done; the rest not started | — |
+| 7 | 7.6 done; 7.1, 7.9 and 7.10 partly done; the rest not started | 7.6: #146 `7195bc0` |
 
 **Releases.** 2.30.0 (`a492ba1`) is the first release carrying any phase;
-2.29.2 predates the `xmsconan job` CLI. 2.30.1 (`81d5b1e`) adds #143. #144
-and #145 are on master and not yet released.
+2.29.2 predates the `xmsconan job` CLI. 2.30.1 (`81d5b1e`) adds #143, and
+2.30.2 (`7195bc0`) adds #144–#146.
 
 **Consumer verification**, against 2.30.1, on a branch and on a tag per
 host: xmsgrid `9.1.2` on GitHub (15 legs; wheels, Conan packages and release
@@ -40,14 +40,20 @@ deploy jobs). Both tag logs show the version coming from the tag —
 `Version from GITHUB_REF_NAME: 9.1.2`, `Version from CI_COMMIT_TAG: 6.0.14`
 — which is what let 5.1 delete the version and branch actions.
 
+Against 2.30.2, on a branch: xmscore (Aquaveo/xmscore#133). Its workflows
+were last generated with 2.23.0, so this was its first run of the
+`xmsconan job` pipeline. All 15 XmsCore-CI jobs and the Coverage job
+passed on both the push and the pull-request run, Coverage through
+`xmsconan conan-setup` and `xmsconan coverage`. No tag-gated step ran;
+those last ran on xmsgrid's `9.1.2` tag, against 2.30.1.
+
 ### What's left, in order
 
 1. **Close Phase 5** against its [exit criteria](#phase-5-exit-criteria):
-   remove three `pip install --upgrade pip` lines (in the same PR as 7.6, so
-   consumers regenerate once), run criterion 2 on a workstation, and decide
-   criteria 3 and 4.
-2. **Remove the two one-release fallbacks.** Both have shipped in 2.30.0 and
-   2.30.1:
+   criterion 1 is met (#146, which also did 7.6). Run criterion 2 on a
+   workstation, and decide criteria 3 and 4.
+2. **Remove the two one-release fallbacks.** Both have shipped in 2.30.0,
+   2.30.1 and 2.30.2:
    - 2a.1's `--client devpi` (`ci_tools/wheel_deploy.py:270`). Its own
      docstring calls it the last place xmsconan puts a password on a
      subprocess's argv.
@@ -64,6 +70,12 @@ deploy jobs). Both tag logs show the version coming from the tag —
   #130, closed unmerged on 2026-09-02 with no comment, said the msvc 192
   build needs them too. One of the two is wrong; unresolved.
 - #78 (`xmsconan format`) is open and is not part of this plan.
+- The generated GitHub workflows use actions that target Node 20:
+  `actions/checkout@v4`, `actions/setup-python@v5`,
+  `actions/upload-artifact@v4`, and the pinned `ilammy/msvc-dev-cmd` and
+  `microsoft/setup-msbuild`. Every leg of Aquaveo/xmscore#133 warns that
+  they were forced onto Node 24. 7.1's status covers only xmsconan's own
+  workflow.
 
 ## How to read this
 
@@ -238,8 +250,9 @@ they are not rewritten.
 
 **As built:** the module layout landed as drawn. `job coverage --leg/--report`
 was dropped by decision — no new CLI surface for coverage — so the coverage
-jobs still run `xmsconan_coverage` directly (the `job_tools/cli.py`
-docstring says so). `job coverage --pages` exists as 5.3 describes.
+jobs run `xmsconan coverage` directly, as the `job_tools/cli.py` docstring
+says (#146 respelled them from `xmsconan_coverage`). `job coverage --pages`
+exists as 5.3 describes.
 
 ### PR 5.1 — `[ci]` extra and version from the CI environment
 
@@ -294,7 +307,8 @@ secret-holding step table keyed per job rather than per workflow) and #145
 `job coverage --leg/--report` (see *As built* above), and the mac job's
 `--remove-conancenter`, so the four platform jobs stay one identical step
 list. Verified on xmsgrid rather than xmscore: tag `9.1.2`, 15 legs, 14
-release assets.
+release assets. xmscore then ran it on a branch against 2.30.2
+(Aquaveo/xmscore#133): 15 jobs and coverage green.
 
 | Change | Test |
 |---|---|
@@ -305,11 +319,11 @@ Size: M. Verify on one GitHub consumer (`xmscore`) on a branch and a tag.
 
 ### Phase 5 exit criteria
 
-| Criterion | Status (2026-09-10) |
+| Criterion | Status (2026-09-11) |
 |---|---|
-| Both templates contain no `pip install` other than the `[ci]` line, no `export`, no `xvfb-run`, no `--filter`, no inline HTML. | **Partly met.** No `xvfb-run`, no inline HTML, and `--filter` survives only in comments. Left to remove: `python -m pip install --upgrade pip` at `github-ci.yaml.jinja:128`, `:183` and `:508` — do it with 7.6. Two recorded exceptions, each explained by a comment in the template: `export CTEST_PARALLEL_LEVEL` in the instrumented coverage jobs (`gitlab-ci.yml.jinja:144`, `:896`), which follows from dropping `job coverage --leg/--report`; and `pip install … flake8-aquaveo` in the GitLab lint job (`:552`), kept out of `[ci]` so the GitHub flake job does not gain the AQU rules. Revisit that one if the two hosts should lint alike. |
+| Both templates contain no `pip install` other than the `[ci]` line, no `export`, no `xvfb-run`, no `--filter`, no inline HTML. | **Met** — #146 (`7195bc0`) removed the three `pip install --upgrade pip` lines. No `xvfb-run`, no inline HTML, and `--filter` survives only in comments. Two recorded exceptions, each explained by a comment in the template: `export CTEST_PARALLEL_LEVEL` in the instrumented coverage jobs (`gitlab-ci.yml.jinja:144`, `:895`), which follows from dropping `job coverage --leg/--report`; and `pip install … flake8-aquaveo` in the GitLab lint job (`:552`), kept out of `[ci]` so the GitHub flake job does not gain the AQU rules. Revisit that one if the two hosts should lint alike. |
 | `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.13 xmsconan job build` on a workstation produces the same `.export/` tarball name a CI leg does. | **Not run.** `export_tarball_name` (`job_tools/build.py`) builds the name from `build.toml`, `PYTHON_TARGET_VERSION` and the platform, so only the version segment can differ. |
-| `tests/test_ci_file_generator.py` shrinks; the removed assertions are covered by `job_tools` unit tests and the golden files. | **Not met.** 3300 lines at `8084d9a`, 3904 on master. Decide whether to move the assertions the golden files already pin, or retire the criterion. |
+| `tests/test_ci_file_generator.py` shrinks; the removed assertions are covered by `job_tools` unit tests and the golden files. | **Not met.** 3300 lines at `8084d9a`, 3905 on master. Decide whether to move the assertions the golden files already pin, or retire the criterion. |
 | Open questions in the design §7 are each answered in the PR that touches them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in 5.2, upload client in 2a). | **4 of 5.** Name: `xmsconan job`. Pin policy: `>=X,<X+1`. Release asset: stays on `upload-release-asset`. Upload client: `uv publish`. `build.py` is still open — the design says keep it for one release cycle, then decide — and `build.py.jinja` still ships. |
 
 ---
@@ -338,14 +352,14 @@ recipe base verbatim with `shutil.copy2`. `credentials.py` has no
 
 Any time; each row is its own small PR.
 
-| # | Item | Change | Size | Status (2026-09-10) |
+| # | Item | Change | Size | Status (2026-09-11) |
 |---|---|---|---|---|
-| 7.1 | **R9** | Commit `uv.lock`; SHA-pin every Action; add Dependabot for pip and actions. | S | Partly. In `.github/workflows/xmsconan-ci.yaml`, `setup-uv` and `get-git-tag` are SHA-pinned; `actions/checkout@v4` and `actions/setup-python@v5` are not. No `uv.lock`, no Dependabot. |
+| 7.1 | **R9** | Commit `uv.lock`; SHA-pin every Action; add Dependabot for pip and actions. | S | Partly. In `.github/workflows/xmsconan-ci.yaml`, `setup-uv` and `get-git-tag` are SHA-pinned; `actions/checkout@v4` and `actions/setup-python@v5` are not. No `uv.lock`, no Dependabot. Every job of the 2.30.2 run warns that `checkout@v4` and `setup-python@v5` — and, in `publish`, `get-git-tag` — target Node 20 and were forced onto Node 24; `publish` also warns that it uses the deprecated `set-output` command, most likely from `get-git-tag`, which `GITHUB_REF_NAME` could replace as 5.1 did in the generated workflows. |
 | 7.2 | **R10** | `workflow_dispatch` + weekly schedule job running `pytest -m integration`. | S | Not started. |
 | 7.3 | **R14** | `pyrightconfig.json` in basic mode over `build_toml`, `build_filter`, `test_shards`, `coverage_generator`, `job_tools`; add to CI; widen a module at a time. | M | Not started. |
 | 7.4 | **R15** | Modernize `build_library.py` or fold it into `publish` / `job build`; its coverage target is in 7.10. | M | Not started. |
 | 7.5 | **R20** | README = install + quickstart + link; delete its `build.toml` table in favour of USAGE §5. | S | Not started; the README still carries the `build.toml` schema tables. |
-| 7.6 | **R21** | Templates emit `xmsconan <cmd>` (Phase 5 does this for every job it touches); `xmsconan_*` scripts stay as documented aliases. | S | Partly. Every job Phase 5 rewrote calls `xmsconan job`. The coverage jobs still call `xmsconan_conan_setup` / `xmsconan_coverage` (`gitlab-ci.yml.jinja:140`, `:145`, `:829`, `:895`, `:897`, `:940`; `github-coverage.yaml.jinja:64`, `:68`). The dispatcher already registers `conan-setup` and `coverage`, so this is a spelling change with no new CLI surface. Do it with Phase 5's three `pip` lines. |
+| 7.6 | **R21** | Templates emit `xmsconan <cmd>` (Phase 5 does this for every job it touches); `xmsconan_*` scripts stay as documented aliases. | S | Done — #146 (`7195bc0`). No template calls an `xmsconan_*` script: the coverage jobs call `xmsconan conan-setup` and `xmsconan coverage`, and every other job `xmsconan job`. `tests/test_ci_commands.py` fails a generated call to a subcommand or job kind the dispatcher does not register. The `xmsconan_*` scripts stay registered in `pyproject.toml`. |
 | 7.7 | **R22** | Prune the 58 profiles to the ones the matrix and `xmsconan_build --profile` users need; USAGE §9.2 lists what remains. | S | Not started; still 58 profiles. |
 | 7.8 | **R23** | `.gitignore` and `.flake8` exclude lists trimmed to what exists. | S | Not started; neither file has changed since `8084d9a`. |
 | 7.9 | **R24** | Delete `conan1`, `stable`, `pr117`, merged `task/*` and `fix/*`, the `pre-rebase-backup` tag. | S | Partly. `pr117` and `pre-rebase-backup` are gone. Still on the remote: `conan1`, `stable`, `fix/conan-deploy-save-binaries` (merged as #92), `fix/upload-package-pattern` (#132, still open, but its change landed as `8084d9a`; close it), `fix/vs2019-credentials-doc` (#130, closed unmerged). Keep `fix/xvfb-repair-wheel-interpreter`: #99 left it in place for #100, still open. The `cp313-cp313` hardcode #100 describes is still at `gitlab-ci.yml.jinja:591`, though the branch predates Phase 5's rewrite of those lines. Not named in this row, and each carries commits master lacks, so check before deleting: `conan2-vtk` (1 commit, 2025-01-29), `feature/build-toml-filter-rebased` (3, 2026-08-26), `limit_numpy` (1, 2024-08-30), and `format/format-code` (#78, open). |
