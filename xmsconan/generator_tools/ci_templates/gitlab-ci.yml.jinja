@@ -227,69 +227,6 @@ Conan Build:
     - xmsconan job build<< " --defer-cxx-tests" if ci_split_tests else "" >><< " --export" if ci_deploy else "" >>
 
 <% endif %>
-<% if ci_wheel_only %>
-<% if ci_split_tests %>
-<# One job, N shards inside it -- not `parallel: N`, which is N jobs on N
-   runners. Each of those paid for a container start, a pip install and a
-   download of the build artifacts to run one Nth of the suite; for a suite
-   measured in minutes that overhead was most of the wall clock, and it scaled
-   with the shard count instead of against it.
-
-   `xmsconan job test` is what makes one container viable: N runners writing
-   to one log interleave line by line, so it buffers each shard's output and
-   replays it whole, then merges the per-shard gtest XML into the single
-   TEST-cxxtest.xml reported below. It also does the artifact spelunking that
-   used to be inline shell here -- restoring the runner's executable bit and
-   linking test_files/ back to the absolute path the binary was compiled with.
-
-   One job per *uninstrumented* testing configuration, each naming its own
-   directory with --label and consuming its own build job's artifacts. An
-   instrumented testing configuration gets no job here: it runs its suite
-   inside its build, because gcovr has to read the .gcda it produces against
-   the .gcno written beside them at compile time, and splitting the run out
-   would mean shipping a 245 MiB build folder to reach 5.5 MiB of data.
-
-   The labels come from the same config_label() the build names its
-   directories with, so the two cannot drift. #>
-<% for job in ci_linux_test_jobs %>
-<% set test_label = job.label %>
-"Run C++ Tests - << test_label >>":
-  stage: Test
-<% if docker_image %>
-  image: << docker_image >>
-<% elif ci_xvfb %>
-  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-x11-gdal-py<< gitlab_linux_image_py >>
-<% else %>
-  image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-py<< gitlab_linux_image_py >>
-<% endif %>
-  except:
-    - tags
-  needs:
-    - job: "<< job.name >>"
-      artifacts: true
-  artifacts:
-    expire_in: '1d'
-    when: always
-<# The merged report, so a failing case is named in the MR widget rather than
-   only in the job log. A shard that died before gtest serialized anything is
-   merged in as an explicit error case, so a red job never shows an all-green
-   test tab. Every job writes the same filename; GitLab keys the pipeline test
-   report on the job name, so the configurations stay distinguishable. #>
-    reports:
-      junit: TEST-cxxtest.xml
-    paths:
-<# This job's own configuration only. `needs: artifacts: true` downloads the
-   whole staged tree, so uploading test_artifacts/ wholesale would have each
-   job re-upload every other configuration's runner too. #>
-      - test_artifacts/<< test_label >>/
-      - TEST-cxxtest.xml
-  script:
-    - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
-    - xmsconan job test --label << test_label >>
-
-<% endfor %>
-<% endif %>
-<% else %>
 <% if ci_split_tests %>
 <# One job, N shards inside it -- not `parallel: N`, which is N jobs on N
    runners. Each of those paid for a container start, a pip install and a
@@ -309,10 +246,22 @@ Conan Build:
    compiles, but a single job could only ever run one of them: it fell back to
    the first of Debug-testing, Release-testing that existed, so a matrix
    building both compiled the Release runner on every pipeline and never
-   executed it. The labels come from ci_test_labels, which the generator
-   computes with the same config_label() the build names the directories with,
-   so the two cannot drift. #>
-<% for test_label in ci_test_labels %>
+   executed it.
+
+   Each job needs the build that staged its runner: the one "Conan Build", or,
+   under [matrix].wheel_only, where every configuration is a build job of its
+   own, that configuration's job. There an *instrumented* testing
+   configuration gets no job here: it runs its suite inside its build,
+   because gcovr has to read the .gcda it produces against the .gcno written
+   beside them at compile time, and splitting the run out would mean shipping
+   a 245 MiB build folder to reach 5.5 MiB of data.
+
+   The labels come from the same config_label() the build names its
+   directories with -- through ci_test_labels, or each ci_linux_test_jobs
+   entry -- so the two cannot drift. #>
+<% for job in (ci_linux_test_jobs if ci_wheel_only else ci_test_labels) %>
+<% set test_label = job.label if ci_wheel_only else job %>
+<% set build_job = job.name if ci_wheel_only else "Conan Build" %>
 "Run C++ Tests - << test_label >>":
   stage: Test
 <% if docker_image %>
@@ -325,7 +274,7 @@ Conan Build:
   except:
     - tags
   needs:
-    - job: "Conan Build"
+    - job: "<< build_job >>"
       artifacts: true
   artifacts:
     expire_in: '1d'
@@ -348,7 +297,6 @@ Conan Build:
     - xmsconan job test --label << test_label >>
 
 <% endfor %>
-<% endif %>
 <% endif %>
 <% endif %>
 <% if ci_windows %>
