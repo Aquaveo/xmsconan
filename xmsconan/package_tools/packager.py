@@ -452,7 +452,7 @@ def config_label(combination):
     Module-level rather than a method because the CI generator has to name the
     same directories the build will write: ``summarize_filter_matches`` reports
     the testing labels a platform stages, and the generated GitLab test jobs
-    pass them to ``xmsconan_test_shards --label``. Any second implementation of
+    pass them to ``xmsconan job test --label``. Any second implementation of
     this naming — a template concatenating ``<build_type>-testing``, say —
     would be a copy free to drift from the one the build actually uses.
     """

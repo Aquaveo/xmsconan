@@ -234,10 +234,15 @@ if (BUILD_TESTING)
     # copied next to the runner, none of which the case itself needs. Handed
     # the binary directly, gtest runs every case in one process.
     #
-    # Parallelism is not lost, it moves: `build.py --test-shards N` and the
-    # generated CI's `xmsconan_test_shards` job run N shards, each one process
-    # covering many cases -- the same concurrency at 1/Nth the spawn count.
-    # That is also why CTEST_PARALLEL_LEVEL stops mattering here.
+    # Where parallelism is wanted it comes from shards instead: N runner
+    # processes, each covering many cases -- the same concurrency at 1/Nth
+    # the spawn count -- that bypass ctest. A build runs them in place of
+    # ctest given N above 1: `build.py --test-shards N`, or [ci].test_shards
+    # = N, which `xmsconan job build` reads. The exception is GitLab's Linux
+    # build under [ci].split_tests, which skips the suite at any N; each
+    # `xmsconan job test` job then runs the staged runner as max(N, 1)
+    # shards. Where ctest runs this default registration, it has the one
+    # entry, which is why CTEST_PARALLEL_LEVEL stops mattering here.
     #
     # -DXMS_GTEST_DISCOVER_TESTS=ON restores the per-case entries, for
     # `ctest -R <case>`-style selection.

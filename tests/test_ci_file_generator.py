@@ -15,9 +15,11 @@ from xmsconan.generator_tools.ci_file_generator import (
 )
 from xmsconan.job_tools import build as job_build, common as job_common
 from .ci_helpers import (
+    dispatched_commands,
     NON_JOB_SHAPE_KEYS,
     requirement_names,
     steps_running,
+    uncommented_lines,
     WHEEL_ONLY,
     workflow_document,
     write_github_toml,
@@ -436,7 +438,7 @@ def test_gitlab_build_jobs_install_the_extra_before_the_job_command(tmp_path):
     and is asserted against the tool in ``tests/test_job_build.py``.
 
     The instrumented jobs and ``Coverage Build`` are outside this on purpose:
-    they install the same extra, but hand the build to ``xmsconan_coverage``.
+    they install the same extra, but hand the build to ``xmsconan coverage``.
     """
     toml_file = write_gitlab_toml(tmp_path, windows_vs2019=True)
     output_dir = tmp_path / "output"
@@ -1048,7 +1050,7 @@ def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
     cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
     assert cov.exists()
     content = cov.read_text(encoding="utf-8")
-    assert "xmsconan_coverage" in content
+    assert "coverage" in dispatched_commands(content)
     # The default GitHub Coverage workflow now runs directly on
     # ubuntu-latest — NOT inside the conan-gcc13-py3.13 docker image. That
     # image used to bake xmsconan in, which silently shadowed any
@@ -1101,7 +1103,7 @@ def test_github_coverage_apt_installs_xvfb_when_requested(tmp_path):
 
 
 def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
-    """The GitLab Coverage stage now invokes xmsconan_coverage instead of inline gcovr."""
+    """The GitLab Coverage stage now invokes xmsconan coverage instead of inline gcovr."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
         'library_name = "xmscore"\n'
@@ -1115,14 +1117,14 @@ def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert "xmsconan_coverage" in content
+    assert "coverage" in dispatched_commands(content)
     # The hand-rolled coverage preset / profile references should be gone.
     assert "linux_testing_debug_coverage" not in content
     assert "cmake --preset coverage" not in content
 
 
 def test_gitlab_coverage_jobs_pass_no_version(tmp_path):
-    """The Coverage stage names no version: ``xmsconan_coverage`` reads CI_COMMIT_TAG itself.
+    """The Coverage stage names no version: ``xmsconan coverage`` reads CI_COMMIT_TAG itself.
 
     The measure and collect jobs used to receive ``--version ${PACKAGE_VERSION}``
     from an export two lines up, the same ``${CI_COMMIT_TAG:-0.0.0}`` the tool
@@ -1144,7 +1146,7 @@ def test_gitlab_coverage_jobs_pass_no_version(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
 
-    coverage_lines = [line.strip() for line in content.splitlines() if "xmsconan_coverage" in line]
+    coverage_lines = [line for line in uncommented_lines(content) if "xmsconan coverage" in line]
     assert coverage_lines
     assert [line for line in coverage_lines if "--version" in line] == []
     assert "PACKAGE_VERSION" not in content
@@ -1333,8 +1335,7 @@ def test_github_coverage_installs_nothing_but_the_extra(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
 
-    install_lines = [line.strip() for line in content.splitlines()
-                     if "pip install" in line and not line.strip().startswith("#")]
+    install_lines = [line for line in uncommented_lines(content) if "pip install" in line]
     assert len(install_lines) == 1, install_lines
     assert install_lines[0].startswith('pip install --upgrade "xmsconan[ci]>='), install_lines[0]
 
@@ -1343,7 +1344,7 @@ def test_github_coverage_reads_the_tag_without_an_action(tmp_path):
     """Coverage.yaml passes no version and runs no action to find the tag.
 
     Two third-party actions used to find the tag and write XMS_VERSION into
-    GITHUB_ENV on ``refs/tags/*``; ``xmsconan_coverage`` reads GITHUB_REF_NAME
+    GITHUB_ENV on ``refs/tags/*``; ``xmsconan coverage`` reads GITHUB_REF_NAME
     itself when GITHUB_REF_TYPE says it is a tag, so the report advertises the
     tag with nothing outside GitHub's own namespace running in the job.
     """
@@ -1352,8 +1353,8 @@ def test_github_coverage_reads_the_tag_without_an_action(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
 
-    assert "run: xmsconan_coverage build.toml" in content
-    for gone in ("XMS_VERSION", "get-git-tag", "set-env", "xmsconan_coverage --version"):
+    assert "run: xmsconan coverage build.toml" in content
+    for gone in ("XMS_VERSION", "get-git-tag", "set-env", "xmsconan coverage --version"):
         assert gone not in content, gone
 
 
@@ -3514,7 +3515,7 @@ PLATFORM_BUILD_SECRET_STEPS = frozenset({
 #: lint``, builds nothing and must hold nothing.
 #:
 #: ``Coverage.yaml`` names ``Run Coverage`` and not the ``Setup Conan`` beside
-#: it. That is the one GitHub step still running ``xmsconan_conan_setup`` on
+#: it. That is the one GitHub step still running ``xmsconan conan-setup`` on
 #: its own (GitLab keeps two), but ``Run Coverage`` is what resolves this
 #: library's dependencies, so that is where the credential goes.
 SECRET_HOLDING_STEPS = {
@@ -3633,15 +3634,15 @@ def test_github_ci_gives_the_conan_login_to_every_build_step(tmp_path, linux_arm
 def test_github_coverage_gives_the_login_to_the_run_and_not_to_the_setup(tmp_path, linux_arm):
     """The coverage workflow moved the pair one step later, for the same reason.
 
-    ``xmsconan_conan_setup`` writes the remote into this runner's Conan home
+    ``xmsconan conan-setup`` writes the remote into this runner's Conan home
     and reaches nothing, so the credentials it used to carry were a
     credential on a step that could not have used them. The coverage run is
     what resolves dependencies, so that is where they go.
     """
     jobs = _secrets_workflow(tmp_path, "Coverage.yaml", linux_arm)["jobs"]
 
-    setups = [step for job in jobs.values() for step in steps_running(job, "xmsconan_conan_setup")]
-    runs = [step for job in jobs.values() for step in steps_running(job, "xmsconan_coverage")]
+    setups = [step for job in jobs.values() for step in steps_running(job, "xmsconan conan-setup")]
+    runs = [step for job in jobs.values() for step in steps_running(job, "xmsconan coverage")]
     assert len(setups) == 1
     assert len(runs) == 1
     assert "env" not in setups[0]
@@ -3858,7 +3859,7 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workf
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / workflow).read_text(encoding="utf-8")
 
-    install_lines = [line for line in content.splitlines() if "pip install" in line]
+    install_lines = [line for line in uncommented_lines(content) if "pip install" in line]
     assert install_lines
     assert [line for line in install_lines if "devpi" in line] == []
     assert [line for line in install_lines if "toml" in requirement_names(line)] == []

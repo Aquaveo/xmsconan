@@ -6,7 +6,7 @@ import pytest
 
 from xmsconan import generator_tools
 from xmsconan.generator_tools.ci_file_generator import generate_ci
-from .ci_helpers import ci_extra, requirement_names, write_github_toml, write_gitlab_toml
+from .ci_helpers import ci_extra, requirement_names, uncommented_lines, write_github_toml, write_gitlab_toml
 
 
 def _carried_names():
@@ -71,11 +71,13 @@ def test_generated_jobs_install_the_toolchain_only_through_the_extra(tmp_path, w
 
     A line that installed conan, cmake, gcovr or a flake8 plugin by name again
     would be a second copy of a version that lives in pyproject.toml, which is
-    the drift the extra exists to end. Two lines are allowed to name something
-    else: pip upgrading itself, and the GitLab Lint job's flake8-aquaveo, which
-    the extra leaves out on purpose -- the GitHub flake job has never run the
-    AQU rules, and whether both hosts should is the lint command's decision to
-    make, not this extra's to preempt.
+    the drift the extra exists to end. One line is allowed to name something
+    else: the GitLab Lint job's flake8-aquaveo, which the extra leaves out on
+    purpose -- the GitHub flake job has never run the AQU rules, and whether
+    both hosts should is the lint command's decision to make, not this extra's
+    to preempt. The GitHub flake, mac and windows jobs no longer upgrade pip
+    first: that was an unpinned download in each of them, and the GitLab
+    jobs install the extra without it.
     """
     toml_file = writer(tmp_path, **ci_flags)
     output_dir = tmp_path / "output"
@@ -83,11 +85,9 @@ def test_generated_jobs_install_the_toolchain_only_through_the_extra(tmp_path, w
     content = (output_dir / workflow).read_text(encoding="utf-8")
     carried = _carried_names()
 
-    install_lines = [line.strip() for line in content.splitlines()
-                     if "pip install" in line and not line.strip().startswith("#")]
+    install_lines = [line for line in uncommented_lines(content) if "pip install" in line]
     assert install_lines
     assert [line for line in install_lines if requirement_names(line) & carried] == []
     assert [line for line in install_lines if "xmsconan" in line and "xmsconan[ci]" not in line] == []
     others = [line for line in install_lines if "xmsconan[ci]" not in line]
-    assert [line for line in others
-            if not line.endswith("pip install --upgrade pip") and "flake8-aquaveo" not in line] == []
+    assert [line for line in others if "flake8-aquaveo" not in line] == []

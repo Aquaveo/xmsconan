@@ -18,7 +18,7 @@ BUILD_FILTER = {{ build_filter }}
 # The msvc 192 identity, rendered in rather than imported from
 # xmsconan.constants: a new name there would make a freshly generated build.py
 # fail at import against an older installed client, before argparse and with
-# nothing said about versions. `xmsconan_gen` rewrites this file on every CI
+# nothing said about versions. The generator rewrites this file on every CI
 # run, so the literals cannot drift from the tools that read them.
 VS2019_PLATFORM = "{{ vs2019_platform_key }}"
 VS2019_REMOTE = "{{ vs2019_remote_name }}"
@@ -29,7 +29,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", help="Skip the build step", action="store_true")
 parser.add_argument("--upload", help="Complete the conan upload.", action="store_true")
 # Resolved after parsing: the CI tag when the job runs on one, 0.0.0 on any
-# other CI job, setuptools-scm on a developer's checkout -- the same answer `xmsconan_gen`
+# other CI job, setuptools-scm on a developer's checkout -- the same answer `xmsconan gen`
 # reached for conanfile.py, so the version this file uploads and stages is
 # the one it built. XMS_VERSION is honoured as an override for one more
 # release; the generated CI stopped exporting it. Never the glob '*' it once

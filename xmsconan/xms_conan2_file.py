@@ -615,13 +615,14 @@ class XmsConan2File(ConanFile):
         # folder and the cached value can never leak into a production one.
         if self.options.coverage:
             variables["XMS_COVERAGE"] = "1"
-            # An instrumented build is the one shape that still runs its suite
-            # through ctest. Everything else reaches the runner through
-            # xmsconan_test_shards, which supplies its own concurrency and is
-            # why the default registration is a single whole-binary entry --
-            # but ctest cannot parallelize one entry, so the coverage job's
-            # CTEST_PARALLEL_LEVEL had nothing to act on and the suite ran
-            # serially. Per-case entries hand it something to schedule.
+            # Registration defaults to one ctest entry running the whole
+            # binary. An uninstrumented build runs that entry as one process,
+            # or bypasses ctest for runner shards: in the build given more
+            # than one, or, for GitLab's Linux build under split_tests, in the
+            # separate test jobs at any count. But ctest cannot parallelize
+            # one entry, so the coverage job's CTEST_PARALLEL_LEVEL had
+            # nothing to act on and the instrumented suite ran serially.
+            # Per-case entries hand it something to schedule.
             #
             # The spawn cost the single entry exists to avoid is real, and
             # paid here on purpose: measured against this suite, per-case

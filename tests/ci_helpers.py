@@ -11,6 +11,8 @@ import re
 import yaml
 
 from xmsconan._tomllib import loads
+from xmsconan.cli import COMMANDS
+from xmsconan.job_tools.cli import build_parser
 
 #: Top-level keys in a generated ``.gitlab-ci.yml`` that are not jobs, for
 #: checks that inspect job *shape*.
@@ -70,6 +72,75 @@ def write_gitlab_toml(tmp_path, **ci_flags):
 #: pipeline has one build job per configuration or one job looping all of them
 #: is exactly what these tests are about.
 WHEEL_ONLY = {"wheel_only": True}
+
+#: A legacy ``xmsconan_*`` console script's name, as a generated command line
+#: would spell it. The scripts stay installed as aliases; what this guards is a
+#: generated job calling one instead of ``xmsconan <cmd>``.
+LEGACY_SCRIPT = re.compile(r"\bxmsconan_\w+")
+
+#: A call through the dispatcher, ``xmsconan <cmd> [<word>]``, in one line of a
+#: generated file: ``xmsconan`` at the start of the line, or after whitespace or
+#: a path separator (``/opt/python/cp313-cp313/bin/xmsconan job package``) --
+#: the shapes the templates render -- or after a Windows path's backslash or a
+#: quote, so a call reshaped that way is still checked. A call inside ``$(...)``
+#: or after a bare ``;`` would need the class widened. The groups are the
+#: subcommand and the word after it, if any; either may be quoted, and each runs
+#: to whitespace or a quote, so a capitalized, misspelled or quoted word is
+#: captured rather than passed over. ``xmsconan[ci]`` and ``xmsconan_ci`` never
+#: match.
+DISPATCHER_CALL = re.compile(r"""(?:^|[\s/\\"'])xmsconan\s+["']?([^\s"']+)["']?(?:\s+["']?([^\s"']+))?""")
+
+
+def uncommented_lines(text):
+    """Each line of a rendered CI file that is neither blank nor a ``#`` comment, stripped.
+
+    The scans that ask what a pipeline runs read these. Comments are prose
+    about the pipeline, and prose names commands too: the header still names
+    ``xmsconan_ci`` as the generator, and the GitLab coverage job's comment
+    says what ``xmsconan coverage`` exports.
+    """
+    return [stripped for line in text.splitlines() if (stripped := line.strip()) and not stripped.startswith("#")]
+
+
+def dispatched_calls(text):
+    """The ``(subcommand, next word)`` of each ``xmsconan`` call a rendered CI file makes, in order.
+
+    The next word is None for a call that ends at its subcommand.
+    """
+    return [match.groups() for line in uncommented_lines(text) for match in DISPATCHER_CALL.finditer(line)]
+
+
+def dispatched_commands(text):
+    """The subcommand of each ``xmsconan <cmd>`` call a rendered CI file makes, in order."""
+    return [command for command, _ in dispatched_calls(text)]
+
+
+def job_kinds():
+    """The kinds ``xmsconan job`` takes, read from its own parser rather than listed again."""
+    (kinds,) = [action.choices for action in build_parser()._actions if action.dest == "kind"]
+    return set(kinds)
+
+
+def unknown_calls(text):
+    """Each ``xmsconan`` call in a rendered CI file whose subcommand or job kind does not exist.
+
+    The dispatcher exits 1 on a subcommand missing from its table, and
+    ``xmsconan job`` exits 2 on a kind its parser lacks -- both only at run
+    time, after a template that misspelled one has rendered, passed, and been
+    copied into the golden files by ``--update-golden``. A word starting with
+    ``-`` in the subcommand's place is reported like any other, since the
+    dispatcher reads ``xmsconan -v coverage`` as subcommand ``-v``; that
+    includes its own ``--version`` and ``--help``, which no generated line
+    calls.
+    """
+    kinds = job_kinds()
+    unknown = []
+    for command, word in dispatched_calls(text):
+        if command not in COMMANDS:
+            unknown.append(f"xmsconan {command}")
+        elif command == "job" and word not in kinds:
+            unknown.append(f"xmsconan job {word}")
+    return unknown
 
 
 def write_github_toml(tmp_path, **ci_flags):
