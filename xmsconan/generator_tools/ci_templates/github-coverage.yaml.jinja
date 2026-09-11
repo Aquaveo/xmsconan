@@ -39,10 +39,10 @@ jobs:
 
     steps:
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python << coverage_python_version >>
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '<< coverage_python_version >>'
 
@@ -72,7 +72,7 @@ jobs:
           CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
 
       - name: Upload Coverage HTML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-html
           path: |
@@ -82,7 +82,7 @@ jobs:
         if: always()
 
       - name: Upload Coverage XML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: |
