@@ -2479,9 +2479,10 @@ def test_github_ci_pins_third_party_actions_to_a_sha(ci_toml, tmp_path):
     """Third-party actions are referenced by commit SHA, not by tag.
 
     A tag is a movable ref in a repository we do not control: its owner can
-    retarget it at new code, which then runs in this job on a runner that has
-    logged in to Conan and can write GITHUB_ENV for every later step. The tag
-    stays in a trailing comment so the reference is still readable.
+    retarget it at new code, which then runs in a job whose steps hold the
+    Conan login and the deploy secrets, and can write GITHUB_ENV for every
+    step after it. The tag stays in a trailing comment so the reference is
+    still readable.
     """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
@@ -3490,7 +3491,6 @@ PLATFORM_BUILD_SECRET_STEPS = frozenset({
     "Build the Conan Packages",
     "Upload Releases to Conan",
     "Upload wheel to Aquapi",
-    "Get Release",
     "Upload Zipped Conan Packages",
 })
 
@@ -3696,6 +3696,77 @@ def test_github_ci_gives_the_index_credentials_to_the_wheel_upload(tmp_path, lin
         assert "$AQUAPI_URL_SOURCE" in step["run"], f"{name}: source not echoed"
 
 
+# The names actions/github-script injects into a script, from src/main.ts and
+# src/async-function.ts at v9. It compiles the script as the body of
+# `new AsyncFunction(...names, script)`, so they are parameters of the function
+# the script runs in, and a `const`, `let` or `class` declaration of one --
+# plain or destructured -- is a SyntaxError. (`var` may redeclare a parameter.)
+GITHUB_SCRIPT_PARAMETERS = {
+    "require", "__original_require__", "github", "octokit", "getOctokit",
+    "context", "core", "exec", "glob", "io",
+}
+_JS_DECLARATION_RE = re.compile(r"\b(?:const|let|class)\s+(\{[^}]*\}|\[[^\]]*\]|[A-Za-z_$][\w$]*)")
+
+
+@pytest.mark.parametrize("linux_arm", LINUX_ARM)
+def test_github_ci_attaches_the_archive_with_one_first_party_step(tmp_path, linux_arm):
+    """Every build job attaches its archive in one ``actions/github-script`` step.
+
+    It replaced a pair -- ``bruceadams/get-release`` (Node 16) feeding the
+    archived ``actions/upload-release-asset`` (Node 12) -- and it runs only
+    on a tag, so no branch or pull-request run exercises it. What it has to
+    keep is pinned here instead:
+
+    - it runs after the Conan upload, which writes the archive it reads, and
+      the two steps spell that archive's name the same way;
+    - its one credential is the release token, as step env, and the script
+      reads that same variable. Rename one side alone and the step fails at
+      run time, on a tag, after everything else has published;
+    - no ``${{ }}`` is expanded into the script source. The archive path
+      comes from ``GITHUB_WORKSPACE``, which in the Linux jobs' container is
+      the container's own path;
+    - the script declares none of the names github-script injects. They are
+      parameters of the function it runs in, so ``const octokit = ...`` is a
+      SyntaxError that fails the step before it makes a single request;
+    - the script is the same text in every build job. Each job carries its
+      own copy, and a golden that fails on one drifted copy only offers
+      ``--update-golden``.
+    """
+    jobs = _secrets_workflow(tmp_path, "XmsCore-CI.yaml", linux_arm)["jobs"]
+
+    build_jobs = {
+        name: job for name, job in jobs.items() if steps_running(job, "xmsconan job build")
+    }
+    assert build_jobs
+    scripts = {}
+    for name, job in build_jobs.items():
+        steps = job["steps"]
+        scripted = [step for step in steps if step.get("uses", "").startswith("actions/github-script@")]
+        assert [step["name"] for step in scripted] == ["Upload Zipped Conan Packages"], name
+        [upload] = scripted
+        assert upload["uses"] == "actions/github-script@v9", name
+        assert upload["if"] == "startsWith(github.ref, 'refs/tags/')", name
+        assert upload["env"] == {"RELEASE_TOKEN": "${{ secrets.AQUAVEO_GITHUB_TOKEN }}"}, name
+        assert set(upload["with"]) == {"script"}, name
+        script = upload["with"]["script"]
+        scripts[name] = script
+        assert "getOctokit(process.env.RELEASE_TOKEN)" in script, name
+        assert "process.env.GITHUB_WORKSPACE" in script, name
+        assert "`${process.env.MATRIX_NAME}.tar.gz`" in script, name
+        assert "${{" not in script, name
+        declared = {
+            identifier
+            for declaration in _JS_DECLARATION_RE.findall(script)
+            for identifier in re.findall(r"[A-Za-z_$][\w$]*", declaration)
+        }
+        assert declared, name
+        assert not declared & GITHUB_SCRIPT_PARAMETERS, name
+        [archive_writer] = steps_running(job, "--cache-archive")
+        assert "--cache-archive ${{ env.MATRIX_NAME }}.tar.gz" in archive_writer["run"], name
+        assert steps.index(archive_writer) < steps.index(upload), name
+    assert len(set(scripts.values())) == 1, sorted(scripts)
+
+
 @pytest.mark.parametrize("linux_arm", LINUX_ARM)
 @pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS)
 def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path, workflow, linux_arm):
@@ -3708,9 +3779,9 @@ def test_github_workflows_hand_secrets_to_exactly_the_documented_steps(tmp_path,
 
     Per job, not per workflow. The build job exists in four separately
     maintained copies, so a union over all of them is satisfied by three:
-    dropping ``GITHUB_TOKEN`` from the linux-arm ``Get Release`` alone leaves
-    a workflow-wide set of names identical, which is the copy-drift this
-    section is here to catch.
+    dropping ``RELEASE_TOKEN`` from the linux-arm ``Upload Zipped Conan
+    Packages`` alone leaves a workflow-wide set of names identical, which is
+    the copy-drift this section is here to catch.
 
     ``expected`` is read out of the table alone -- nothing about it is computed
     from the document under test. Keying it on the rendered job instead, by
@@ -3895,7 +3966,7 @@ def test_usage_documents_step_scoped_github_secrets():
     """USAGE section 10.1 names the variable and every step that carries a secret.
 
     ``SECRET_HOLDING_STEPS`` drives the step half: the two are one statement
-    about the same set, and the pair that carries the release token was
+    about the same set, and the steps that carried the release token were
     pinned by the test and left out of the prose until this was keyed off it.
     """
     section = slice_between(

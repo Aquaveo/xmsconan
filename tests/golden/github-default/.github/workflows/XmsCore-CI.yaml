@@ -51,9 +51,9 @@
 #
 # Third-party actions are pinned to a commit SHA with the tag in a trailing
 # comment. A tag is a movable ref in someone else's repository: whoever owns
-# it can retarget it at new code, which then runs here on a runner that has
-# already logged in to Conan and can write GITHUB_ENV for every later step.
-# Update a pin by resolving the new tag
+# it can retarget it at new code, which then runs here in a job whose steps
+# hold the Conan login and the deploy secrets, and can write GITHUB_ENV for
+# every step after it. Update a pin by resolving the new tag
 # (`gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`) and editing the
 # template -- not the generated file.
 #
@@ -220,23 +220,39 @@ jobs:
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
           CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
-      # Get the Release Data
-      - name: Get Release
-        id: git_release
-        uses: bruceadams/get-release@74c3d60f5a28f358ccf241a00c9021ea16f0569f  # v1.3.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
-        if: startsWith(github.ref, 'refs/tags/')
-      # Upload Zipped Conan Packages
+      # Attach the archive `Upload Releases to Conan` just wrote to this tag's
+      # GitHub Release. A tag with no published Release fails here, and so
+      # does an asset of the same name already on it: nothing is replaced.
       - name: Upload Zipped Conan Packages
-        uses: actions/upload-release-asset@v1
+        uses: actions/github-script@v9
         env:
-          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.git_release.outputs.upload_url }}
-          asset_path: ${{ github.workspace }}/${{ env.MATRIX_NAME }}.tar.gz
-          asset_name: ${{ env.MATRIX_NAME }}.tar.gz
-          asset_content_type: application/zip
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag = process.env.GITHUB_REF_NAME;
+            const name = `${process.env.MATRIX_NAME}.tar.gz`;
+            const client = getOctokit(process.env.RELEASE_TOKEN);
+            const {owner, repo} = context.repo;
+            let release;
+            try {
+              release = (await client.rest.repos.getReleaseByTag({owner, repo, tag})).data;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.setFailed(`Tag ${tag} has no published GitHub Release to attach ${name} to. Create the Release, then re-run the failed jobs.`);
+              return;
+            }
+            await client.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.id,
+              name,
+              data: fs.readFileSync(path.join(process.env.GITHUB_WORKSPACE, name)),
+              headers: {'content-type': 'application/zip'},
+            });
         if: startsWith(github.ref, 'refs/tags/')
 
   # ----------------------------------------------------------------------------------------------
@@ -319,23 +335,39 @@ jobs:
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
           CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
-      # Get the Release Data
-      - name: Get Release
-        id: git_release
-        uses: bruceadams/get-release@74c3d60f5a28f358ccf241a00c9021ea16f0569f  # v1.3.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
-        if: startsWith(github.ref, 'refs/tags/')
-      # Upload Zipped Conan Packages
+      # Attach the archive `Upload Releases to Conan` just wrote to this tag's
+      # GitHub Release. A tag with no published Release fails here, and so
+      # does an asset of the same name already on it: nothing is replaced.
       - name: Upload Zipped Conan Packages
-        uses: actions/upload-release-asset@v1
+        uses: actions/github-script@v9
         env:
-          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.git_release.outputs.upload_url }}
-          asset_path: ${{ github.workspace }}/${{ env.MATRIX_NAME }}.tar.gz
-          asset_name: ${{ env.MATRIX_NAME }}.tar.gz
-          asset_content_type: application/zip
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag = process.env.GITHUB_REF_NAME;
+            const name = `${process.env.MATRIX_NAME}.tar.gz`;
+            const client = getOctokit(process.env.RELEASE_TOKEN);
+            const {owner, repo} = context.repo;
+            let release;
+            try {
+              release = (await client.rest.repos.getReleaseByTag({owner, repo, tag})).data;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.setFailed(`Tag ${tag} has no published GitHub Release to attach ${name} to. Create the Release, then re-run the failed jobs.`);
+              return;
+            }
+            await client.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.id,
+              name,
+              data: fs.readFileSync(path.join(process.env.GITHUB_WORKSPACE, name)),
+              headers: {'content-type': 'application/zip'},
+            });
         if: startsWith(github.ref, 'refs/tags/')
 
   # ----------------------------------------------------------------------------------------------
@@ -428,21 +460,37 @@ jobs:
           CONAN_LOGIN_USERNAME: ${{ secrets.CONAN2_USER_SECRET }}
           CONAN_PASSWORD: ${{ secrets.CONAN2_PASSWORD_SECRET }}
         if: startsWith(github.ref, 'refs/tags/')
-      # Get the Release Data
-      - name: Get Release
-        id: git_release
-        uses: bruceadams/get-release@74c3d60f5a28f358ccf241a00c9021ea16f0569f  # v1.3.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
-        if: startsWith(github.ref, 'refs/tags/')
-      # Upload Zipped Conan Packages
+      # Attach the archive `Upload Releases to Conan` just wrote to this tag's
+      # GitHub Release. A tag with no published Release fails here, and so
+      # does an asset of the same name already on it: nothing is replaced.
       - name: Upload Zipped Conan Packages
-        uses: actions/upload-release-asset@v1
+        uses: actions/github-script@v9
         env:
-          GITHUB_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.AQUAVEO_GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.git_release.outputs.upload_url }}
-          asset_path: ${{ github.workspace }}/${{ env.MATRIX_NAME }}.tar.gz
-          asset_name: ${{ env.MATRIX_NAME }}.tar.gz
-          asset_content_type: application/zip
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag = process.env.GITHUB_REF_NAME;
+            const name = `${process.env.MATRIX_NAME}.tar.gz`;
+            const client = getOctokit(process.env.RELEASE_TOKEN);
+            const {owner, repo} = context.repo;
+            let release;
+            try {
+              release = (await client.rest.repos.getReleaseByTag({owner, repo, tag})).data;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.setFailed(`Tag ${tag} has no published GitHub Release to attach ${name} to. Create the Release, then re-run the failed jobs.`);
+              return;
+            }
+            await client.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.id,
+              name,
+              data: fs.readFileSync(path.join(process.env.GITHUB_WORKSPACE, name)),
+              headers: {'content-type': 'application/zip'},
+            });
         if: startsWith(github.ref, 'refs/tags/')

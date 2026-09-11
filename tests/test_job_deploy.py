@@ -480,8 +480,9 @@ def test_without_from_cache_a_missing_export_directory_still_refuses(tmp_path, m
 def test_from_cache_still_archives_the_release_asset(tmp_path, monkeypatch):
     """The archive is the step GitHub actually wants from a deploy.
 
-    It is what `upload-release-asset` attaches, and it is written from the
-    same cache the upload read -- so skipping the restore must not skip it.
+    It is what a tag's `Upload Zipped Conan Packages` step attaches to the
+    GitHub Release, and it is written from the same cache the upload read --
+    so skipping the restore must not skip it.
 
     Asserted on Windows, because that is the leg this archive name belongs
     to and the one where the save carries a query: a Windows runner's
