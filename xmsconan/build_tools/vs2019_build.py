@@ -65,8 +65,9 @@ this, so they are distinct:
   that does not exist, a selection that matches no library, a failed
   preflight (from either ``setup`` or ``build`` -- the same condition gets
   the same code), an unusable password file, a file the run needed that
-  could not be read or written, or ``conan`` / ``xmsconan_gen`` not on
-  ``PATH``.
+  could not be read or written, or ``conan`` not on ``PATH``.  A
+  ``build.toml`` a library's generate step rejects, or a build file it
+  cannot write, is not one of these: it fails that library, which is ``1``.
 * ``4`` -- nothing was built.  Every selected library was skipped (no
   checkout, no ``build.toml``, or ``--filter`` matched no configuration).
   This is *not* success: a typo in ``--root`` used to exit 0.  It is not
@@ -120,6 +121,8 @@ from xmsconan.constants import (
     VS2019_REMOTE_URL,
 )
 from xmsconan.exit_codes import EXIT_ERROR, EXIT_NOTHING_BUILT, EXIT_OK, EXIT_USAGE
+from xmsconan.generator_tools.build_file_generator import generate_build_files
+from xmsconan.generator_tools.version import resolve_version
 from xmsconan.package_tools.packager import XmsConanPackager
 
 LOGGER = logging.getLogger(__name__)
@@ -151,7 +154,7 @@ DEFAULT_PYTHON_VERSIONS = ("3.10", "3.13")
 
 
 class ToolNotFoundError(OSError):
-    """A required executable (``conan``, ``xmsconan_gen``) would not start.
+    """A required executable (``conan``) would not start.
 
     An :class:`OSError` subclass so the CLI keeps a single ``except OSError``
     arm per subcommand, but raised only at the *launch* sites.  Everything
@@ -934,6 +937,36 @@ def extract_wheels(packager, configurations, wheel_dir, version=None, repair=Tru
     return True
 
 
+def _generate_build_files(library_dir, version):
+    """Write one checkout's build files, as ``xmsconan gen`` run inside it would.
+
+    A None *version* is resolved from the checkout itself, not from wherever
+    this driver was started: one run builds several libraries, and without
+    ``--version`` each is stamped with the version its own history gives it.
+
+    Args:
+        library_dir: The library's checkout.
+        version: The version to stamp, or None to resolve it.
+
+    Returns:
+        None when the files were written; otherwise why not, for the
+        library's row in the summary.
+    """
+    try:
+        generated = generate_build_files(
+            os.path.join(library_dir, "build.toml"),
+            resolve_version(version, root=library_dir),
+            output_dir=library_dir,
+        )
+    except (OSError, ValueError) as exc:
+        # A build.toml the generator rejects, or a file it cannot write, is
+        # this library's failure, not the run's.
+        return f"generating build files failed: {exc}"
+    if generated != EXIT_OK:
+        return "generating build files failed; the reason is logged above"
+    return None
+
+
 def build_library(library: LibrarySpec, root, version=None, generate=True,
                   python_versions=None, config_filter=None, log_dir=None,
                   wheel_dir=None):
@@ -948,8 +981,9 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
         library: The :class:`LibrarySpec` to build.  Its ``name`` is both the
             Conan package name and the directory name under ``root``.
         root: Directory holding the library checkouts.
-        version: Version passed to ``xmsconan_gen``.
-        generate: Run ``xmsconan_gen`` before building.
+        version: Version to stamp into the generated build files, or None
+            to resolve it from the library's own checkout.
+        generate: Write the library's build files before building.
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
         log_dir: Directory for per-configuration ``conan create`` logs.
@@ -961,13 +995,6 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
 
     Returns:
         A :class:`LibraryResult`.
-
-    Raises:
-        ToolNotFoundError: When ``xmsconan_gen`` itself would not start.  That
-            is the machine being wrong, not this library failing: it would
-            fail identically for every remaining library, so it aborts the run
-            with :data:`EXIT_USAGE` instead of being counted as a build
-            failure and (without ``--continue-on-error``) exiting 1.
     """
     start = time.monotonic()
     name = library.name
@@ -980,19 +1007,11 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
         )
 
     if generate:
-        command = ["xmsconan_gen"]
-        if version:
-            command += ["--version", version]
-        command.append("build.toml")
         LOGGER.info("%s: generating build files", name)
-        try:
-            subprocess.run(command, cwd=library_dir, check=True)
-        except FileNotFoundError as exc:
-            raise _tool_not_found("xmsconan_gen", exc) from exc
-        except subprocess.CalledProcessError as exc:
+        failure = _generate_build_files(library_dir, version)
+        if failure:
             return LibraryResult(
-                name, "failed", elapsed=time.monotonic() - start,
-                message=f"xmsconan_gen failed: {exc}",
+                name, "failed", elapsed=time.monotonic() - start, message=failure,
             )
 
     packager = _new_packager(
@@ -1037,10 +1056,10 @@ def build(libraries, root, version=None, generate=True, python_versions=None,
     Args:
         libraries: :class:`LibrarySpec` list from :func:`select_libraries`.
         root: Directory holding the library checkouts.
-        version: Version passed to ``xmsconan_gen``; also exported as
-            ``XMS_VERSION`` so it reaches each profile's ``[buildenv]`` ahead
-            of anything the environment would resolve.
-        generate: Run ``xmsconan_gen`` before building each library.
+        version: Version stamped into each library's build files; also
+            exported as ``XMS_VERSION`` so it reaches each profile's
+            ``[buildenv]`` ahead of anything the environment would resolve.
+        generate: Write each library's build files before building it.
         python_versions: Python versions for the pybind variants.
         config_filter: Filter dict for ``filter_configurations``, or None.
         log_dir: Directory for per-configuration ``conan create`` logs.
@@ -1318,7 +1337,7 @@ def _add_build_parser(subparsers):
     )
     build_parser.add_argument(
         "--no-generate", action="store_true",
-        help="Skip the xmsconan_gen step (use the conanfile.py already there).",
+        help="Skip generating the build files (use the conanfile.py already there).",
     )
     build_parser.add_argument(
         "--log-dir", default=None,
@@ -1348,8 +1367,9 @@ def _add_build_parser(subparsers):
     )
     build_parser.add_argument(
         "--version", default=None,
-        help="Package version; passed to xmsconan_gen and exported as "
-             "XMS_VERSION.",
+        help="Package version; stamped into the generated build files and "
+             "exported as XMS_VERSION. Default: each library's own checkout "
+             "resolves it.",
     )
     build_parser.add_argument(
         "--remote-name", default=VS2019_REMOTE_NAME,

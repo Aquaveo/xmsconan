@@ -54,6 +54,22 @@ def logged_messages(caplog):
     return [r.message for r in caplog.records if r.name == LOGGER_NAME]
 
 
+@pytest.fixture(autouse=True)
+def generate_stub(monkeypatch):
+    """Stand in for the build-file generation every instrumented phase starts with.
+
+    It runs in-process, so without this every test that reaches it would
+    render real build files and profiles into ``tmp_path`` from a build.toml
+    written to exercise something else. A test about the generation step asks
+    for this fixture by name and reads the mock.
+    """
+    stub = MagicMock(return_value=EXIT_OK)
+    monkeypatch.setattr(
+        "xmsconan.coverage_tools.coverage_generator.generate_build_files", stub,
+    )
+    return stub
+
+
 class TestCoverageContextDefaults:
     """Defaults baked into _coverage_context match the issue spec."""
 
@@ -1378,22 +1394,30 @@ class TestRunCoverageEndToEnd:
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")
     @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
-    def test_xmsconan_gen_called_with_explicit_output_dir(
-        self, mock_run, mock_path, mock_find, tmp_path,
+    def test_generates_the_build_files_into_the_output_dir_without_xms_coverage(
+        self, mock_run, mock_path, mock_find, tmp_path, monkeypatch, generate_stub,
     ):
-        """run_coverage passes --output_dir to xmsconan_gen instead of relying on cwd."""
+        """The build files are generated in-process into ``output_dir``, without XMS_COVERAGE.
+
+        Into ``output_dir`` explicitly, rather than wherever the command was
+        started. And from the environment as it stands: this command sets
+        XMS_COVERAGE only on the build.py environment, where the packager
+        reads it, so the generator must not find it set.
+        """
+        monkeypatch.delenv("XMS_COVERAGE", raising=False)
         toml_file, cpp_build_folder, py_build_folder, fake_run = (
             self._setup_workspace(
                 tmp_path, cpp_percent=80.0, py_percent=80.0,
             )
         )
-        captured_cmds = []
+        coverage_at_generation = []
 
-        def capture(cmd, env=None, cwd=None, **kw):
-            captured_cmds.append(list(cmd) if isinstance(cmd, list) else cmd)
-            return fake_run(cmd, env=env, cwd=cwd, **kw)
+        def generate(*_args, **_kwargs):
+            coverage_at_generation.append(os.environ.get("XMS_COVERAGE"))
+            return EXIT_OK
 
-        mock_run.side_effect = capture
+        generate_stub.side_effect = generate
+        mock_run.side_effect = fake_run
         mock_find.side_effect = lambda library_name, *, kind, python_version=None: (
             ("xmscore/0.0.0", "pid-cpp" if kind == "testing" else "pid-py")
         )
@@ -1403,13 +1427,29 @@ class TestRunCoverageEndToEnd:
 
         run_coverage(str(toml_file), "0.0.0", str(tmp_path))
 
-        gen_cmds = [c for c in captured_cmds
-                    if isinstance(c, list) and c and c[0] == "xmsconan_gen"]
-        assert gen_cmds, "xmsconan_gen should have been invoked"
-        gen_cmd = gen_cmds[0]
-        assert "--output_dir" in gen_cmd, (
-            f"xmsconan_gen must be invoked with --output_dir; got {gen_cmd}"
+        generate_stub.assert_called_once_with(
+            str(toml_file.resolve()), "0.0.0", output_dir=str(tmp_path.resolve()),
         )
+        assert coverage_at_generation == [None]
+
+    @patch("xmsconan.coverage_tools.coverage_generator.subprocess.run")
+    def test_a_failed_generation_builds_nothing(self, mock_run, tmp_path, generate_stub):
+        """A generator that returns an error stops the run before either leg is built.
+
+        Its reason is already logged; building from files it did not finish
+        writing would bury that under a compiler's. main() reports the
+        exception and exits 1.
+        """
+        toml_file, _cpp, _py, fake_run = self._setup_workspace(
+            tmp_path, cpp_percent=80.0, py_percent=80.0,
+        )
+        mock_run.side_effect = fake_run
+        generate_stub.return_value = EXIT_ERROR
+
+        with pytest.raises(RuntimeError, match="Generating the build files"):
+            run_coverage(str(toml_file), "0.0.0", str(tmp_path))
+
+        mock_run.assert_not_called()
 
     @patch("xmsconan.coverage_tools.coverage_generator._find_coverage_package")
     @patch("xmsconan.coverage_tools.coverage_generator._conan_cache_path")

@@ -23,7 +23,7 @@ GITHUB_REF_TYPE_VARIABLE = "GITHUB_REF_TYPE"
 CI_MARKER_VARIABLES = ("GITLAB_CI", "GITHUB_ACTIONS")
 
 
-def resolve_version(explicit_version=None, environ=None):
+def resolve_version(explicit_version=None, environ=None, root="."):
     """Resolve the build version: the flag, then the CI tag, then setuptools-scm.
 
     In order:
@@ -49,6 +49,9 @@ def resolve_version(explicit_version=None, environ=None):
         explicit_version: Version string from --version flag, or None.
         environ: The environment to read; ``os.environ`` when None. Empty
             values count as unset.
+        root: The directory setuptools-scm reads, relative to the working
+            directory. ``xmsconan vs2019`` passes each library's checkout,
+            since one run generates build files for several.
 
     Returns:
         A version string.
@@ -71,7 +74,7 @@ def resolve_version(explicit_version=None, environ=None):
         return FALLBACK_VERSION
 
     try:
-        version = get_version()
+        version = get_version(root=root)
         LOGGER.info("Version from setuptools-scm: %s", version)
         return version
     except LookupError:
