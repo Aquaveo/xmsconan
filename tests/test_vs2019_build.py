@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 
 from xmsconan.build_tools import vs2019_build as vs
+from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
 from .utils import patch_env
 
 
@@ -642,31 +643,35 @@ def test_build_library_missing_build_toml(tmp_path):
     assert "no build.toml" in result.message
 
 
-@mock.patch(f"{MODULE}.subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, "xmsconan_gen"))
-def test_build_library_generator_failure(mock_run, library_root):
-    """A failing xmsconan_gen fails the library without building."""
-    result = vs.build_library(XMSCORE, str(library_root))
-    assert result.status == "failed"
-    assert "xmsconan_gen failed" in result.message
+@pytest.mark.parametrize("outcome, reason", [
+    pytest.param({"return_value": EXIT_ERROR}, "the reason is logged above", id="error-exit"),
+    pytest.param({"side_effect": ValueError("Missing field in build.toml: 'description'.")},
+                 "Missing field in build.toml", id="rejected-build-toml"),
+    pytest.param({"side_effect": PermissionError("[Errno 13] Permission denied: 'conanfile.py'")},
+                 "Permission denied", id="unwritable-file"),
+])
+@mock.patch(f"{MODULE}.XmsConanPackager")
+def test_build_library_generator_failure(mock_packager_cls, outcome, reason, library_root):
+    """A generation that fails fails the library, with its reason, and builds nothing.
 
-
-@mock.patch(f"{MODULE}.subprocess.run", side_effect=FileNotFoundError("xmsconan_gen"))
-def test_build_library_generator_missing(mock_run, library_root):
-    """An xmsconan_gen that will not start aborts the run instead of failing one library.
-
-    It would fail identically for every remaining library, so it is the
-    machine being wrong (exit 2), not a build failure (exit 1) -- and the
-    message has to name the tool that is actually missing.
+    It is this library's build.toml or checkout that is wrong, so it counts
+    as one failed library (exit 1) -- which --continue-on-error goes past --
+    rather than aborting the whole stack.
     """
-    with pytest.raises(vs.ToolNotFoundError, match=r"could not run xmsconan_gen .*PATH"):
-        vs.build_library(XMSCORE, str(library_root))
+    with mock.patch(f"{MODULE}.generate_build_files", **outcome):
+        result = vs.build_library(XMSCORE, str(library_root), version="7.0.0")
+
+    assert result.status == "failed"
+    assert "generating build files failed" in result.message
+    assert reason in result.message
+    mock_packager_cls.assert_not_called()
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
+@mock.patch(f"{MODULE}.generate_build_files", return_value=EXIT_OK)
 @mock.patch(f"{MODULE}.subprocess.run")
-def test_build_library_success(mock_run, mock_packager_cls, library_root):
-    """The happy path generates, builds, and records per-config counts."""
+def test_build_library_success(mock_run, mock_generate, mock_packager_cls, library_root):
+    """The happy path generates in-process, builds, and records per-config counts."""
     packager = fake_packager(configurations=[{}] * 14, run_result=0)
     mock_packager_cls.return_value = packager
 
@@ -675,10 +680,12 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
         python_versions=["3.10", "3.13"], log_dir="logs",
     )
 
-    mock_run.assert_called_once_with(
-        ["xmsconan_gen", "--version", "7.0.0", "build.toml"],
-        cwd=os.path.join(str(library_root), "xmscore"), check=True,
+    library_dir = os.path.join(str(library_root), "xmscore")
+    mock_generate.assert_called_once_with(
+        os.path.join(library_dir, "build.toml"), "7.0.0", output_dir=library_dir,
     )
+    # generated in this process: nothing is launched to do it
+    mock_run.assert_not_called()
     # both of these are required: neither is implied by the platform key
     mock_packager_cls.assert_called_once_with(
         "xmscore",
@@ -700,9 +707,9 @@ def test_build_library_success(mock_run, mock_packager_cls, library_root):
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
-@mock.patch(f"{MODULE}.subprocess.run")
-def test_build_library_no_generate_and_filter(mock_run, mock_packager_cls, library_root):
-    """--no-generate skips xmsconan_gen; --filter reaches the packager."""
+@mock.patch(f"{MODULE}.generate_build_files")
+def test_build_library_no_generate_and_filter(mock_generate, mock_packager_cls, library_root):
+    """--no-generate skips generating the build files; --filter reaches the packager."""
     packager = fake_packager(configurations=[{}, {}], run_result=1)
     mock_packager_cls.return_value = packager
 
@@ -711,20 +718,39 @@ def test_build_library_no_generate_and_filter(mock_run, mock_packager_cls, libra
         config_filter={"build_type": "Release"},
     )
 
-    mock_run.assert_not_called()
+    mock_generate.assert_not_called()
     packager.filter_configurations.assert_called_once_with({"build_type": "Release"})
     assert (result.status, result.attempted, result.succeeded, result.failed) == \
         ("failed", 2, 1, 1)
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
-@mock.patch(f"{MODULE}.subprocess.run")
-def test_build_library_filter_matches_nothing(mock_run, mock_packager_cls, library_root):
+@mock.patch(f"{MODULE}.generate_build_files", return_value=EXIT_OK)
+@mock.patch(f"{MODULE}.resolve_version", return_value="7.1.0.dev2")
+def test_build_library_resolves_a_missing_version_from_the_checkout(
+        mock_resolve, mock_generate, mock_packager_cls, library_root):
+    """Without --version, each library is stamped with the version its own checkout resolves.
+
+    Not the directory the driver was started from: one run builds several
+    libraries, each with its own history.
+    """
+    mock_packager_cls.return_value = fake_packager()
+
+    vs.build_library(XMSCORE, str(library_root))
+
+    library_dir = os.path.join(str(library_root), "xmscore")
+    mock_resolve.assert_called_once_with(None, root=library_dir)
+    assert mock_generate.call_args.args[1] == "7.1.0.dev2"
+
+
+@mock.patch(f"{MODULE}.XmsConanPackager")
+@mock.patch(f"{MODULE}.generate_build_files", return_value=EXIT_OK)
+def test_build_library_filter_matches_nothing(mock_generate, mock_packager_cls, library_root):
     """A filter that matches no configuration skips the library."""
     packager = fake_packager(configurations=[])
     mock_packager_cls.return_value = packager
 
-    result = vs.build_library(XMSCORE, str(library_root))
+    result = vs.build_library(XMSCORE, str(library_root), version="7.0.0")
 
     packager.run.assert_not_called()
     assert result.status == "skipped"
@@ -790,8 +816,8 @@ def test_extract_wheels(configurations, extracted, version, expected, calls, cap
     ("wheelhouse", 1, True, None),
 ], ids=["extracted", "extraction-failed", "no-wheel-dir", "build-failed"])
 @mock.patch(f"{MODULE}.XmsConanPackager")
-@mock.patch(f"{MODULE}.subprocess.run")
-def test_build_library_extracts_wheels(mock_run, mock_packager_cls, wheel_dir,
+@mock.patch(f"{MODULE}.generate_build_files", return_value=EXIT_OK)
+def test_build_library_extracts_wheels(mock_generate, mock_packager_cls, wheel_dir,
                                        run_result, extracted, expected, library_root):
     """--wheel-dir extracts after a clean build, and only after a clean build.
 
@@ -1096,15 +1122,15 @@ def test_every_verb_takes_the_verbosity_flags(argv, expected):
     ("setup", ValueError("password file not found: p"),
      ["setup", "--password-file", "p"], 2, "password file not found"),
     ("setup", subprocess.CalledProcessError(3, "conan"), ["setup"], 3, "conan setup failed"),
-    ("build", vs.ToolNotFoundError("could not run xmsconan_gen (x). Is it on PATH?"),
-     ["build", "--root", "."], 2, "Is it on PATH?"),
+    ("build", ValueError("unsupported python version '3.99'"),
+     ["build", "--root", "."], 2, "unsupported python version"),
     ("upload", vs.ToolNotFoundError("could not run conan (x). Is it on PATH?"),
      UPLOAD_ARGV, 2, "Is it on PATH?"),
     ("upload", ValueError("refusing to upload"),
      UPLOAD_ARGV + ["--remote", "aquaveo"], 2, "refusing to upload"),
 ], ids=[
     "setup-conan-not-on-path", "setup-bad-password-file", "setup-conan-exit-code",
-    "build-generator-not-on-path", "upload-conan-not-on-path", "upload-refused-remote",
+    "build-rejected-request", "upload-conan-not-on-path", "upload-refused-remote",
 ])
 @mock.patch(f"{MODULE}.check_python_versions", return_value=PYTHON_CHECK_OK)
 @mock.patch(f"{MODULE}.run_preflight", return_value=[vs.CheckResult("vs", True, "ok")])
@@ -1349,8 +1375,8 @@ def test_malformed_build_toml_names_the_file(tmp_path):
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
-@mock.patch(f"{MODULE}.subprocess.run")
-def test_build_library_passes_the_librarys_own_matrix(mock_run, mock_packager_cls, tmp_path):
+@mock.patch(f"{MODULE}.generate_build_files", return_value=EXIT_OK)
+def test_build_library_passes_the_librarys_own_matrix(mock_generate, mock_packager_cls, tmp_path):
     """The checkout's [matrix] reaches the packager, not just any matrix.
 
     Asserting only that the kwarg is present cannot catch matrix=None: the build
