@@ -2519,12 +2519,14 @@ def test_github_coverage_runs_no_third_party_action(tmp_path):
 
 
 def test_github_ci_uses_a_current_setup_python(ci_toml, tmp_path):
-    """Every setup-python is v5.
+    """Every setup-python is v7, the first major that runs on Node 24.
 
-    The flake job sat on v2 while the build jobs used v5, so the one job that
-    lints the project ran on a Node action GitHub has since deprecated -- and
+    The flake job once sat on v2 while the build jobs used v5, so the one job
+    that lints the project ran on a Node action GitHub had deprecated -- and
     would have started failing on its own schedule, in the job least likely
-    to be looked at.
+    to be looked at. v5 went the same way: it targets Node 20, which GitHub
+    warns about on every run. So every reference is checked, not only
+    whether one stale version is gone.
     """
     output_dir = tmp_path / "output"
     generate_ci(str(ci_toml), "1.0.0", str(output_dir))
@@ -2532,8 +2534,7 @@ def test_github_ci_uses_a_current_setup_python(ci_toml, tmp_path):
         encoding="utf-8",
     )
 
-    assert "actions/setup-python@v5" in content
-    assert "actions/setup-python@v2" not in content
+    assert set(re.findall(r"actions/setup-python@(\S+)", content)) == {"v7"}
 
 
 def test_github_flake_job_takes_its_plugins_from_the_extra(ci_toml, tmp_path):
