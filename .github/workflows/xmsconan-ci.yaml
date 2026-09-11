@@ -16,12 +16,12 @@ jobs:
     steps:
       # Checkout Sources
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # Setup Python
       - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       # Setup uv. Third-party actions are pinned by commit SHA with the tag
@@ -57,12 +57,12 @@ jobs:
     steps:
       # Checkout Sources
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # Setup Python
       - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       # Setup uv
@@ -94,12 +94,12 @@ jobs:
     steps:
       # Checkout Sources
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # Setup Python
       - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       # Setup uv
@@ -111,20 +111,17 @@ jobs:
       - name: Install Python Dependencies
         run: |
           uv sync --no-dev --python ${{ matrix.python-version }}
-      # Get Tag Name
-      - name: Get Tag
-        id: gitTag
-        uses: little-core-labs/get-git-tag@2c292ff564c1a61b989e29f0410d131317f89b03  # v3.0.2
       # Check Tag
       #
-      # The tag reaches python through the environment, not through the `-c`
-      # string. A tag name is caller-supplied text, and GitHub substitutes
-      # `${{ }}` before the shell parses the line -- so a tag carrying a quote
-      # or `$(...)` would run as this step, in the job whose Upload Wheel step
+      # The tag is github.ref_name, since this job runs only for tag refs. It
+      # reaches python through the environment, not through the `-c` string.
+      # A tag name is caller-supplied text, and GitHub substitutes `${{ }}`
+      # before the shell parses the line -- so a tag carrying a quote or
+      # `$(...)` would run as this step, in the job whose Upload Wheel step
       # holds the deploy credentials.
       - name: Check Tag Against Version
         env:
-          GIT_TAG: ${{ steps.gitTag.outputs.tag }}
+          GIT_TAG: ${{ github.ref_name }}
         run: |
           uv run --no-sync python -c "import os; from xmsconan import __version__; print('Version: ' + str(__version__) + ' | Tag: ' + os.environ['GIT_TAG'])"
           uv run --no-sync python -c "import os, sys; from xmsconan import __version__; sys.exit(0 if __version__ == os.environ['GIT_TAG'] else 1)"
