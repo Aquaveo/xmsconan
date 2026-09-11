@@ -15,9 +15,11 @@ from xmsconan.generator_tools.ci_file_generator import (
 )
 from xmsconan.job_tools import build as job_build, common as job_common
 from .ci_helpers import (
+    dispatched_commands,
     NON_JOB_SHAPE_KEYS,
     requirement_names,
     steps_running,
+    uncommented_lines,
     WHEEL_ONLY,
     workflow_document,
     write_github_toml,
@@ -1048,7 +1050,7 @@ def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
     cov = output_dir / ".github" / "workflows" / "Coverage.yaml"
     assert cov.exists()
     content = cov.read_text(encoding="utf-8")
-    assert "xmsconan coverage" in content
+    assert "coverage" in dispatched_commands(content)
     # The default GitHub Coverage workflow now runs directly on
     # ubuntu-latest — NOT inside the conan-gcc13-py3.13 docker image. That
     # image used to bake xmsconan in, which silently shadowed any
@@ -1115,7 +1117,7 @@ def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert "xmsconan coverage" in content
+    assert "coverage" in dispatched_commands(content)
     # The hand-rolled coverage preset / profile references should be gone.
     assert "linux_testing_debug_coverage" not in content
     assert "cmake --preset coverage" not in content
@@ -1144,7 +1146,7 @@ def test_gitlab_coverage_jobs_pass_no_version(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
 
-    coverage_lines = [line.strip() for line in content.splitlines() if "xmsconan coverage" in line]
+    coverage_lines = [line for line in uncommented_lines(content) if "xmsconan coverage" in line]
     assert coverage_lines
     assert [line for line in coverage_lines if "--version" in line] == []
     assert "PACKAGE_VERSION" not in content
@@ -1333,8 +1335,7 @@ def test_github_coverage_installs_nothing_but_the_extra(tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / ".github" / "workflows" / "Coverage.yaml").read_text(encoding="utf-8")
 
-    install_lines = [line.strip() for line in content.splitlines()
-                     if "pip install" in line and not line.strip().startswith("#")]
+    install_lines = [line for line in uncommented_lines(content) if "pip install" in line]
     assert len(install_lines) == 1, install_lines
     assert install_lines[0].startswith('pip install --upgrade "xmsconan[ci]>='), install_lines[0]
 
@@ -3858,7 +3859,7 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workf
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     content = (output_dir / workflow).read_text(encoding="utf-8")
 
-    install_lines = [line for line in content.splitlines() if "pip install" in line]
+    install_lines = [line for line in uncommented_lines(content) if "pip install" in line]
     assert install_lines
     assert [line for line in install_lines if "devpi" in line] == []
     assert [line for line in install_lines if "toml" in requirement_names(line)] == []

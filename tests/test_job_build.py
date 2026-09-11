@@ -832,7 +832,7 @@ def test_the_shard_count_reaches_the_packager_when_this_job_runs_the_tests(tmp_p
 
     GitHub generates no separate test job, so its workflow rendered
     ``build.py --test-shards N`` to get the packager to skip ``cmake.test()``
-    and run the staged runner as N in-process shards. Nothing carried that
+    and run the staged runner as N shard processes. Nothing carried that
     across when the build became ``xmsconan job build``, so the setting would
     have gone quietly inert -- the suite still passing, on one core.
     """

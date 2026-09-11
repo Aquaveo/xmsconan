@@ -21,7 +21,8 @@ runner execute a disjoint slice of its cases, so the union of N shards is the
 whole suite exactly once.
 
 Related but deliberately separate: :meth:`XmsConanPackager._run_sharded_tests`
-shards the same way for ``build.py --test-shards``. That one runs immediately
+shards the same way inside a build: ``build.py --test-shards``, or ``xmsconan
+job build`` given ``[ci].test_shards``. That one runs immediately
 after the build that produced the runner and already knows the configuration
 label; this one starts from downloaded artifacts and has to find them.
 """
@@ -54,8 +55,9 @@ LOGGER = logging.getLogger(__name__)
 #: including the 10-to-20-minute raise and the headroom argument behind it.
 DEFAULT_SHARD_TIMEOUT = 1200
 
-#: Where the recipe's ``_save_test_artifacts`` stages each configuration, and
-#: what the generated CI passes to ``build.py --artifacts-dir``.
+#: Where the recipe's ``_save_test_artifacts`` stages each configuration in the
+#: generated CI: the same name as ``job_tools.common.ARTIFACTS_DIR``, which
+#: ``xmsconan job build`` stages into and ``xmsconan job test`` reads.
 DEFAULT_ARTIFACTS_DIR = "test_artifacts"
 
 #: Name of the merged JUnit report. The generated GitLab job names the same
@@ -158,7 +160,8 @@ def find_artifact_dir(artifacts_dir, label: Optional[str] = None) -> Path:
     """Locate the staged ``testing=True`` artifacts.
 
     Args:
-        artifacts_dir: The directory ``build.py --artifacts-dir`` wrote into.
+        artifacts_dir: The directory a build staged the artifacts into
+            (``xmsconan job build``, or ``build.py --artifacts-dir``).
         label: An exact configuration label (``"Release-testing"``). When None
             the single ``*-testing`` subdirectory is used.
 
@@ -188,9 +191,10 @@ def find_artifact_dir(artifacts_dir, label: Optional[str] = None) -> Path:
 
     if not root.is_dir():
         raise FileNotFoundError(
-            f"No artifacts directory {root}. The build job stages it with "
-            f"`build.py --artifacts-dir {root}`; check that it ran and that "
-            f"its artifacts reached this job."
+            f"No artifacts directory {root}. In the generated CI the build "
+            f"job stages it (`xmsconan job build`); locally, "
+            f"`build.py --artifacts-dir {root}` does. Check that the build "
+            f"ran and that its artifacts reached this job."
         )
     matches = sorted(
         child for child in root.iterdir()

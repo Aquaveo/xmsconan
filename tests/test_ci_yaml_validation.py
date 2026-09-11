@@ -1,20 +1,35 @@
-"""Validate that generated CI files are syntactically valid YAML.
+"""Check what every generated CI file must get right, whatever build.toml asks for.
 
-These tests render every combination of CI options for both GitHub and
-GitLab templates, then parse the
-output with PyYAML.  This catches template bugs that produce broken
-YAML without needing a real CI runner.
+These tests render every combination of the boolean ``[ci]`` flags in
+:data:`CI_OPTIONS` for both the GitHub and GitLab templates. Each one must
+parse as YAML and be shaped like a pipeline -- steps, scripts, stages, needs
+-- and keep the contracts every job shares: an xmsconan install floors its
+version and upgrades, and a job calls ``xmsconan <cmd>`` with a command and
+``job`` kind that exist, never a legacy script. The Python fan-out and filter
+shapes, which no flag reaches, are parsed too. This catches template bugs that
+only some combination renders, without needing a real CI runner.
 """
 import itertools
 
 import pytest
 import yaml
 
+from xmsconan.build_toml import _CI_KEY_TYPES
 from xmsconan.generator_tools.ci_file_generator import generate_ci
-from .ci_helpers import LEGACY_SCRIPT, NON_JOB_SHAPE_KEYS, WHEEL_ONLY, write_build_toml
+from .ci_helpers import (
+    dispatched_commands,
+    LEGACY_SCRIPT,
+    NON_JOB_SHAPE_KEYS,
+    uncommented_lines,
+    unknown_calls,
+    WHEEL_ONLY,
+    write_build_toml,
+)
 
 
-# All boolean CI options and their possible values.
+# The boolean CI options the sweeps vary, and their possible values. Every
+# boolean [ci] key is here or in _UNSWEPT_CI_KEYS below, which says why it is
+# held at its default; test_every_boolean_ci_key_is_swept_or_excused checks.
 CI_OPTIONS = {
     "linux": [False, True],
     "windows": [False, True],
@@ -24,6 +39,15 @@ CI_OPTIONS = {
     "xvfb": [False, True],
     "linux_arm": [False, True],
     "windows_wheel_repair": [False, True],
+}
+
+#: Boolean [ci] keys the sweeps hold at their default, and why.
+_UNSWEPT_CI_KEYS = {
+    # GitLab-only and valid only beside [ci].windows, so sweeping it would add
+    # a combination for every GitLab one with Windows on, in every GitLab
+    # sweep here. Its build and deploy jobs, and the xmsconan calls they make,
+    # are rendered by the `gitlab` case of test_ci_commands and test_ci_extra.
+    "windows_vs2019",
 }
 
 # Every combination of the boolean CI flags.
@@ -61,9 +85,25 @@ _GITHUB_COMBOS = [
 
 
 def _combo_id(combo):
-    """Readable test ID like 'win-deploy-cov' or 'minimal'."""
-    parts = [k[:3] for k, v in combo.items() if v]
-    return "-".join(parts) or "minimal"
+    """Test ID naming each option switched on, like 'windows-deploy-coverage', or 'minimal'.
+
+    Whole key names rather than abbreviations: the first three letters made
+    ``lin`` of both linux and linux_arm and ``win`` of both windows and
+    windows_wheel_repair, leaving pytest's numeric suffixes to tell ids apart.
+    """
+    return "-".join(key for key, value in combo.items() if value) or "minimal"
+
+
+def test_every_boolean_ci_key_is_swept_or_excused():
+    """Each boolean ``[ci]`` key is in exactly one of CI_OPTIONS and _UNSWEPT_CI_KEYS.
+
+    A new key in neither would be absent from every sweep here, and nothing
+    would fail to say so.
+    """
+    boolean_keys = {key for key, kind in _CI_KEY_TYPES.items() if kind is bool}
+
+    assert set(CI_OPTIONS) | _UNSWEPT_CI_KEYS == boolean_keys
+    assert set(CI_OPTIONS) & _UNSWEPT_CI_KEYS == set()
 
 
 # ---------------------------------------------------------------------------
@@ -313,13 +353,12 @@ def test_xmsconan_installs_float_and_upgrade(ci_type, options, tmp_path):
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
 
     install_lines = [
-        stripped
+        line
         for path in sorted(output_dir.rglob("*")) if path.is_file()
-        for line in path.read_text(encoding="utf-8").splitlines()
         # Comments describing the pin are not commands; only executed
         # install steps carry the contract.
-        if (stripped := line.strip()) and not stripped.startswith("#")
-        if "pip install" in stripped and "xmsconan" in stripped
+        for line in uncommented_lines(path.read_text(encoding="utf-8"))
+        if "pip install" in line and "xmsconan" in line
     ]
     assert install_lines, f"no xmsconan install rendered for {ci_type} {options}"
 
@@ -340,29 +379,31 @@ _COMMAND_CASES = _INSTALL_CASES + [("gitlab", {**combo, "matrix_table": WHEEL_ON
 
 @pytest.mark.parametrize("ci_type,options", _COMMAND_CASES,
                          ids=lambda value: value if isinstance(value, str) else _combo_id(value))
-def test_no_flag_combination_calls_a_legacy_script(ci_type, options, tmp_path):
-    """No flag combination renders a job calling an ``xmsconan_*`` script.
+def test_no_flag_combination_calls_a_legacy_script_or_unknown_command(ci_type, options, tmp_path):
+    """No flag combination renders a job calling an ``xmsconan_*`` script or a ``<cmd>`` that does not exist.
 
     test_ci_commands pins ``xmsconan <cmd>`` on the shapes that carry each
-    command. This sweeps every ``[ci]`` flag combination on both hosts, and
-    each GitLab one again under ``wheel_only``, so a step that only some flag
-    or layout renders -- deploy, xvfb, the arm leg, Windows wheel repair, the
-    wheel_only build jobs -- cannot bring an old name back unnoticed. As in
-    the install check, comment lines are skipped: the header still names
-    ``xmsconan_ci`` as the generator.
+    command. This sweeps every combination of the flags in CI_OPTIONS on
+    both hosts, and each GitLab one again under ``wheel_only``, so a step
+    that only some flag or layout renders -- deploy, xvfb, the arm leg,
+    Windows wheel repair, the wheel_only build jobs -- cannot bring an old
+    name back, or misspell a subcommand or ``job`` kind, unnoticed. Every
+    rendered file must make at least one ``xmsconan`` call, so neither check
+    can pass on a file whose jobs never rendered. As in the install check,
+    comment lines are skipped: the header still names ``xmsconan_ci`` as the
+    generator.
     """
     toml_file = write_build_toml(tmp_path, ci_type, library_name='xmscore', description='Core library', **options)
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
+    rendered = {path.relative_to(output_dir).as_posix(): path.read_text(encoding="utf-8")
+                for path in sorted(output_dir.rglob("*")) if path.is_file()}
 
-    legacy = [
-        f"{path.name}: {stripped}"
-        for path in sorted(output_dir.rglob("*")) if path.is_file()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if (stripped := line.strip()) and not stripped.startswith("#")
-        if LEGACY_SCRIPT.search(stripped)
-    ]
-    assert legacy == []
+    assert rendered
+    assert [name for name, text in rendered.items() if not dispatched_commands(text)] == []
+    assert [f"{name}: {line}" for name, text in rendered.items()
+            for line in uncommented_lines(text) if LEGACY_SCRIPT.search(line)] == []
+    assert [f"{name}: {call}" for name, text in rendered.items() for call in unknown_calls(text)] == []
 
 
 #: Python fan-out shapes to YAML-validate. The boolean sweep above cannot reach

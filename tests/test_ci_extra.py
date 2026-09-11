@@ -6,7 +6,7 @@ import pytest
 
 from xmsconan import generator_tools
 from xmsconan.generator_tools.ci_file_generator import generate_ci
-from .ci_helpers import ci_extra, requirement_names, write_github_toml, write_gitlab_toml
+from .ci_helpers import ci_extra, requirement_names, uncommented_lines, write_github_toml, write_gitlab_toml
 
 
 def _carried_names():
@@ -85,8 +85,7 @@ def test_generated_jobs_install_the_toolchain_only_through_the_extra(tmp_path, w
     content = (output_dir / workflow).read_text(encoding="utf-8")
     carried = _carried_names()
 
-    install_lines = [line.strip() for line in content.splitlines()
-                     if "pip install" in line and not line.strip().startswith("#")]
+    install_lines = [line for line in uncommented_lines(content) if "pip install" in line]
     assert install_lines
     assert [line for line in install_lines if requirement_names(line) & carried] == []
     assert [line for line in install_lines if "xmsconan" in line and "xmsconan[ci]" not in line] == []

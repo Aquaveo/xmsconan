@@ -579,11 +579,13 @@ class TestCoverageWiring:
     @patch("xmsconan.xms_conan2_file.CMake")
     def test_build_registers_per_case_ctest_entries_when_instrumented(
             self, mock_cmake_cls):
-        """An instrumented build is the one shape ctest still schedules.
+        """An instrumented build registers one ctest entry per case.
 
-        Every other shape runs the binary directly, in shards,
-        which is why the generated CMakeLists registers the whole binary as a
-        single ctest entry. ctest cannot parallelize one entry, so the
+        The generated CMakeLists registers the whole binary as a single ctest
+        entry by default. An uninstrumented build runs it as one process, or
+        bypasses ctest for runner shards: in the build given more than one,
+        or, for GitLab's Linux build under split_tests, in the separate test
+        jobs at any count. ctest cannot parallelize one entry, so the
         coverage job's CTEST_PARALLEL_LEVEL had nothing to act on and ran the
         instrumented suite in one process.
         """

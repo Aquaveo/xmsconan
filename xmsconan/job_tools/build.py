@@ -128,7 +128,7 @@ def _make_packager(config, toml_path, build_missing, platform_key, test_shards=0
     generated module.
 
     *test_shards* above 1 makes the recipe skip ``cmake.test()`` and the
-    packager run the staged runner as that many in-process gtest shards once
+    packager run the staged runner as that many gtest shard processes once
     the build is done. It defaults to 0 -- no sharding -- because a caller
     that has not thought about whether another job runs these tests should
     not silently run them twice; :func:`job_build` is what decides.
@@ -267,11 +267,17 @@ def job_build(leg=None, platform=None, version=None, toml_path="build.toml",
             return generated
 
     # [ci].test_shards reaches the packager only when this job runs the suite
-    # it compiles. Deferred, `job test` runs those shards in another job from
-    # the staged runner, and asking for them here as well would run the whole
-    # suite twice on two runners. This is the GitHub path: it generates no
-    # separate test job, so the sharding its workflow used to render onto
-    # `build.py --test-shards` has to be decided here or not at all.
+    # it compiles. Deferred, the suite is left to `job test`, which runs those
+    # shards from the staged runner in another job, and asking for them here
+    # as well would run the whole suite twice on two runners. (No `Run C++
+    # Tests` job runs on a GitLab tag pipeline, so a suite deferred there
+    # does not run at all; gitlab-ci.yml.jinja and build_filter.py say why.)
+    # Every build the generator does not pass --defer-cxx-tests gets the
+    # count: GitHub's, GitLab's Windows and VS2019 builds, and every GitLab
+    # Linux build but one compiling the testing configurations under
+    # split_tests. None of them has a test job to leave the suite to, so the
+    # sharding GitHub's workflow used to render onto `build.py --test-shards`
+    # has to be decided here or not at all.
     test_shards = 0 if common.defers_cxx_tests(config, defer_cxx_tests) \
         else config.ci.test_shards
     builder = steps.make_packager(config, toml_path, build_missing, platform, test_shards)
