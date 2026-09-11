@@ -52,6 +52,18 @@ def test_resolve_version_reads_the_process_environment_by_default(monkeypatch):
     assert resolve_version() == "7.3.0"
 
 
+def test_resolve_version_asks_setuptools_scm_about_the_given_root():
+    """``root`` is the checkout setuptools-scm reads, so one process can resolve several.
+
+    ``xmsconan vs2019`` generates build files for a whole stack of checkouts
+    from one directory, and each has to be stamped from its own history.
+    """
+    with patch("xmsconan.generator_tools.version.get_version", return_value=SCM_VERSION) as get_version:
+        assert resolve_version(environ={}, root="xmsgrid") == SCM_VERSION
+
+    get_version.assert_called_once_with(root="xmsgrid")
+
+
 @pytest.mark.parametrize("version, expected", [
     pytest.param("7.0.0", True, id="release"),
     pytest.param("7.0.1.dev3+gabcdef0", True, id="scm-dev-version"),

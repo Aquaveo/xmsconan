@@ -1,6 +1,10 @@
-"""What a generated job runs: ``xmsconan <cmd>``, never a legacy ``xmsconan_*`` script."""
+"""What generated jobs and the commands they run launch: ``xmsconan <cmd>``, never an ``xmsconan_*`` alias."""
+import ast
+from pathlib import Path
+
 import pytest
 
+import xmsconan
 from xmsconan.generator_tools.ci_file_generator import generate_ci
 from .ci_helpers import (
     LEGACY_SCRIPT,
@@ -40,9 +44,8 @@ def test_generated_jobs_call_xmsconan_rather_than_a_legacy_script(tmp_path, writ
     dispatcher's own table, and every ``job <kind>`` against the parser of
     ``xmsconan job``.
 
-    This reads only what the templates render. ``xmsconan coverage``,
-    ``xmsconan publish`` and ``xmsconan vs2019`` still spawn ``xmsconan_gen``
-    by name, so passing here does not mean the aliases can be dropped.
+    This reads only what the templates render; what the package's own
+    commands launch is checked by ``test_no_command_launches_a_legacy_script``.
     """
     toml_file = writer(tmp_path, **flags)
     output_dir = tmp_path / "output"
@@ -86,3 +89,61 @@ def test_unknown_calls_reports_each_unknown_subcommand_or_job_kind(line, unknown
     reported.
     """
     assert unknown_calls(line) == unknown
+
+
+def _program(node):
+    """The first element of a list or tuple literal -- an argv's program -- or None."""
+    if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+        return node.elts[0]
+    return None
+
+
+def _is_legacy_name(node):
+    """Whether *node* is a string constant that is exactly a legacy script name."""
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return False
+    return LEGACY_SCRIPT.fullmatch(node.value) is not None
+
+
+def _legacy_launch_lines(source):
+    """Line numbers of the argv-shaped literals in *source* whose program is a legacy script.
+
+    An argv is a list or tuple whose first element is the program, so that is
+    the shape checked: a docstring or help text naming ``xmsconan_gen`` is
+    prose, and ``["xmsconan", "gen"]`` is the spelling that replaced it.
+    """
+    return [node.lineno for node in ast.walk(ast.parse(source)) if _is_legacy_name(_program(node))]
+
+
+@pytest.mark.parametrize("source, lines", [
+    pytest.param('subprocess.run(["xmsconan_gen", "--version", v])', [1], id="list-argv"),
+    pytest.param('command = ("xmsconan_gen",)', [1], id="tuple-argv"),
+    pytest.param('x = 1\nrun(["xmsconan_wheel_repair"])', [2], id="line-number"),
+    pytest.param('subprocess.run(["xmsconan", "gen"])', [], id="dispatcher"),
+    pytest.param('"""Runs ``xmsconan_gen``."""', [], id="docstring"),
+    pytest.param('help = "Skip the xmsconan_gen step"', [], id="help-text"),
+    pytest.param('names = ["gen", "xmsconan_gen"]', [], id="not-the-program"),
+])
+def test_legacy_launch_lines_finds_only_argv_shaped_literals(source, lines):
+    """The scan flags a legacy name where a program goes, and prose that names one nowhere."""
+    assert _legacy_launch_lines(source) == lines
+
+
+def test_no_command_launches_a_legacy_script():
+    """No argv literal in the package puts an ``xmsconan_*`` alias where the program goes.
+
+    ``xmsconan coverage``, ``xmsconan publish`` and ``xmsconan vs2019`` each
+    used to launch ``xmsconan_gen``, which kept that alias load-bearing in
+    every pipeline that ran them. They generate in-process now, and a list or
+    tuple that names an alias as its program fails here, with its file and
+    line. That is the shape every launch in the package takes; a program name
+    built some other way -- ``shutil.which``, a ``shell=True`` string -- is
+    not seen, and none exists.
+    """
+    package = Path(xmsconan.__file__).parent
+    found = [
+        f"{path.relative_to(package.parent).as_posix()}:{line}"
+        for path in sorted(package.rglob("*.py"))
+        for line in _legacy_launch_lines(path.read_text(encoding="utf-8"))
+    ]
+    assert found == []

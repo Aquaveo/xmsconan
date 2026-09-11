@@ -2,21 +2,22 @@
 
 Usage::
 
-    xmsconan_publish --version 7.0.0
-    xmsconan_publish                          # version from the CI tag, else git
-    xmsconan_publish --version 7.0.0 --no-deploy
-    xmsconan_publish --version 7.0.0 --no-wheel --no-conan
-    xmsconan_publish --version 7.0.0 --filter '{"build_type": "Release"}'
+    xmsconan publish --version 7.0.0
+    xmsconan publish                          # version from the CI tag, else git
+    xmsconan publish --version 7.0.0 --no-deploy
+    xmsconan publish --version 7.0.0 --no-wheel --no-conan
+    xmsconan publish --version 7.0.0 --filter '{"build_type": "Release"}'
 
-Steps:
-  1. ``xmsconan_conan_setup``
-  2. ``xmsconan_gen --version VERSION build.toml``
+Steps, each run in this process through the code of the command named,
+except ``build.py``:
+  1. ``xmsconan conan-setup --login``
+  2. ``xmsconan gen --version VERSION build.toml``
   3. ``python build.py --version VERSION --wheel-dir DIR [--filter ...]``
      (plus ``--skip-dependency-libs`` when step 4 is skipped)
-  4. ``xmsconan_wheel_repair --wheel-dir DIR`` -- skipped on Windows when
+  4. ``xmsconan wheel-repair --wheel-dir DIR`` -- skipped on Windows when
      ``[ci].windows_wheel_repair`` resolves to false
-  5. ``xmsconan_wheel_deploy --wheel-dir DIR``
-  6. ``xmsconan_conan_deploy LIBRARY VERSION --upload``
+  5. ``xmsconan wheel-deploy --wheel-dir DIR``
+  6. ``xmsconan conan-deploy LIBRARY VERSION --upload``
 
 Credentials for wheel deployment are resolved from CLI arguments,
 environment variables, or ``~/.xmsconan.toml`` (see
@@ -30,13 +31,15 @@ import subprocess
 import sys
 from typing import Any, Callable, Optional
 
-from xmsconan._cli import add_verbosity_args, configure_logging
+from xmsconan._cli import add_verbosity_args, configure_logging, tracebacks_wanted
 from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_options import repairs_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
 from xmsconan.ci_tools.conan_setup import conan_setup as _conan_setup
 from xmsconan.ci_tools.wheel_deploy import wheel_deploy as _wheel_deploy
 from xmsconan.ci_tools.wheel_repair import wheel_repair as _wheel_repair
+from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
+from xmsconan.generator_tools.build_file_generator import generate_build_files
 from xmsconan.generator_tools.version import FALLBACK_VERSION, is_release_version, resolve_version, VERSION_FLAG_HELP
 from xmsconan.job_tools import xvfb
 
@@ -69,6 +72,7 @@ class PublishSteps:
     """
 
     conan_setup: Optional[Callable[..., Any]] = None
+    generate: Optional[Callable[..., Any]] = None
     subprocess_run: Optional[Callable[..., Any]] = None
     wheel_repair: Optional[Callable[..., Any]] = None
     wheel_deploy: Optional[Callable[..., Any]] = None
@@ -78,6 +82,8 @@ class PublishSteps:
     def __post_init__(self):  # noqa: D105
         if self.conan_setup is None:
             self.conan_setup = _conan_setup
+        if self.generate is None:
+            self.generate = generate_build_files
         if self.subprocess_run is None:
             self.subprocess_run = subprocess.run
         if self.wheel_repair is None:
@@ -136,12 +142,18 @@ def publish(
     LOGGER.info("Setting up Conan...")
     steps.conan_setup(login=True)
 
-    # 2. Generate build files
+    # 2. Generate build files, in this process. A build.toml the generator
+    # rejects, or a file it cannot write, is reported in one line and exit
+    # 1, as `xmsconan gen` reports it; a failure it returns, it has already
+    # logged. Either way nothing is built from files it did not finish.
     LOGGER.info("Generating build files...")
-    steps.subprocess_run(
-        ["xmsconan_gen", "--version", version, toml_path],
-        check=True,
-    )
+    try:
+        generated = steps.generate(toml_file_path=toml_path, version=version)
+    except (OSError, ValueError) as exc:
+        LOGGER.error("%s", str(exc) or type(exc).__name__, exc_info=tracebacks_wanted())
+        raise SystemExit(EXIT_ERROR) from exc
+    if generated != EXIT_OK:
+        raise SystemExit(generated)
 
     # 3. Build (wrapped with xvfb-run if needed)
     LOGGER.info("Building...")
@@ -189,7 +201,7 @@ def publish(
 
 
 def main():
-    """CLI entry point for ``xmsconan_publish``."""
+    """CLI entry point for ``xmsconan publish`` (and the legacy ``xmsconan_publish`` script)."""
     parser = argparse.ArgumentParser(
         description="Build and publish an XMS library.",
     )

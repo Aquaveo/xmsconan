@@ -51,6 +51,7 @@ from xmsconan.exit_codes import (
     EXIT_GATE_FAILED as _EXIT_GATE_FAILED,
     EXIT_OK as _EXIT_OK,
 )
+from xmsconan.generator_tools.build_file_generator import generate_build_files
 from xmsconan.generator_tools.ci_file_generator import (
     _coverage_context,
     _resolve_coverage_python_version,
@@ -928,8 +929,9 @@ def run_coverage(toml_file_path: str | Path, version: str,
 
     Args:
         toml_file_path: Path to ``build.toml``.
-        version: The build version passed through to ``xmsconan_gen`` and
-            ``build.py``. Unused by :data:`PHASE_REPORT`, which builds nothing.
+        version: The build version the build files are generated with and
+            ``build.py`` is given. Unused by :data:`PHASE_REPORT`, which
+            builds nothing.
         output_dir: Workspace the artifacts are written into and read back from.
         phase: One of :data:`COVERAGE_PHASES`. The default runs everything in
             one process, which is what a local run and the GitHub workflow do.
@@ -1060,7 +1062,7 @@ class _CoverageRun(NamedTuple):
 
 
 def _prepare_coverage_run(toml_file_path, version, output_dir) -> _CoverageRun:
-    """Read build.toml, regenerate under coverage, and build the leg env."""
+    """Read build.toml, regenerate the build files, and build the leg env."""
     toml_file = Path(toml_file_path).resolve()
     output_dir = Path(output_dir).resolve()
     if not toml_file.exists():
@@ -1078,13 +1080,16 @@ def _prepare_coverage_run(toml_file_path, version, output_dir) -> _CoverageRun:
         # itself, so a display started around a subprocess would be too late.
         xvfb.reexec_under_xvfb("xmsconan.coverage_tools.coverage_generator")
 
-    # Regenerate with XMS_COVERAGE set, so every profile this run builds
-    # from carries the coverage option rather than the production one.
-    _run(
-        ["xmsconan_gen", "--version", version, "--output_dir", str(output_dir),
-         str(toml_file)],
-        cwd=str(output_dir),
-    )
+    # Regenerated in this process, from its environment as it stands. This
+    # command sets XMS_COVERAGE only on the build.py environment below: the
+    # packager build.py runs is what reads it, and gives every configuration
+    # the coverage option.
+    generated = generate_build_files(str(toml_file), version, output_dir=str(output_dir))
+    if generated != EXIT_OK:
+        raise RuntimeError(
+            f"Generating the build files into {output_dir} failed (exit {generated}); "
+            "the reason is logged above."
+        )
 
     env = os.environ.copy()
     env["XMS_COVERAGE"] = "1"

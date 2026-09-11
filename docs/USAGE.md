@@ -843,7 +843,7 @@ What it does — steps 1-4 are the `collect` phase, step 5 the `report` phase (�
 
 ### 11.1 What this requires of the recipe
 
-- `python_namespaced_dir` **must** be set on the recipe (it is by default — `xmsconan_gen` derives it from `library_name`). With `coverage=True` the recipe targets `pytest-cov` at exactly `xms.<python_namespaced_dir>` so coverage doesn't leak across `xms_dependencies` installed in the build venv. The recipe's `configure()` raises at install time if `coverage=True` is set without `python_namespaced_dir`, so the run fails fast before a full instrumented build is wasted.
+- `python_namespaced_dir` **must** be set on the recipe (it is by default — `xmsconan gen` derives it from `library_name`). With `coverage=True` the recipe targets `pytest-cov` at exactly `xms.<python_namespaced_dir>` so coverage doesn't leak across `xms_dependencies` installed in the build venv. The recipe's `configure()` raises at install time if `coverage=True` is set without `python_namespaced_dir`, so the run fails fast before a full instrumented build is wasted.
 - The compiler must support `--coverage` (GCC/Clang). MSVC is rejected by the generated `CMakeLists.txt` when `XMS_COVERAGE` is non-empty.
 - `gcovr` must be on `PATH` (the `xmsconan[ci]` extra carries it, §10.3).
 
@@ -859,7 +859,7 @@ If the library needs an X server to run its tests (VTK, GUI libs), `xmsconan cov
 | `XMS_COVERAGE_PIP_INDEX` | you | Optional extra `--extra-index-url` for the build venv's `pip install` when coverage is enabled (useful when `pytest-cov` lives on a private index). |
 | `UV_PYTHON` | `xmsconan job build`, from `PYTHON_TARGET_VERSION` (§10.4) | Read by uv itself, not by xmsconan. It pins the interpreter every `uv build` in the job uses, so the wheel carries the ABI the build was compiled against. Without it `uv build` discovers an interpreter and takes the newest available — on a runner serving several ABIs that is the wrong one for every leg but the highest, and the resulting wheel will not install into the build's own venv. Set it yourself for a local pybind build on a machine with more than one Python; a workstation with a single interpreter never notices. Because uv reads it, it also applies to dependencies conan builds from source, whose recipes came from whatever xmsconan version published them — which a flag on the current recipe cannot reach. |
 | `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` | you | Read by pip itself, not by xmsconan. The wheel install at the end of a pybind build resolves `xms_python_dependencies` from whatever index pip is configured with; set these when any of those requirements live on a private index. |
-| `CI_COMMIT_TAG` | GitLab, on a tag pipeline | The version every xmsconan command resolves when given none (§10). `xmsconan coverage` resolves it once and passes the result to the `xmsconan_gen` and `build.py` it runs, so the three cannot disagree. |
+| `CI_COMMIT_TAG` | GitLab, on a tag pipeline | The version every xmsconan command resolves when given none (§10). `xmsconan coverage` resolves it once, generates the build files with the result and passes it to the `build.py` it runs, so the three cannot disagree. |
 | `GITHUB_REF_NAME` / `GITHUB_REF_TYPE` | GitHub Actions, on every run | The same on GitHub. The ref name counts only when the type is `tag`: a branch run has a ref name too. The packager reads the type as well: on a tag it sets `RELEASE_PYTHON=True` in every profile, as `CI_COMMIT_TAG` does on GitLab, where the generated workflow used to derive it with a third-party action. |
 | `GITLAB_CI` / `GITHUB_ACTIONS` | the host, on every job | Marks a CI job. Untagged, it resolves `0.0.0` -- which `--upload` refuses (§9.3, §14) -- rather than asking setuptools-scm, whose answer from a runner's checkout is a dev version no other job in the pipeline would agree on. |
 | `XMS_VERSION` | you | Read by `build.py` ahead of everything above (§9.3). The generated jobs no longer set it; it is the override for building one release under a chosen version without editing the pipeline. |
@@ -1063,14 +1063,14 @@ xmsconan publish --version 7.0.0 --no-conan    # wheel-only release
 xmsconan publish --version 7.0.0 --filter '{"build_type": "Release"}'
 ```
 
-What it runs (with `--no-deploy=false`):
+What it runs (with `--no-deploy=false`). Every step except `build.py` runs the named command's code in this process rather than launching that command; the tools those commands launch themselves, such as `conan`, still run as their own processes:
 
-1. `xmsconan_conan_setup --login`
-2. `xmsconan_gen --version <ver> build.toml`
+1. `xmsconan conan-setup --login`
+2. `xmsconan gen --version <ver> build.toml`
 3. `python build.py --version <ver> --wheel-dir <dir>` (wrapped in `xvfb-run` if `[ci].xvfb=true` and there is no `$DISPLAY` on Linux)
-4. `xmsconan_wheel_repair --wheel-dir <dir>`
-5. `xmsconan_wheel_deploy --wheel-dir <dir>` *(skipped with `--no-wheel`)*
-6. `xmsconan_conan_deploy <library> <version> --upload` *(skipped with `--no-conan`)*
+4. `xmsconan wheel-repair --wheel-dir <dir>` *(skipped on Windows when `[ci].windows_wheel_repair` is false)*
+5. `xmsconan wheel-deploy --wheel-dir <dir>` *(skipped with `--no-wheel`)*
+6. `xmsconan conan-deploy <library> <version> --upload` *(skipped with `--no-conan`)*
 
 `--version` is optional and resolves as in §10, but `publish` refuses `0.0.0` and any glob before it builds anything: a release that cannot name itself has nothing to publish.
 
@@ -1165,26 +1165,26 @@ A VS2019 carrying only, say, the .NET workload used to pass this check and then 
 | `--from LIB` | — | Resume the stack at this library, skipping the ones before it. For picking up after a mid-stack failure. |
 | `--preview` | off | Print the configuration matrix per library and exit. Nothing is built; preflight is not run and `--root` is not checked, because the matrix is computed from the library list and doesn't read the checkouts. |
 | `--continue-on-error` | off | Attempt the next library after one fails. |
-| `--no-generate` | off | Skip the `xmsconan_gen` step and use the `conanfile.py` already in the checkout. |
+| `--no-generate` | off | Skip generating the build files and use the `conanfile.py` already in the checkout. |
 | `--log-dir DIR` | — | Redirect each configuration's `conan create` output to `<DIR>/<library>-<config label>.log` and print a one-line pointer instead. A wall of interleaved compiler output is unreadable on a 14-configuration run. The label carries the whole configuration, **runtime included** — `xmscore-Release-static-testing.log`, `xmscore-Debug-dynamic-wchar_typedef.log`, `xmscore-Release-dynamic-pybind-py3.13.log`. Without the runtime the 14 msvc configurations would collapse onto 8 filenames and each static build would overwrite the dynamic build's log. |
 | `--python-versions X.Y [X.Y …]` | `3.10 3.13` | Python versions the pybind variants fan out across. A pybind configuration only builds when this matches the Python running conan, so wheels are built one version per run — §16.8. |
 | `--wheel-dir DIR` | — | After the build, copy each pybind package's `.whl` into `DIR` and fill `DIR/libs` with the shared libraries the repair step needs. Repair and publish stay separate commands (§16.8). A run that asked for a wheel and got none exits 1. |
 | `--filter JSON` | — | Restrict the matrix, same shape as `build.py --filter`: `'{"build_type": "Release"}'`. Nested keys are spelled out — `'{"options": {"pybind": true}}'` selects the pybind configurations. |
-| `--version V` | — | Passed to `xmsconan_gen`, and exported as `XMS_VERSION` so it reaches each profile's `[buildenv]` ahead of anything the environment would resolve (§9.3). |
+| `--version V` | — | Stamped into each library's generated build files, and exported as `XMS_VERSION` so it reaches each profile's `[buildenv]` ahead of anything the environment would resolve (§9.3). Without it, each library's version is resolved from its own checkout, as `xmsconan gen` run inside it would (§10). |
 | `--remote-name NAME` | `aquaveo-vs2019` | The remote the preflight check requires. Match it to the `--remote-name` you gave `setup`; a machine set up against a different Artifactory repo otherwise fails preflight (exit 2) on a remote it was never meant to have. |
 | `-v` / `-q` | — | Verbose / quiet, after the verb (`xmsconan vs2019 build -v`). `-q` silences xmsconan's own progress lines and keeps its errors and the report tables (preflight, `--preview`, wheel summary, `==> Summary`); the packager's per-configuration status lines and `conan`'s output are unaffected. `-v` adds debug detail (§4). |
 
 Per library, in dependency order, `build`:
 
 1. Skips the library (not a failure) when `<root>/<library>` or its `build.toml` is missing, so a partially migrated stack still builds what it can. A library whose matrix is emptied by `--filter` is likewise reported as `skipped`, with `no configurations matched --filter` in the notes column.
-2. Runs `xmsconan_gen [--version V] build.toml` in the checkout, unless `--no-generate`.
+2. Writes the checkout's build files — what `xmsconan gen [--version V] build.toml` would write there — unless `--no-generate`. A `build.toml` the generator rejects, or a file it cannot write, fails that library.
 3. Generates the `windows_vs2019` matrix, applies `--filter`, and runs `conan create` per configuration.
 
 A single failing configuration does not stop the library — the packager runs the rest and reports the count. A failing *library* stops the run unless `--continue-on-error` is passed. Either way a summary table (attempted / succeeded / failed / elapsed per library) is printed at the end.
 
 **Re-running is safe for the logs.** A configuration's log always lands at the canonical `<library>-<label>.log`; if one is already there from an earlier run it is *renamed* to `<library>-<label>.<timestamp>.log` first (with a `.1`/`.2` counter if two runs collide inside the same second). Re-running a failed matrix preserves the previous evidence rather than truncating it.
 
-**`build` regenerates in place, and a partial run leaves that behind.** Step 2 runs `xmsconan_gen` inside your checkout, overwriting `conanfile.py`, `CMakeLists.txt`, and `build.py` and stamping them with the `--version` you passed. If the run fails, is interrupted, or you stop it after the summary, those regenerated files stay in the working tree — with the VS2019 version baked in. Check `git status` in each library before committing anything, or re-run `xmsconan_gen` with the version you actually want. `--no-generate` skips this step entirely and builds whatever `conanfile.py` is already there.
+**`build` regenerates in place, and a partial run leaves that behind.** Step 2 regenerates inside your checkout, overwriting `conanfile.py`, `CMakeLists.txt`, and `build.py` and stamping them with the `--version` you passed. If the run fails, is interrupted, or you stop it after the summary, those regenerated files stay in the working tree — with the VS2019 version baked in. Check `git status` in each library before committing anything, or re-run `xmsconan gen` with the version you actually want. `--no-generate` skips this step entirely and builds whatever `conanfile.py` is already there.
 
 **Exit codes:**
 
@@ -1192,7 +1192,7 @@ A single failing configuration does not stop the library — the packager runs t
 |---|---|
 | `0` | At least one library built and none failed. |
 | `1` | A library failed, **or** `--wheel-dir` was given and no complete set of wheels came out (§16.8). The second case reuses code 1 rather than adding a fourth: the run was asked for an artifact, it ran, and the artifact isn't there — and the `xmsconan_wheel_repair` you'd run next would be handed an empty directory. |
-| `2` | The request or the machine was wrong: an unknown `--only`/`--from` name, a `--filter` that isn't a JSON object, a `--python-versions` entry the packager rejects, a `--root` that doesn't exist, a selection that matches no library at all (`--only xmscore --from xmsgrid`, or a `--from` past the last enabled library), a failed preflight — including the interpreter check in §16.8 — `conan` or `xmsconan_gen` not on `PATH`, or a file the run needed that could not be read or written. The last two are told apart in the message: only an executable that would not start is reported as a `PATH` problem, and a `xmsconan_gen` that is missing stops the run here rather than being counted as one failed library (exit 1) — it would fail identically for every library after it. |
+| `2` | The request or the machine was wrong: an unknown `--only`/`--from` name, a `--filter` that isn't a JSON object, a `--python-versions` entry the packager rejects, a `--root` that doesn't exist, a selection that matches no library at all (`--only xmscore --from xmsgrid`, or a `--from` past the last enabled library), a failed preflight — including the interpreter check in §16.8 — `conan` not on `PATH`, or a file the run needed that could not be read or written. The last two are told apart in the message: only an executable that would not start is reported as a `PATH` problem. A `build.toml` step 2 rejects, or a build file it cannot write, is not among them: it fails that library, which is `1`. |
 | `4` | The run completed but **nothing was built** — every selected library was skipped (no checkout, no `build.toml`, or `--filter` matched nothing). Not success: a typo in `--root` used to print a table of skips and exit 0, which any `&&` chain or wrapper script read as "the stack is built". Not `3` either, since that is the coverage gate the generated CI forgives (§4.2); this track exited `3` for it before the vocabulary was shared. |
 
 ### 16.5 The library list
