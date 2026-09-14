@@ -10,6 +10,10 @@ the entry points before this module:
   that is what failed.
 * :func:`resolve_tool` -- where a console script such as ``conan`` lives.
 
+:func:`tracebacks_wanted` and :func:`failure_message` let a command that
+reports a failure itself, rather than raising it to :func:`run_main`,
+report it the way :func:`run_main` would.
+
 The unified dispatcher lives in :mod:`xmsconan.cli`; this module is what the
 subcommands it dispatches to share.
 """
@@ -83,6 +87,16 @@ def tracebacks_wanted() -> bool:
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
 
+def failure_message(exc: BaseException) -> str:
+    """Return how a failure is named in its one-line report: its message, or its type when it has none.
+
+    :func:`run_main` reports every failure this way; a command that reports
+    one itself uses this to match it, so an ``OSError()`` is never a line
+    that ends at a bare colon.
+    """
+    return str(exc) or type(exc).__name__
+
+
 class MissingToolError(RuntimeError):
     """A tool the command cannot run without is on neither ``PATH`` nor in this interpreter's environment.
 
@@ -134,7 +148,7 @@ def run_main(body: Callable[[], Optional[int]]) -> int:
         )
         return exc.returncode if exc.returncode > 0 else EXIT_ERROR
     except Exception as exc:  # the contract: every failure is one line, not a traceback
-        LOGGER.error("%s", str(exc) or type(exc).__name__, exc_info=tracebacks_wanted())
+        LOGGER.error("%s", failure_message(exc), exc_info=tracebacks_wanted())
         return EXIT_ERROR
     return EXIT_OK if code is None else code
 

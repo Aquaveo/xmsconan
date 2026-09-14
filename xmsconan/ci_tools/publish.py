@@ -31,7 +31,7 @@ import subprocess
 import sys
 from typing import Any, Callable, Optional
 
-from xmsconan._cli import add_verbosity_args, configure_logging, tracebacks_wanted
+from xmsconan._cli import add_verbosity_args, configure_logging, failure_message, tracebacks_wanted
 from xmsconan.build_toml import read_build_toml
 from xmsconan.ci_options import repairs_wheel
 from xmsconan.ci_tools.conan_deploy import conan_deploy as _conan_deploy
@@ -142,15 +142,17 @@ def publish(
     LOGGER.info("Setting up Conan...")
     steps.conan_setup(login=True)
 
-    # 2. Generate build files, in this process. A build.toml the generator
-    # rejects, or a file it cannot write, is reported in one line and exit
-    # 1, as `xmsconan gen` reports it; a failure it returns, it has already
-    # logged. Either way nothing is built from files it did not finish.
+    # 2. Generate build files, in this process. Whatever the generator
+    # raises -- a build.toml it rejects, a file it cannot write, a fault of
+    # its own -- is one line that names this step, and exit 1: one line, as
+    # `xmsconan gen` reported it, with the traceback under -v. A failure it
+    # returns, it has already logged. Either way nothing is built from files
+    # it did not finish.
     LOGGER.info("Generating build files...")
     try:
         generated = steps.generate(toml_file_path=toml_path, version=version)
-    except (OSError, ValueError) as exc:
-        LOGGER.error("%s", str(exc) or type(exc).__name__, exc_info=tracebacks_wanted())
+    except Exception as exc:
+        LOGGER.error("generating build files failed: %s", failure_message(exc), exc_info=tracebacks_wanted())
         raise SystemExit(EXIT_ERROR) from exc
     if generated != EXIT_OK:
         raise SystemExit(generated)

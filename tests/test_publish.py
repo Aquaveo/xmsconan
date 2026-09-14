@@ -108,8 +108,9 @@ def _write_publish_toml(tmp_path, **ci_keys):
 
 
 def _build_argv(mock_steps):
-    """Return the argv of the build.py call, the only subprocess_run call."""
-    return mock_steps.subprocess_run.call_args[0][0]
+    """Return the argv of the one subprocess_run call that runs build.py."""
+    [argv] = [call.args[0] for call in mock_steps.subprocess_run.call_args_list if "build.py" in call.args[0]]
+    return argv
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "win32")
@@ -210,22 +211,10 @@ def test_publish_with_filter(mock_steps, tmp_path):
     assert '{"build_type": "Release"}' in cmd
 
 
-def test_publish_build_failure_stops(tmp_path):
+def test_publish_build_failure_stops(mock_steps, tmp_path):
     """Verify CalledProcessError from build.py propagates."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-
-    steps = PublishSteps(
-        conan_setup=MagicMock(),
-        generate=MagicMock(return_value=EXIT_OK),
-        subprocess_run=MagicMock(
-            side_effect=subprocess.CalledProcessError(1, "build.py"),
-        ),
-        wheel_repair=MagicMock(),
-        wheel_deploy=MagicMock(),
-        conan_deploy=MagicMock(),
-        check_xvfb=lambda _config: False,
-    )
+    toml_file = _write_publish_toml(tmp_path)
+    mock_steps.subprocess_run.side_effect = subprocess.CalledProcessError(1, "build.py")
 
     with pytest.raises(subprocess.CalledProcessError):
         publish(
@@ -233,7 +222,7 @@ def test_publish_build_failure_stops(tmp_path):
             toml_path=str(toml_file),
             deploy_wheel=False,
             deploy_conan=False,
-            steps=steps,
+            steps=mock_steps,
         )
 
 
@@ -243,8 +232,7 @@ def test_publish_stops_when_generation_fails(mock_steps, tmp_path):
     The generator has already logged why; building from files it did not
     finish writing would only bury that message under a compiler's.
     """
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file = _write_publish_toml(tmp_path)
     mock_steps.generate.return_value = EXIT_ERROR
 
     with pytest.raises(SystemExit) as excinfo:
@@ -259,26 +247,29 @@ def test_publish_stops_when_generation_fails(mock_steps, tmp_path):
 @pytest.mark.parametrize("error", [
     pytest.param(ValueError("Missing field in build.toml: 'description'."), id="rejected-build-toml"),
     pytest.param(PermissionError("[Errno 13] Permission denied: 'conanfile.py'"), id="unwritable-file"),
+    pytest.param(KeyError("version"), id="generator-fault"),
 ])
-def test_publish_reports_a_generator_exception_in_one_line(error, mock_steps, tmp_path, caplog):
-    """A build.toml the generator rejects, or a file it cannot write, is one line and exit 1.
+@pytest.mark.parametrize("verbose", [False, True], ids=["default", "verbose"])
+def test_publish_reports_a_generator_exception_in_one_line(error, verbose, mock_steps, tmp_path, caplog):
+    """Whatever the generator raises is one line that names the step, and exit 1.
 
-    That is how ``xmsconan gen`` reported it when this step launched it, and
-    how every command wrapped in ``run_main`` reports it. ``publish.main`` is
-    not wrapped, so without the catch the run would end in a traceback.
+    A rejected build.toml, an unwritable file, a fault of the generator's
+    own: ``xmsconan gen`` reported each in one line when this step launched
+    it, as every command wrapped in ``run_main`` does, with the traceback
+    only under -v. ``publish.main`` is not wrapped, so without the catch the
+    run would end in a traceback.
     """
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file = _write_publish_toml(tmp_path)
     mock_steps.generate.side_effect = error
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG if verbose else logging.INFO)
 
     with pytest.raises(SystemExit) as excinfo:
         publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
 
     assert excinfo.value.code == EXIT_ERROR
     [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert record.getMessage() == str(error)
-    assert not record.exc_info  # no traceback attached
+    assert record.getMessage() == f"generating build files failed: {error}"
+    assert bool(record.exc_info) is verbose  # the traceback only under -v
 
     mock_steps.subprocess_run.assert_not_called()
 
@@ -334,31 +325,20 @@ def test_publish_calls_conan_setup_with_login(mock_steps, tmp_path):
     mock_steps.conan_setup.assert_called_once_with(login=True)
 
 
-def test_publish_wraps_build_with_xvfb_run(tmp_path):
+def test_publish_wraps_build_with_xvfb_run(mock_steps, tmp_path):
     """Build command is prefixed with xvfb-run when xvfb is needed."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
-
-    steps = PublishSteps(
-        conan_setup=MagicMock(),
-        generate=MagicMock(return_value=EXIT_OK),
-        subprocess_run=MagicMock(),
-        wheel_repair=MagicMock(),
-        wheel_deploy=MagicMock(),
-        conan_deploy=MagicMock(),
-        check_xvfb=lambda _config: True,
-    )
+    toml_file = _write_publish_toml(tmp_path)
+    mock_steps.check_xvfb = lambda _config: True
 
     publish(
         version="7.0.0",
         toml_path=str(toml_file),
         deploy_wheel=False,
         deploy_conan=False,
-        steps=steps,
+        steps=mock_steps,
     )
 
-    cmd = steps.subprocess_run.call_args[0][0]
-    assert cmd[0] == "xvfb-run"
+    assert _build_argv(mock_steps)[0] == "xvfb-run"
 
 
 # --- main() Docker dispatch ---
@@ -408,19 +388,23 @@ def test_main_docker_preserves_exit_code(mock_publish, code):
 @patch("sys.argv", ["xmsconan_publish", "--version", "1.0.0", "--no-deploy"])
 def test_main_without_docker_runs_publish(
     mock_setup, mock_run, mock_repair, mock_wdeploy, mock_cdeploy,
-    mock_xvfb, mock_generate, tmp_path,
+    mock_xvfb, mock_generate, tmp_path, monkeypatch,
 ):
-    """Without --docker, main() calls publish() normally."""
-    import os
-    original_dir = os.getcwd()
-    os.chdir(tmp_path)
-    (tmp_path / "build.toml").write_text(
-        'library_name = "xmscore"\n', encoding="utf-8",
-    )
-    try:
-        main()
-    finally:
-        os.chdir(original_dir)
+    """Without --docker, main() calls publish() normally, with the production steps.
 
+    main() builds its own PublishSteps, so the patches stand in for each
+    default; this is the test that shows the defaults of the steps it runs
+    reach the module's functions. --no-deploy skips the two uploads.
+    """
+    _write_publish_toml(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    main()
+
+    mock_xvfb.assert_called_once()
     mock_setup.assert_called_once_with(login=True)
     mock_generate.assert_called_once_with(toml_file_path="build.toml", version="1.0.0")
+    mock_run.assert_called_once()
+    mock_repair.assert_called_once_with(wheel_dir="wheelhouse")
+    mock_wdeploy.assert_not_called()
+    mock_cdeploy.assert_not_called()

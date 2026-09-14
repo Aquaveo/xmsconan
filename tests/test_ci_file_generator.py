@@ -2520,7 +2520,7 @@ def test_github_coverage_runs_no_third_party_action(tmp_path):
 
 
 def test_github_ci_uses_a_current_setup_python(ci_toml, tmp_path):
-    """Every setup-python is v7, the first major that runs on Node 24.
+    """Every setup-python in the CI workflow is v7, the current major, which runs on Node 24.
 
     The flake job once sat on v2 while the build jobs used v5, so the one job
     that lints the project ran on a Node action GitHub had deprecated -- and

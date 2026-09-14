@@ -649,14 +649,16 @@ def test_build_library_missing_build_toml(tmp_path):
                  "Missing field in build.toml", id="rejected-build-toml"),
     pytest.param({"side_effect": PermissionError("[Errno 13] Permission denied: 'conanfile.py'")},
                  "Permission denied", id="unwritable-file"),
+    pytest.param({"side_effect": KeyError("version")}, "'version'", id="generator-fault"),
 ])
 @mock.patch(f"{MODULE}.XmsConanPackager")
 def test_build_library_generator_failure(mock_packager_cls, outcome, reason, library_root):
     """A generation that fails fails the library, with its reason, and builds nothing.
 
-    It is this library's build.toml or checkout that is wrong, so it counts
-    as one failed library (exit 1) -- which --continue-on-error goes past --
-    rather than aborting the whole stack.
+    Whatever stopped it -- this library's build.toml, its checkout, or a
+    fault in the generator itself -- it counts as one failed library (exit
+    1), which --continue-on-error goes past, rather than aborting the whole
+    stack. That is what the step did when it launched ``xmsconan gen``.
     """
     with mock.patch(f"{MODULE}.generate_build_files", **outcome):
         result = vs.build_library(XMSCORE, str(library_root), version="7.0.0")
@@ -665,6 +667,24 @@ def test_build_library_generator_failure(mock_packager_cls, outcome, reason, lib
     assert "generating build files failed" in result.message
     assert reason in result.message
     mock_packager_cls.assert_not_called()
+
+
+@pytest.mark.parametrize("verbose", [False, True], ids=["default", "verbose"])
+@mock.patch(f"{MODULE}.XmsConanPackager")
+def test_build_library_logs_a_generator_exception(mock_packager_cls, verbose, library_root, caplog):
+    """The exception is logged as it happens, with its traceback only under -v (§4.2).
+
+    One with no message of its own is named by its type, so neither the log
+    nor the summary ends at a bare colon.
+    """
+    caplog.set_level(logging.DEBUG if verbose else logging.INFO)
+    with mock.patch(f"{MODULE}.generate_build_files", side_effect=OSError()):
+        result = vs.build_library(XMSCORE, str(library_root), version="7.0.0")
+
+    assert result.message == "generating build files failed: OSError"
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert record.getMessage() == "xmscore: generating build files failed: OSError"
+    assert bool(record.exc_info) is verbose
 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
@@ -726,20 +746,30 @@ def test_build_library_no_generate_and_filter(mock_generate, mock_packager_cls, 
 
 @mock.patch(f"{MODULE}.XmsConanPackager")
 @mock.patch(f"{MODULE}.generate_build_files", return_value=EXIT_OK)
-@mock.patch(f"{MODULE}.resolve_version", return_value="7.1.0.dev2")
 def test_build_library_resolves_a_missing_version_from_the_checkout(
-        mock_resolve, mock_generate, mock_packager_cls, library_root):
+        mock_generate, mock_packager_cls, library_root):
     """Without --version, each library is stamped with the version its own checkout resolves.
 
     Not the directory the driver was started from: one run builds several
     libraries, each with its own history.
     """
     mock_packager_cls.return_value = fake_packager()
-
-    vs.build_library(XMSCORE, str(library_root))
-
     library_dir = os.path.join(str(library_root), "xmscore")
-    mock_resolve.assert_called_once_with(None, root=library_dir)
+
+    def resolve_from_checkout(explicit_version=None, environ=None, root="."):
+        """Answer as the resolver would where only this library's checkout has a version.
+
+        Any other root fails the test with pytest.fail, which build_library
+        cannot catch: an ordinary exception from here would become a failed
+        library, and the test would die later on an unrelated None.
+        """
+        if root != library_dir:
+            pytest.fail(f"resolved the version of {root!r}, not of the library's checkout")
+        return explicit_version or "7.1.0.dev2"
+
+    with mock.patch(f"{MODULE}.resolve_version", side_effect=resolve_from_checkout):
+        vs.build_library(XMSCORE, str(library_root))
+
     assert mock_generate.call_args.args[1] == "7.1.0.dev2"
 
 

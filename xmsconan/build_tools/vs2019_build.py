@@ -111,7 +111,7 @@ from typing import NamedTuple, Optional
 
 from tabulate import tabulate
 
-from xmsconan._cli import add_verbosity_args, configure_logging
+from xmsconan._cli import add_verbosity_args, configure_logging, failure_message, tracebacks_wanted
 from xmsconan.build_toml import read_optional_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
@@ -937,14 +937,18 @@ def extract_wheels(packager, configurations, wheel_dir, version=None, repair=Tru
     return True
 
 
-def _generate_build_files(library_dir, version):
+def _generate_build_files(name, library_dir, version):
     """Write one checkout's build files, as ``xmsconan gen`` run inside it would.
 
     A None *version* is resolved from the checkout itself, not from wherever
     this driver was started: one run builds several libraries, and without
     ``--version`` each is stamped with the version its own history gives it.
 
+    An exception is logged here as it happens, with its traceback under
+    ``-v``; a failure the generator returns, it has logged itself.
+
     Args:
+        name: The library, for the log line.
         library_dir: The library's checkout.
         version: The version to stamp, or None to resolve it.
 
@@ -958,10 +962,14 @@ def _generate_build_files(library_dir, version):
             resolve_version(version, root=library_dir),
             output_dir=library_dir,
         )
-    except (OSError, ValueError) as exc:
-        # A build.toml the generator rejects, or a file it cannot write, is
-        # this library's failure, not the run's.
-        return f"generating build files failed: {exc}"
+    except Exception as exc:
+        # Whatever stops the generator -- a build.toml it rejects, a file it
+        # cannot write, a fault of its own -- is this library's failure, not
+        # the run's, as it was when this step launched `xmsconan gen` and read
+        # its exit 1: --continue-on-error goes past it. -v adds the traceback.
+        reason = f"generating build files failed: {failure_message(exc)}"
+        LOGGER.error("%s: %s", name, reason, exc_info=tracebacks_wanted())
+        return reason
     if generated != EXIT_OK:
         return "generating build files failed; the reason is logged above"
     return None
@@ -1008,7 +1016,7 @@ def build_library(library: LibrarySpec, root, version=None, generate=True,
 
     if generate:
         LOGGER.info("%s: generating build files", name)
-        failure = _generate_build_files(library_dir, version)
+        failure = _generate_build_files(name, library_dir, version)
         if failure:
             return LibraryResult(
                 name, "failed", elapsed=time.monotonic() - start, message=failure,

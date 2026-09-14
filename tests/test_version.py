@@ -58,10 +58,22 @@ def test_resolve_version_asks_setuptools_scm_about_the_given_root():
     ``xmsconan vs2019`` generates build files for a whole stack of checkouts
     from one directory, and each has to be stamped from its own history.
     """
-    with patch("xmsconan.generator_tools.version.get_version", return_value=SCM_VERSION) as get_version:
-        assert resolve_version(environ={}, root="xmsgrid") == SCM_VERSION
+    # A different answer per checkout, so each result says which one was read.
+    scm_versions = {"xmscore": "7.0.13.dev2", "xmsgrid": "9.1.3.dev5"}
 
-    get_version.assert_called_once_with(root="xmsgrid")
+    def scm_version_of(root=".", **_options):
+        """Answer for the two checkouts, and fail the test on any other.
+
+        Not with a KeyError: that is a LookupError, which the resolver takes
+        for "no version here" and answers with the fallback.
+        """
+        if root not in scm_versions:
+            pytest.fail(f"setuptools-scm was asked about {root!r}")
+        return scm_versions[root]
+
+    with patch("xmsconan.generator_tools.version.get_version", side_effect=scm_version_of):
+        assert resolve_version(environ={}, root="xmsgrid") == "9.1.3.dev5"
+        assert resolve_version(environ={}, root="xmscore") == "7.0.13.dev2"
 
 
 @pytest.mark.parametrize("version, expected", [
