@@ -1,4 +1,5 @@
 """Tests for generator_tools.ci_file_generator."""
+import json
 import logging
 import re
 
@@ -2228,7 +2229,7 @@ def test_github_every_platform_job_builds(github_arm_jobs):
     assert sorted(building) == sorted(BUILDING_JOBS)
 
 
-def _github_leg_configurations(toml_path, job, job_name, release):
+def _github_leg_configurations(toml_path, job, job_name, release, build_type):
     """What ``xmsconan job build`` actually builds when this GitHub job runs it.
 
     The GitLab twin of this is :func:`_tool_export_name`, and the reason both
@@ -2244,12 +2245,16 @@ def _github_leg_configurations(toml_path, job, job_name, release):
     job's environment. The environment is patched as well as passed, because
     the packager resolves the ABI it fans pybind out over from the process
     environment rather than from anything a caller hands it.
+
+    *build_type* is the leg to stand in for, and has to be one the job's
+    matrix renders for this pipeline (:func:`_matrix_build_types`): probing a
+    leg the matrix does not run reports a failure no pipeline would have.
     """
     # The packager's own platform keys, not sys.platform values: they are
     # what name the matrix a `system_platform` selects.
     platform = {"mac": "darwin", "windows": "windows"}.get(job_name, "linux")
     run = _build_step_run(job, job_name)
-    environ = {key: _expand_matrix(str(value))
+    environ = {key: _expand_matrix(str(value), build_type)
                for key, value in (job.get("env") or {}).items()}
 
     config = read_build_toml(str(toml_path))
@@ -2272,23 +2277,58 @@ def _github_leg_configurations(toml_path, job, job_name, release):
     return builder.configurations
 
 
-def _expand_matrix(value, build_type="Debug", python_version="3.13"):
+def _expand_matrix(value, build_type, python_version="3.13"):
     """Substitute the matrix expressions a job's ``env:`` interpolates.
 
     GitHub expands ``${{ matrix.* }}`` per leg; a test standing in for the
-    runner has to pick one. Debug is the leg picked, because it is the one a
-    filter or a release rule is likeliest to empty -- ``pybind_build_types``
-    defaults to Release, so Debug is where a job can be left with nothing.
+    runner has to say which. The build type is the caller's to name, from the
+    legs :func:`_matrix_build_types` says the job runs: a fixed default would
+    probe a leg the matrix may not render, which is what a wheel_only job's
+    Debug leg is on a tag.
     """
     return (value.replace("${{ matrix.build_type }}", build_type)
                  .replace("${{ matrix.python-version }}", python_version))
 
 
+#: The one shape a pipeline-dependent ``build_type`` axis is rendered in. A
+#: different one fails :func:`_matrix_build_types` rather than being guessed at.
+_TAG_DEPENDENT_AXIS = re.compile(
+    r"\$\{\{ startsWith\(github\.ref, 'refs/tags/'\) "
+    r"&& fromJSON\('(?P<tag>\[[^']*\])'\) "
+    r"\|\| fromJSON\('(?P<branch>\[[^']*\])'\) \}\}"
+)
+
+
+def _matrix_build_types(job, release):
+    """The build types one job's matrix runs, on a tag pipeline or a branch one.
+
+    A plain list is the same on both. A wheel_only job's axis is an expression
+    GitHub evaluates per pipeline, and a test standing in for the runner has
+    to evaluate it too -- through the one rendered shape it knows, so that a
+    template change to that shape fails here rather than being read as some
+    list this helper made up.
+    """
+    axis = job["strategy"]["matrix"]["build_type"]
+    if isinstance(axis, list):
+        return axis
+    match = _TAG_DEPENDENT_AXIS.fullmatch(str(axis))
+    if match is None:
+        raise AssertionError(f"unrecognised build_type axis: {axis!r}")
+    return json.loads(match["tag" if release else "branch"])
+
+
+@pytest.mark.parametrize("matrix_table", [
+    pytest.param(None, id="plain"),
+    pytest.param(WHEEL_ONLY, id="wheel_only"),
+    # The one wheel_only matrix that keeps a Debug leg on a tag: a Debug
+    # wheel is not a testing configuration.
+    pytest.param(dict(WHEEL_ONLY, pybind_build_types=["Release", "Debug"]), id="debug-wheel"),
+])
 @pytest.mark.parametrize("release", [pytest.param(False, id="branch"),
                                      pytest.param(True, id="tag")])
 @pytest.mark.parametrize("job_name", BUILDING_JOBS)
-def test_every_github_leg_has_something_to_build(tmp_path, job_name, release):
-    """Each rendered platform job resolves to a non-empty matrix, tag or branch.
+def test_every_github_leg_has_something_to_build(tmp_path, job_name, release, matrix_table):
+    """Each leg a rendered platform job runs resolves to a non-empty matrix.
 
     ``job build`` exits 1 on a leg that matches no configuration, and it
     should: normally that means a ``[filter]`` and a job disagree. But the
@@ -2297,35 +2337,88 @@ def test_every_github_leg_has_something_to_build(tmp_path, job_name, release):
     here would notice -- the command reads correctly, the ``env:`` reads
     correctly, and the golden pins both.
 
-    The Debug leg on a tag is the interesting one: it is where the release
-    rule and ``[matrix].pybind_build_types`` can cancel out, and where a
-    branch pipeline stays green because ``0.0.0`` is not a release version.
+    The legs are the ones the job's matrix renders for that pipeline rather
+    than a fixed Debug, and wheel_only on a tag is why. Its Debug half is
+    testing configurations only, which is exactly what a release drops, so a
+    Debug leg there matched nothing -- on every platform job, and only on a
+    tag, since ``0.0.0`` is not a release version. That case sat beside this
+    test as a strict xfail until the generator stopped rendering the leg on a
+    tag; the empty-match guard in ``job build`` was left as it was, because
+    it is what made the gap visible.
+    """
+    toml_file = write_github_toml(tmp_path, matrix_table=matrix_table, linux_arm=True)
+    job = _github_jobs(toml_file, tmp_path)[job_name]
+
+    legs = _matrix_build_types(job, release)
+    assert legs, "this job runs no leg at all"
+    for build_type in legs:
+        assert _github_leg_configurations(toml_file, job, job_name, release, build_type), (
+            f"the {build_type} leg matches no configuration and would exit 1"
+        )
+
+
+@pytest.mark.parametrize("matrix_table,on_a_tag", [
+    pytest.param(WHEEL_ONLY, ["Release"], id="wheel_only"),
+    # A Debug wheel is not a testing configuration, so a release leaves that
+    # leg something to build and it stays.
+    pytest.param(dict(WHEEL_ONLY, pybind_build_types=["Release", "Debug"]),
+                 ["Release", "Debug"], id="debug-wheel"),
+])
+@pytest.mark.parametrize("job_name", BUILDING_JOBS)
+def test_a_wheel_only_github_tag_leaves_out_only_the_legs_a_release_empties(
+    tmp_path, job_name, matrix_table, on_a_tag,
+):
+    """A tag drops the legs it would leave empty; a branch keeps every one.
+
+    Dropping Debug from a wheel_only matrix outright would also have fixed the
+    tag, and would have stopped the Debug C++ suite running on every push.
+    GitLab already draws the line here -- its testing builds stay off a tag --
+    and this keeps GitHub on the same side of it.
+    """
+    toml_file = write_github_toml(tmp_path, matrix_table=matrix_table, linux_arm=True)
+    job = _github_jobs(toml_file, tmp_path)[job_name]
+
+    assert _matrix_build_types(job, release=False) == ["Release", "Debug"]
+    assert _matrix_build_types(job, release=True) == on_a_tag
+
+
+def test_github_wheel_only_refuses_a_filter_that_leaves_a_release_nothing_to_build(tmp_path):
+    """A filter keeping only testing builds would leave a tag no leg to run.
+
+    ``build_type = "Debug"`` under wheel_only keeps the Debug testing build and
+    nothing else, and a release drops that as well, so the tag pipeline's axis
+    would name no build type. Generation refuses rather than the first release
+    finding out.
+    """
+    toml_file = write_github_toml(tmp_path, matrix_table=WHEEL_ONLY)
+    toml_file.write_text(toml_file.read_text(encoding="utf-8") + '\n[filter]\nbuild_type = "Debug"\n',
+                         encoding="utf-8")
+
+    with pytest.raises(ValueError, match="leaves no configuration a release builds"):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+
+def test_github_without_wheel_only_accepts_a_filter_a_release_would_empty(tmp_path):
+    """The refusal is wheel_only's: without it no job applies the release rule.
+
+    ``options.testing = true`` leaves a release nothing, and under wheel_only
+    that is refused. Without it the platform jobs run ``job build`` without
+    ``--release-skips-testing``, so a tag builds the testing configurations a
+    branch does, every leg has something to build, and the axis stays one
+    plain list.
     """
     toml_file = write_github_toml(tmp_path, linux_arm=True)
+    toml_file.write_text(toml_file.read_text(encoding="utf-8") + "\n[filter.options]\ntesting = true\n",
+                         encoding="utf-8")
+
     jobs = _github_jobs(toml_file, tmp_path)
 
-    configurations = _github_leg_configurations(toml_file, jobs[job_name], job_name, release)
-    assert configurations, (
-        "this job matches no configuration and would exit 1"
-    )
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "Pre-existing, and unchanged by the move onto `job build`: under "
-    "[matrix].wheel_only the whole matrix is pybind (Release) plus testing, "
-    "so a Debug leg holds only testing configurations -- which is exactly "
-    "what a release drops. The old template rendered the same empty set as a "
-    "JSON --filter. Branch pipelines stay green because 0.0.0 is not a "
-    "release version, so only a tag shows it. The fix is a generator "
-    "decision about whether that leg should run on a tag at all, not a "
-    "relaxation of job build's empty-match guard."
-))
-def test_a_wheel_only_github_debug_leg_has_something_to_build_on_a_tag(tmp_path):
-    """Known gap, pinned so the fix flips this green loudly."""
-    toml_file = write_github_toml(tmp_path, matrix_table=WHEEL_ONLY, linux_arm=True)
-    jobs = _github_jobs(toml_file, tmp_path)
-
-    assert _github_leg_configurations(toml_file, jobs["linux"], "linux", release=True)
+    for job_name in BUILDING_JOBS:
+        assert jobs[job_name]["strategy"]["matrix"]["build_type"] == ["Release", "Debug"]
+        for build_type in ("Release", "Debug"):
+            assert _github_leg_configurations(toml_file, jobs[job_name], job_name, True, build_type), (
+                f"{job_name}'s {build_type} leg matches no configuration on a tag"
+            )
 
 
 @pytest.mark.parametrize("job_name", BUILDING_JOBS)

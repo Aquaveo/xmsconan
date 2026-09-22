@@ -245,12 +245,27 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
             configurations this library really produces.
 
     Returns:
-        ``{'build_types': [...], 'wheel_enabled': {ci_platform: bool},
-        'test_labels': [...]}``, with ``wheel_enabled`` keyed by the CI platform
+        ``{'build_types': [...], 'release_build_types': [...],
+        'wheel_enabled': {ci_platform: bool}, 'test_labels': [...]}``, with
+        ``wheel_enabled`` keyed by the CI platform
         names in :data:`CI_WHEEL_PLATFORMS`. ``build_types``
         is never empty for a filter that reached here: ``load_build_filter`` has
         already rejected one that matches nothing on every platform, so at least
         one candidate build type keeps a configuration.
+
+        ``release_build_types`` is the part of ``build_types`` a release still
+        builds on: the build types left a configuration once ``xmsconan job
+        build --release-skips-testing`` drops the testing ones. Under
+        ``[matrix].wheel_only`` that is Release alone by default, the Debug
+        half of that matrix being the Debug testing build; a library naming
+        Debug in ``pybind_build_types`` keeps Debug as well. A wheel_only
+        GitHub workflow takes its tag pipeline's ``build_type`` axis from it.
+        Like ``build_types`` it is a union over platforms, because one axis
+        serves every platform job: a build type stays if any platform still
+        builds it on a release, even where another is left nothing -- a
+        static-runtime pin leaves Windows no pybind build. It *can* be
+        empty -- a filter keeping only testing configurations -- and the
+        caller refuses that rather than render an axis with nothing in it.
 
         ``test_labels`` names the Linux ``test_artifacts/<label>/`` directories
         the build stages, one per surviving testing configuration, and is what
@@ -281,6 +296,7 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
     # compiles and runs its tests in one place and so never needs to name an
     # artifact directory.
     test_labels = []
+    release_build_types = []
     for build_type in candidates:
         # Probing one build type at a time is what makes these answers per-leg
         # rather than global: the GitHub matrix drops a leg that keeps nothing,
@@ -290,6 +306,16 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
         summary = summarize_filter_matches(probe, python_versions, matrix)
         if any(counts["total"] for counts in summary.values()):
             build_types.append(build_type)
+        # What a release still builds on this leg, on any platform -- the
+        # same union build_types is. testing_labels holds one entry per
+        # surviving testing configuration, so the difference is exactly what
+        # `--release-skips-testing` leaves. Counted from this
+        # probe rather than from a second one with `testing = False` merged
+        # into the filter's options: a merge would overwrite a [filter] that
+        # pins `testing = true` instead of intersecting with it, and report a
+        # leg a release empties as one it keeps.
+        if any(counts["total"] > len(counts["testing_labels"]) for counts in summary.values()):
+            release_build_types.append(build_type)
         for name, matrix_platform in CI_WHEEL_PLATFORMS.items():
             pybind[name] += summary[matrix_platform]["pybind"]
         for label in summary[CI_WHEEL_PLATFORMS["linux"]]["testing_labels"]:
@@ -298,6 +324,7 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
 
     return {
         "build_types": build_types,
+        "release_build_types": release_build_types,
         "wheel_enabled": {name: count > 0 for name, count in pybind.items()},
         "test_labels": test_labels,
     }
