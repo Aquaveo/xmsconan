@@ -6,6 +6,20 @@
 # itself and print its path to stdout (only the path may go to stdout; all
 # diagnostics go to stderr). Removal stays with Claude Code's built-in logic.
 #
+# The hook is set in exec form ("command": "sh" plus "args"), not as a command
+# string. Hooks run in the session's current directory, which follows every
+# Bash `cd`, so a relative script path stops resolving after a `cd tests`. In
+# exec form Claude Code substitutes ${CLAUDE_PROJECT_DIR} itself and starts
+# sh directly, so no shell (sh, Git Bash, PowerShell, cmd.exe) parses the path.
+#
+# Windows prerequisites; without them the hook fails before creating anything:
+#   - `sh` resolves on PATH to a real executable. Add Git's bin directory
+#     (C:\Program Files\Git\bin), not usr\bin, whose GNU find and sort would
+#     shadow the Windows ones.
+#   - jq, or a working python3, for json_field. Git for Windows ships neither,
+#     and the Microsoft Store python3 alias is a stub that exits non-zero, so
+#     `set -eu` stops the script at the first json_field call.
+#
 # Because the hook replaces Claude Code's own worktree creation, Claude Code
 # does NOT process .worktreeinclude here -- this script does it instead, using
 # the same two-condition rule: a path is copied only if it matches a pattern
@@ -161,7 +175,12 @@ WorktreeCreate)
     fi
     rollback() {
         # Never leave a registered-but-unreported worktree behind -- on failure
-        # or a signal (hook timeout sends TERM) remove what this run created.
+        # or a signal remove what this run created. The signal case assumes a
+        # hook timeout arrives as TERM, the POSIX default for a kill; the hooks
+        # docs say only that a timed-out hook is cancelled. Windows has no
+        # signals: a timed-out run is terminated outright, this trap never
+        # fires, and the worktree and branch have to be removed by hand
+        # (git worktree remove --force <path>; git branch -D <name>).
         # Each step reports its own failure: a rollback that cannot finish must
         # say so, or the leftover worktree is exactly what the trap prevents.
         cd "$PROJECT_DIR" ||
