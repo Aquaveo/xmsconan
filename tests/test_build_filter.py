@@ -11,6 +11,8 @@ from xmsconan.generator_tools.build_filter import (
     coverage_conflicts,
     DEFAULT_CI_BUILD_TYPES,
     empty_ci_jobs,
+    empty_release_legs,
+    GITHUB_JOB_PLATFORMS,
     load_build_filter,
 )
 from xmsconan.package_tools.packager import (
@@ -313,6 +315,78 @@ def test_ci_release_build_types_keep_what_a_release_still_builds(build_filter, m
     release rule depends on what ``[matrix]`` builds on it.
     """
     assert _effects(build_filter, matrix)["release_build_types"] == expected
+
+
+#: A wheel_only matrix offering both msvc runtimes, so a ``compiler.runtime``
+#: pin can single Windows out: its pybind module is built for the dynamic
+#: runtime alone, while Linux and macOS declare no runtime at all.
+_BOTH_RUNTIMES = {"wheel_only": True, "compiler_runtime": ["dynamic", "static"]}
+
+_STATIC_RUNTIME = {"compiler.runtime": "static"}
+
+
+@pytest.mark.parametrize("build_filter,matrix,expected", [
+    # Nothing singles a platform out: all three keep the tag's only leg.
+    pytest.param({}, {"wheel_only": True},
+                 {"mac": ["Release"], "linux": ["Release"], "windows": ["Release"]},
+                 id="wheel-only"),
+    # The case the union hides. Windows keeps the Release *testing* build and
+    # nothing else, so a release leaves it nothing -- while mac and linux,
+    # which declare no compiler.runtime, still build their wheels.
+    pytest.param(_STATIC_RUNTIME, _BOTH_RUNTIMES,
+                 {"mac": ["Release"], "linux": ["Release"], "windows": []},
+                 id="static-runtime-pin"),
+    # A plain library builds every configuration on both legs.
+    pytest.param({}, None,
+                 {"mac": ["Release", "Debug"], "linux": ["Release", "Debug"],
+                  "windows": ["Release", "Debug"]},
+                 id="library-configurations"),
+])
+def test_platform_release_build_types_split_the_tag_axis(build_filter, matrix, expected):
+    """Per platform, the legs a release still builds -- the union cannot say it.
+
+    ``release_build_types`` answers for the axis, which is rendered once and
+    shared, so a leg one platform keeps is a leg all four jobs run. Whether a
+    given job has anything to do there is this answer, not that one.
+    """
+    assert _effects(build_filter, matrix)["platform_release_build_types"] == expected
+
+
+def test_empty_release_legs_names_the_job_and_the_leg():
+    """A tag leg only some platforms build is reported against the ones that don't."""
+    effects = _effects(_STATIC_RUNTIME, _BOTH_RUNTIMES)
+
+    assert empty_release_legs(effects, ["mac", "linux", "linux-arm", "windows"]) == [
+        ("windows", "Release"),
+    ]
+
+
+def test_empty_release_legs_is_quiet_when_every_platform_builds_the_leg():
+    """The default wheel_only matrix leaves every job something to build on a tag."""
+    effects = _effects({}, {"wheel_only": True})
+
+    assert empty_release_legs(effects, ["mac", "linux", "linux-arm", "windows"]) == []
+
+
+def test_empty_release_legs_skips_jobs_already_reported_as_empty():
+    """A job the filter empties outright is not also reported leg by leg.
+
+    ``empty_ci_jobs`` names the pin that did it; repeating that once per leg
+    would say the same thing less precisely.
+    """
+    effects = _effects({"os": "Windows"}, {"wheel_only": True})
+    jobs = ["mac", "linux", "windows"]
+
+    assert empty_release_legs(effects, jobs) == [("mac", "Release"), ("linux", "Release")]
+    assert empty_release_legs(effects, jobs, already_empty=["mac", "linux"]) == []
+
+
+def test_github_job_platforms_covers_every_job_block():
+    """Every GitHub job block has a platform to read, or the lookup raises."""
+    assert set(GITHUB_JOB_PLATFORMS) == set(CI_JOB_SETTINGS["github"])
+    # linux-arm differs from linux by arch alone, and both arches build the
+    # same configurations, so one answer serves the two jobs.
+    assert GITHUB_JOB_PLATFORMS["linux-arm"] == GITHUB_JOB_PLATFORMS["linux"]
 
 
 @pytest.mark.parametrize("build_filter,expected", [

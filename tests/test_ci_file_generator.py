@@ -2398,6 +2398,78 @@ def test_github_wheel_only_refuses_a_filter_that_leaves_a_release_nothing_to_bui
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
 
 
+#: A wheel_only matrix offering both msvc runtimes. With it, a
+#: `"compiler.runtime" = "static"` pin singles Windows out -- msvc builds its
+#: pybind module for the dynamic runtime alone -- while mac and Linux, which
+#: declare no compiler.runtime, keep everything.
+_BOTH_RUNTIMES = dict(WHEEL_ONLY, compiler_runtime=["dynamic", "static"])
+
+_STATIC_RUNTIME_FILTER = '\n[filter]\n"compiler.runtime" = "static"\n'
+
+
+def _generate_with_filter(tmp_path, caplog, matrix_table, filter_table, **ci_flags):
+    """Generate a GitHub workflow from a [matrix] plus an appended [filter], capturing warnings."""
+    toml_file = write_github_toml(tmp_path, matrix_table=matrix_table, **ci_flags)
+    if filter_table:
+        toml_file.write_text(toml_file.read_text(encoding="utf-8") + filter_table,
+                             encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+    return [r.getMessage() for r in caplog.records
+            if "exit 1 on every release" in r.getMessage()]
+
+
+def test_warns_about_a_tag_leg_one_platform_would_run_empty(tmp_path, caplog):
+    """The tag axis is a union, so a leg only some platforms build still runs on the rest.
+
+    Under wheel_only every platform job passes `--release-skips-testing`, and a
+    static-runtime pin leaves Windows only its testing builds. Its Release leg
+    is on the tag axis because mac and Linux still build one, and `job build`
+    exits 1 there on every release while branch pipelines stay green.
+    """
+    warned = _generate_with_filter(tmp_path, caplog, _BOTH_RUNTIMES, _STATIC_RUNTIME_FILTER,
+                                   linux_arm=True)
+
+    # linux-arm is emitted here and reads Linux's answer, so the one warning
+    # is Windows': a job per platform that really empties, not per job block.
+    assert len(warned) == 1, warned
+    assert "'windows'" in warned[0], warned
+    assert "Release" in warned[0], warned
+
+
+@pytest.mark.parametrize("matrix_table,filter_table", [
+    # The default wheel_only pipeline: every platform builds the tag's leg.
+    pytest.param(WHEEL_ONLY, "", id="no-filter"),
+    pytest.param(WHEEL_ONLY, '\n[filter]\nbuild_type = "Release"\n', id="release-pin"),
+    # The same pin from the other side -- Windows keeps its pybind build.
+    pytest.param(_BOTH_RUNTIMES, '\n[filter]\n"compiler.runtime" = "dynamic"\n',
+                 id="dynamic-runtime-pin"),
+    # Without wheel_only no job passes --release-skips-testing, so a release
+    # keeps the testing configurations and no leg is left empty.
+    pytest.param(None, _STATIC_RUNTIME_FILTER, id="not-wheel-only"),
+])
+def test_no_tag_leg_warning_when_every_job_builds_the_axis(tmp_path, caplog, matrix_table,
+                                                           filter_table):
+    """The warning stays off the pipelines whose tag legs all have something to build."""
+    assert _generate_with_filter(tmp_path, caplog, matrix_table, filter_table,
+                                 linux_arm=True) == []
+
+
+def test_a_job_the_filter_empties_is_not_also_warned_about_leg_by_leg(tmp_path, caplog):
+    """An os pin empties whole jobs, and the empty-matrix warning names the pin.
+
+    Those jobs' tag legs are empty too, but reporting them again here would
+    repeat that warning once per leg without naming what caused it.
+    """
+    warned = _generate_with_filter(tmp_path, caplog, WHEEL_ONLY,
+                                   '\n[filter]\nos = "Windows"\n')
+
+    assert warned == []
+    assert [r.getMessage() for r in caplog.records if "empty matrix" in r.getMessage()]
+
+
 def test_github_without_wheel_only_accepts_a_filter_a_release_would_empty(tmp_path):
     """The refusal is wheel_only's: without it no job applies the release rule.
 

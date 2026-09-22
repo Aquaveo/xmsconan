@@ -24,6 +24,7 @@ from xmsconan.generator_tools.build_filter import (
     ci_filter_effects,
     coverage_conflicts,
     empty_ci_jobs,
+    empty_release_legs,
     load_build_filter,
 )
 from xmsconan.generator_tools.output_plan import check_plan, describe_plan, write_plan
@@ -270,19 +271,41 @@ def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
     return jobs
 
 
-def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, context: dict) -> None:
+def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, context: dict,
+                           filter_effects: dict) -> None:
     """Warn about pipelines the ``[filter]`` table leaves unbuildable.
 
     Emptying a job is only reported, never fixed: the platform fan-out lives in
     separate job blocks rather than a matrix axis, so unlike ``build_type``
-    there is nothing for the generator to narrow.
+    there is nothing for the generator to narrow. The same holds a leg at a
+    time for a wheel_only tag pipeline, whose ``build_type`` axis is one list
+    shared by every platform job.
     """
-    for job_name in empty_ci_jobs(build_filter, ci_type, _emitted_ci_jobs(ci_type, context)):
+    emitted_jobs = _emitted_ci_jobs(ci_type, context)
+    empty_jobs = empty_ci_jobs(build_filter, ci_type, emitted_jobs)
+    for job_name in empty_jobs:
         LOGGER.warning(
             "The [filter] table excludes everything %r builds, leaving it with "
             "an empty matrix. Drop the setting from [filter], or stop "
             "generating it.", job_name,
         )
+
+    # Only a wheel_only GitHub workflow has both halves of this: jobs that pass
+    # `--release-skips-testing`, and a tag `build_type` axis unioned over the
+    # platforms rather than chosen per job. Warned rather than refused, like the
+    # empty job above -- the workflow still renders, and the platforms that do
+    # build the leg are unaffected.
+    if ci_type == "github" and context["ci_wheel_only"]:
+        for job_name, build_type in empty_release_legs(filter_effects, emitted_jobs, empty_jobs):
+            LOGGER.warning(
+                "A tag runs the %s leg -- some platform still builds it on a "
+                "release -- but the [filter] table leaves %r only testing "
+                "configurations there, and [matrix].wheel_only drops those on "
+                "a release (`xmsconan job build --release-skips-testing`). "
+                "That job's %s leg would match nothing and exit 1 on every "
+                "release, while branch pipelines stay green. Widen the filter, "
+                "or stop generating the job.", build_type, job_name, build_type,
+            )
 
     if not context["ci_coverage"]:
         return
@@ -589,7 +612,7 @@ def plan_ci(
     }
 
     if build_filter:
-        _warn_filter_conflicts(build_filter, config, ci_type, context)
+        _warn_filter_conflicts(build_filter, config, ci_type, context, filter_effects)
 
     # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"
