@@ -115,6 +115,35 @@
      bare tag push, or a draft) fails the step, with a message saying so,
      and an asset already on the Release fails it rather than being
      replaced. #>
+<# The build_type axis each platform job fans out over. Under wheel_only
+   the testing configurations that flag drops are the whole Debug half of
+   the matrix, since pybind_build_types defaults to Release: a Debug leg on
+   a tag matched nothing, and `job build` exited 1 on every platform job of
+   every release while branch pipelines, which are not releases, stayed
+   green. A tag pipeline's axis therefore leaves out the legs a release
+   empties -- the line GitLab draws by keeping its testing builds off a
+   tag -- and a branch pipeline keeps them, so the Debug suite still runs
+   on every push. The tag list is measured from the matrix rather than
+   assumed to be Release: a Debug wheel is not a testing configuration, so
+   a library naming Debug in pybind_build_types keeps that leg. One axis
+   serves all four jobs, so the list is a union over platforms: a leg only
+   one platform empties stays -- a static-runtime pin leaves Windows no
+   pybind build, and its Release leg still fails on a tag. A plain list
+   without wheel_only, where no job passes the flag, and whenever the two
+   lists agree. #>
+<% if ci_wheel_only and ci_release_build_types != ci_build_types %>
+<% set gh_build_type_axis = "${{ startsWith(github.ref, 'refs/tags/') && fromJSON('" ~ (ci_release_build_types | tojson) ~ "') || fromJSON('" ~ (ci_build_types | tojson) ~ "') }}" %>
+# The build_type axis below depends on the pipeline. A release drops the
+# testing configurations (`job build --release-skips-testing`), and under
+# [matrix].wheel_only a build type can hold nothing else, so a tag runs
+# only the build types some platform still builds on a release:
+#   tag:    << ci_release_build_types | join(", ") >>
+#   branch: << ci_build_types | join(", ") >>
+# See docs/USAGE.md §10.1.
+
+<% else %>
+<% set gh_build_type_axis = ci_build_types | tojson %>
+<% endif %>
 name: << display_name >>-CI
 
 on:
@@ -169,7 +198,7 @@ jobs:
       matrix:
         platform: [macos-15]
         python-version: << ci_mac_python_versions | tojson >>
-        build_type: << ci_build_types | tojson >>
+        build_type: << gh_build_type_axis >>
 
     env:
       MATRIX_NAME: ${{ matrix.platform }}-Clang${{ matrix.compiler-version }}-${{ matrix.build_type }}<< ci_mac_py_suffix >>
@@ -302,7 +331,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: << ci_build_types | tojson >>
+        build_type: << gh_build_type_axis >>
         python-version: << ci_linux_python_versions | tojson >>
 
     env:
@@ -425,7 +454,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: << ci_build_types | tojson >>
+        build_type: << gh_build_type_axis >>
         python-version: << ci_linux_python_versions | tojson >>
 
     env:
@@ -543,7 +572,7 @@ jobs:
         platform: [windows-2022]
         python-version: << ci_python_versions | tojson >>
         compiler-version: [17]
-        build_type: << ci_build_types | tojson >>
+        build_type: << gh_build_type_axis >>
 
     env:
       MATRIX_NAME: ${{ matrix.platform }}-VS${{ matrix.compiler-version }}-${{ matrix.build_type }}-py${{ matrix.python-version }}

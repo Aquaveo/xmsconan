@@ -88,6 +88,14 @@
 # job on one runner, so the packages are already in the cache that built
 # them and there is nothing to restore.
 
+# The build_type axis below depends on the pipeline. A release drops the
+# testing configurations (`job build --release-skips-testing`), and under
+# [matrix].wheel_only a build type can hold nothing else, so a tag runs
+# only the build types some platform still builds on a release:
+#   tag:    Release
+#   branch: Release, Debug
+# See docs/USAGE.md §10.1.
+
 name: XmsSnap-CI
 
 on:
@@ -142,7 +150,7 @@ jobs:
       matrix:
         platform: [macos-15]
         python-version: ["3.13"]
-        build_type: ["Release", "Debug"]
+        build_type: ${{ startsWith(github.ref, 'refs/tags/') && fromJSON('["Release"]') || fromJSON('["Release", "Debug"]') }}
 
     env:
       MATRIX_NAME: ${{ matrix.platform }}-Clang${{ matrix.compiler-version }}-${{ matrix.build_type }}
@@ -268,7 +276,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: ["Release", "Debug"]
+        build_type: ${{ startsWith(github.ref, 'refs/tags/') && fromJSON('["Release"]') || fromJSON('["Release", "Debug"]') }}
         python-version: ["3.13"]
 
     env:
@@ -383,7 +391,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build_type: ["Release", "Debug"]
+        build_type: ${{ startsWith(github.ref, 'refs/tags/') && fromJSON('["Release"]') || fromJSON('["Release", "Debug"]') }}
         python-version: ["3.13"]
 
     env:
@@ -498,7 +506,7 @@ jobs:
         platform: [windows-2022]
         python-version: ["3.13"]
         compiler-version: [17]
-        build_type: ["Release", "Debug"]
+        build_type: ${{ startsWith(github.ref, 'refs/tags/') && fromJSON('["Release"]') || fromJSON('["Release", "Debug"]') }}
 
     env:
       MATRIX_NAME: ${{ matrix.platform }}-VS${{ matrix.compiler-version }}-${{ matrix.build_type }}-py${{ matrix.python-version }}

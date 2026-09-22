@@ -467,6 +467,21 @@ def plan_ci(
             "split_tests or widen the filter to keep a testing configuration."
         )
 
+    # A wheel_only GitHub tag pipeline runs only the build types a release
+    # still builds on (ci_release_build_types, the template's tag axis). A
+    # filter can leave it none: `build_type = "Debug"` keeps the Debug
+    # testing build alone, and a release drops that too. The axis would then
+    # name no build type on the one pipeline that publishes -- fail
+    # generation rather than the first release.
+    if ci_type == "github" and config.matrix.get("wheel_only") and not filter_effects["release_build_types"]:
+        raise ValueError(
+            "build.toml sets [matrix].wheel_only with ci_type = \"github\", and its "
+            "[filter] leaves no configuration a release builds: a tag drops the "
+            "testing configurations, and those are all the filter keeps. The tag "
+            "pipeline would have no build_type to run and nothing to publish. "
+            "Widen the filter to keep the pybind build."
+        )
+
     from xmsconan import __version__ as xmsconan_version
 
     # Build template context
@@ -530,6 +545,11 @@ def plan_ci(
         "coverage_gate_exit_code": EXIT_GATE_FAILED,
         "coverage_python_version": _resolve_coverage_python_version(config),
         "ci_build_types": filter_effects["build_types"],
+        # The build types a release still builds on once its testing
+        # configurations are dropped, on any platform. A wheel_only GitHub
+        # workflow runs only these on a tag -- see the template -- so no
+        # build type runs there that every platform would leave empty.
+        "ci_release_build_types": filter_effects["release_build_types"],
         # One GitLab test job per staged testing configuration, each naming its
         # own artifact directory. Computed here rather than spelled
         # "<build_type>-testing" in the template: the label format is

@@ -294,6 +294,27 @@ def test_ci_build_types_returns_a_fresh_list():
     assert isinstance(DEFAULT_CI_BUILD_TYPES, tuple), "the default must not be mutable"
 
 
+@pytest.mark.parametrize("build_filter,matrix,expected", [
+    # Every plain-library configuration is a non-testing one, so a release
+    # keeps both legs.
+    pytest.param({}, None, ["Release", "Debug"], id="library-configurations"),
+    # wheel_only's Debug half is the Debug testing build alone.
+    pytest.param({}, {"wheel_only": True}, ["Release"], id="wheel-only"),
+    pytest.param({}, {"wheel_only": True, "pybind_build_types": ["Release", "Debug"]},
+                 ["Release", "Debug"], id="wheel-only-debug-wheel"),
+    # Intersected, not overwritten: a filter keeping only testing builds
+    # leaves a release nothing on either leg.
+    pytest.param({"options": {"testing": True}}, None, [], id="testing-required"),
+])
+def test_ci_release_build_types_keep_what_a_release_still_builds(build_filter, matrix, expected):
+    """A tag's legs are the build types left a configuration once testing is dropped.
+
+    Measured rather than assumed to be Release: whether a leg survives the
+    release rule depends on what ``[matrix]`` builds on it.
+    """
+    assert _effects(build_filter, matrix)["release_build_types"] == expected
+
+
 @pytest.mark.parametrize("build_filter,expected", [
     pytest.param({}, ["Release-testing", "Debug-testing"], id="no-filter"),
     pytest.param({"build_type": "Release"}, ["Release-testing"], id="pinned-release"),
