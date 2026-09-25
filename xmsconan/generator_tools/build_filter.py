@@ -17,7 +17,7 @@ does not emit steps the filter has made unbuildable.
 # 1. Standard python modules
 import collections
 import json
-from typing import Optional
+from typing import NamedTuple, Optional
 
 # 3. Aquaveo modules
 from xmsconan.build_toml import BuildToml
@@ -67,8 +67,25 @@ CI_JOB_SETTINGS = {
 #: CI platform name -> the key it has in the packager's platform matrix. The
 #: GitHub ``linux-arm`` job block shares Linux's entry: it differs by arch, and
 #: pybind variants are produced for every arch, so wheel survival is the same
-#: answer. ``windows_vs2019`` is absent because no generated pipeline builds it.
+#: answer -- except under an ``arch`` pin, which Linux's x86_64-only reference
+#: row cannot answer for an armv8 job. ``wheel_enabled`` still reads that row
+#: pinned, so ``arch = "armv8"`` drops linux-arm's wheel steps though its build
+#: makes a wheel; the per-platform split measured without the pin (see
+#: :data:`GITHUB_JOB_PLATFORMS`) does not share the gap. ``windows_vs2019`` is
+#: absent because no generated pipeline builds it.
 CI_WHEEL_PLATFORMS = {"mac": "darwin", "linux": "linux", "windows": "windows"}
+
+#: GitHub job block -> the :data:`CI_WHEEL_PLATFORMS` entry that answers for it.
+#: ``linux-arm`` reads Linux's: the two blocks differ by arch alone, and the
+#: runner produces Linux's configurations at its own arch. The packager's
+#: reference row for Linux is x86_64 only, though, so this holds only for an
+#: answer measured without the filter's ``arch`` pin -- which is how
+#: :func:`ci_filter_effects` measures the per-platform split. An ``arch = "armv8"``
+#: pin against that row would leave Linux nothing and report a working
+#: ``linux-arm`` job empty.
+GITHUB_JOB_PLATFORMS = {
+    "mac": "mac", "linux": "linux", "linux-arm": "linux", "windows": "windows",
+}
 
 #: What the two ``xmsconan coverage`` builds pin, keyed by the report each
 #: produces. Mirrors ``coverage_generator.run_coverage``; ``python_version`` is
@@ -217,6 +234,16 @@ def _reject_unbuildable_filter(build_filter: dict, python_versions, matrix=None)
         )
 
 
+def _builds_on_release(counts: dict) -> bool:
+    """Whether one platform's filter summary keeps anything a release builds.
+
+    ``testing_labels`` holds one entry per surviving testing configuration, so
+    the difference is exactly what ``xmsconan job build --release-skips-testing``
+    leaves.
+    """
+    return counts["total"] > len(counts["testing_labels"])
+
+
 def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
     """What a ``[filter]`` table does to the generated CI.
 
@@ -246,9 +273,11 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
 
     Returns:
         ``{'build_types': [...], 'release_build_types': [...],
+        'platform_build_types': {ci_platform: [...]},
+        'platform_release_build_types': {ci_platform: [...]},
         'wheel_enabled': {ci_platform: bool}, 'test_labels': [...]}``, with
-        ``wheel_enabled`` keyed by the CI platform
-        names in :data:`CI_WHEEL_PLATFORMS`. ``build_types``
+        the three per-platform entries keyed by the CI platform names in
+        :data:`CI_WHEEL_PLATFORMS`. ``build_types``
         is never empty for a filter that reached here: ``load_build_filter`` has
         already rejected one that matches nothing on every platform, so at least
         one candidate build type keeps a configuration.
@@ -266,6 +295,25 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
         static-runtime pin leaves Windows no pybind build. It *can* be
         empty -- a filter keeping only testing configurations -- and the
         caller refuses that rather than render an axis with nothing in it.
+
+        ``platform_build_types`` and ``platform_release_build_types`` split
+        those two answers per platform, which is what says whether a platform
+        really builds the legs the shared axes run it on. The unions are what
+        the template renders; the split is what :func:`empty_release_legs`
+        reads to find a GitHub job the tag axis would run against nothing, and
+        it differs from the unions in two ways besides being per platform.
+        It covers the :data:`CI_WHEEL_PLATFORMS` alone, where the unions also
+        count ``windows_vs2019``, which no GitHub job builds. And it is
+        measured without the filter's ``arch`` pin, so that ``linux`` can
+        answer for the ``linux-arm`` job too (:data:`GITHUB_JOB_PLATFORMS`):
+        the packager's Linux row is x86_64 only, and ``arch = "armv8"``
+        against it would report a job that builds as one that builds nothing.
+        Dropping the pin costs no other job its answer. Every other job block
+        runs at its own reference row's single arch, so a pin naming that arch
+        narrows nothing there, and a pin naming another empties the job
+        outright, which :func:`empty_ci_jobs` reports from the job's fixed
+        settings. :func:`empty_platform_jobs` reads ``platform_build_types``
+        for the jobs a pin those settings do not fix leaves nothing.
 
         ``test_labels`` names the Linux ``test_artifacts/<label>/`` directories
         the build stages, one per surviving testing configuration, and is what
@@ -297,6 +345,8 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
     # artifact directory.
     test_labels = []
     release_build_types = []
+    platform_build_types = {name: [] for name in CI_WHEEL_PLATFORMS}
+    platform_release_build_types = {name: [] for name in CI_WHEEL_PLATFORMS}
     for build_type in candidates:
         # Probing one build type at a time is what makes these answers per-leg
         # rather than global: the GitHub matrix drops a leg that keeps nothing,
@@ -307,17 +357,29 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
         if any(counts["total"] for counts in summary.values()):
             build_types.append(build_type)
         # What a release still builds on this leg, on any platform -- the
-        # same union build_types is. testing_labels holds one entry per
-        # surviving testing configuration, so the difference is exactly what
-        # `--release-skips-testing` leaves. Counted from this
-        # probe rather than from a second one with `testing = False` merged
-        # into the filter's options: a merge would overwrite a [filter] that
-        # pins `testing = true` instead of intersecting with it, and report a
-        # leg a release empties as one it keeps.
-        if any(counts["total"] > len(counts["testing_labels"]) for counts in summary.values()):
+        # same union build_types is. Counted from this probe rather than from
+        # a second one with `testing = False` merged into the filter's
+        # options: a merge would overwrite a [filter] that pins
+        # `testing = true` instead of intersecting with it, and report a leg
+        # a release empties as one it keeps.
+        if any(_builds_on_release(counts) for counts in summary.values()):
             release_build_types.append(build_type)
+        # The same two questions asked per platform, which the unions cannot
+        # answer: one build_type axis serves all four GitHub jobs, so a leg
+        # another platform still builds runs here against nothing. See
+        # empty_release_legs. Measured without an `arch` pin, so that Linux's
+        # x86_64-only row also answers for the armv8 linux-arm job (see the
+        # Returns section); the second probe is only paid when there is a pin.
+        split = summary
+        if "arch" in probe:
+            unpinned = {key: value for key, value in probe.items() if key != "arch"}
+            split = summarize_filter_matches(unpinned, python_versions, matrix)
         for name, matrix_platform in CI_WHEEL_PLATFORMS.items():
             pybind[name] += summary[matrix_platform]["pybind"]
+            if split[matrix_platform]["total"]:
+                platform_build_types[name].append(build_type)
+            if _builds_on_release(split[matrix_platform]):
+                platform_release_build_types[name].append(build_type)
         for label in summary[CI_WHEEL_PLATFORMS["linux"]]["testing_labels"]:
             if label not in test_labels:
                 test_labels.append(label)
@@ -325,6 +387,8 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
     return {
         "build_types": build_types,
         "release_build_types": release_build_types,
+        "platform_build_types": platform_build_types,
+        "platform_release_build_types": platform_release_build_types,
         "wheel_enabled": {name: count > 0 for name, count in pybind.items()},
         "test_labels": test_labels,
     }
@@ -620,6 +684,100 @@ def empty_ci_jobs(build_filter: dict, ci_type: str, emitted_jobs) -> list[str]:
         if any(key in settings and settings[key] != value for key, value in build_filter.items()):
             empty.append(job_name)
     return empty
+
+
+def empty_platform_jobs(filter_effects: dict, emitted_jobs) -> list[str]:
+    """Name the GitHub jobs whose platform the filter leaves no configuration on any leg.
+
+    :func:`empty_ci_jobs` reads the settings a job block fixes, so it misses a
+    pin those settings do not carry. ``"compiler.runtime" = "static"`` is the
+    case: the Windows block builds both runtimes, but msvc builds its pybind
+    module for the dynamic one alone, so beside ``options.pybind = true`` -- or
+    under ``[matrix].wheel_only``, whose runtimes default to dynamic only -- it
+    leaves Windows nothing on any leg, while mac and Linux, which declare no
+    runtime, keep theirs and keep the legs on the shared ``build_type`` axis.
+    Every one of that job's legs then exits 1, on branch pipelines and tags
+    alike. Only the measured configurations show it, and this reads them.
+
+    The measurement ignores an ``arch`` pin (see :func:`ci_filter_effects`), so
+    a job the pin empties is not named here; :func:`empty_ci_jobs` names it.
+    It also offers every platform the union of the ``[ci]`` Python versions
+    (:func:`ci_python_versions`), so an ``options.python_version`` pin naming
+    an ABI only another platform builds empties a job this does not name.
+
+    Args:
+        filter_effects: The :func:`ci_filter_effects` result, for its
+            per-platform ``platform_build_types``.
+        emitted_jobs: Names of the GitHub job blocks this generation writes.
+
+    Returns:
+        The subset of ``emitted_jobs`` left nothing to build, as names.
+    """
+    return [job_name for job_name in emitted_jobs
+            if not filter_effects["platform_build_types"][GITHUB_JOB_PLATFORMS[job_name]]]
+
+
+class EmptyReleaseLeg(NamedTuple):
+    """A leg the shared tag axis runs one GitHub job on, where a release builds nothing."""
+
+    job: str
+    build_type: str
+
+
+def empty_release_legs(filter_effects: dict, emitted_jobs) -> list[EmptyReleaseLeg]:
+    """Name the GitHub jobs a tag pipeline would run on a leg they build nothing on.
+
+    Only a ``[matrix].wheel_only`` GitHub workflow runs its platform jobs over a
+    shared per-leg tag axis, so only that caller asks. (GitLab's Windows job
+    passes ``--release-skips-testing`` too, but builds its whole matrix in one
+    job, with no axis to measure a leg against; it is not checked here.) There
+    every platform job runs ``xmsconan job build
+    --release-skips-testing``, which on a release ANDs its leg with
+    ``options.testing = False``, and the tag pipeline's ``build_type`` axis is
+    ``release_build_types`` -- a union over platforms, rendered once and shared
+    by all four jobs. A build type therefore stays on that axis when *any*
+    platform still builds it on a release, and the platforms that do not run it
+    against nothing. ``job build`` exits 1 on an empty match, deliberately, so
+    every release fails on that job while the branch pipelines -- which keep the
+    testing configurations, and so keep the leg non-empty -- stay green.
+
+    The filter that does it narrows one platform alone: with ``[matrix]
+    compiler_runtime = ["dynamic", "static"]``, ``[filter] "compiler.runtime" =
+    "static"`` leaves msvc its testing builds only, pybind modules being
+    dynamic-only, while Linux and macOS declare no ``compiler.runtime`` at all
+    and keep theirs. :func:`empty_ci_jobs` cannot see it: that compares the
+    filter against a job block's fixed ``CI_JOB_SETTINGS``, where the Windows
+    block really does build the static runtime -- just nothing a release keeps.
+
+    A job whose platform keeps no configuration at all is skipped: its branch
+    pipelines fail too, on every leg, and that is :func:`empty_platform_jobs`'
+    case, reported once as an empty job rather than here leg by leg. What that
+    leaves is exactly the jobs the paragraph above describes. A filter narrows
+    both build types alike -- the only per-platform difference in the
+    reference matrices is msvc's runtime, and it does not depend on the build
+    type -- so a platform left nothing on one leg another platform builds is
+    left nothing on all of them. Jobs an ``arch`` pin empties are not here either, since the split is
+    measured without it; :func:`empty_ci_jobs` reports those.
+
+    Args:
+        filter_effects: The :func:`ci_filter_effects` result, for its tag axis
+            and the per-platform split of it.
+        emitted_jobs: Names of the GitHub job blocks this generation writes.
+
+    Returns:
+        One :class:`EmptyReleaseLeg` per job and leg, in job order and then
+        axis order.
+    """
+    gaps = []
+    for job_name in emitted_jobs:
+        platform = GITHUB_JOB_PLATFORMS[job_name]
+        if not filter_effects["platform_build_types"][platform]:
+            continue
+        releases = filter_effects["platform_release_build_types"][platform]
+        gaps += [EmptyReleaseLeg(job_name, build_type)
+                 for build_type in filter_effects["release_build_types"]
+                 if build_type not in releases]
+    return gaps
 
 
 def coverage_conflicts(build_filter: dict, coverage_python_version: str = None) -> list:
