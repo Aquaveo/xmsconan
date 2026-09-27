@@ -63,17 +63,6 @@ def test_print_ascii_art_contains_banner(printer, captured):
     assert art[-1].rstrip().endswith("/_/")
 
 
-def test_print_ascci_art_prints_the_same_banner(printer, captured):
-    """The misspelled name is kept for one release and prints exactly what the new one prints."""
-    printer.print_ascii_art()
-    expected = captured[:]
-    captured.clear()
-
-    printer.print_ascci_art()
-
-    assert captured == expected
-
-
 # --- print_message ---
 
 

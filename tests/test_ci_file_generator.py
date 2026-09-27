@@ -4142,11 +4142,11 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workf
 
     ``xmsconan wheel-deploy`` uploads with the ``uv`` that xmsconan depends
     on, so nothing a generated job runs calls ``devpi`` any more. xmsconan
-    itself still depends on ``devpi-client`` for one release, for
-    ``--client devpi``, so the runner keeps receiving it through
-    ``pip install xmsconan`` until that goes; the install lines just stop
-    asking for it by name. ``toml`` lost its reader when xmsconan moved to
-    ``tomli`` and was still on the Windows install line.
+    no longer depends on ``devpi-client`` either, now that ``--client devpi``
+    is gone, so the runner does not receive it at all -- neither by name on
+    an install line nor through ``pip install xmsconan``. ``toml`` lost its
+    reader when xmsconan moved to ``tomli`` and was still on the Windows
+    install line.
     """
     toml_file = writer(tmp_path, **ci_flags)
     output_dir = tmp_path / "output"
