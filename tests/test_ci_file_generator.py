@@ -19,6 +19,7 @@ from .ci_helpers import (
     dispatched_commands,
     NON_JOB_SHAPE_KEYS,
     requirement_names,
+    runtime_dependencies,
     steps_running,
     uncommented_lines,
     WHEEL_ONLY,
@@ -4141,12 +4142,10 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workf
     """No install line names ``devpi-client`` or ``toml``.
 
     ``xmsconan wheel-deploy`` uploads with the ``uv`` that xmsconan depends
-    on, so nothing a generated job runs calls ``devpi`` any more. xmsconan
-    itself still depends on ``devpi-client`` for one release, for
-    ``--client devpi``, so the runner keeps receiving it through
-    ``pip install xmsconan`` until that goes; the install lines just stop
-    asking for it by name. ``toml`` lost its reader when xmsconan moved to
-    ``tomli`` and was still on the Windows install line.
+    on, so nothing a generated job runs calls ``devpi`` any more. ``toml``
+    lost its reader when xmsconan moved to ``tomli`` and was still on the
+    Windows install line. What ``pip install xmsconan`` brings without
+    naming it here is held by the test below.
     """
     toml_file = writer(tmp_path, **ci_flags)
     output_dir = tmp_path / "output"
@@ -4157,6 +4156,16 @@ def test_generated_ci_installs_no_devpi_client(tmp_path, writer, ci_flags, workf
     assert install_lines
     assert [line for line in install_lines if "devpi" in line] == []
     assert [line for line in install_lines if "toml" in requirement_names(line)] == []
+
+
+def test_xmsconan_does_not_depend_on_devpi_client():
+    """``pip install xmsconan`` brings no ``devpi-client`` onto the runner.
+
+    A generated install line names xmsconan, not its dependencies, so the
+    test above cannot see one; this reads them where they are declared.
+    ``--client devpi`` was the dependency's only reader.
+    """
+    assert [requirement for requirement in runtime_dependencies() if "devpi" in requirement.casefold()] == []
 
 
 @pytest.mark.parametrize("deploy", [pytest.param(True, id="deploy"), pytest.param(False, id="no-deploy")])

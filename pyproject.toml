@@ -28,8 +28,6 @@ classifiers = [
 ]
 dependencies = [
     "conan>=2",
-    # Kept for one release, for `xmsconan wheel-deploy --client devpi`.
-    "devpi-client",
     "jinja2",
     "setuptools-scm",
     "tabulate",

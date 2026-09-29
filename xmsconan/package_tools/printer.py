@@ -35,12 +35,6 @@ class Printer(object):
         self.printer(text)
         self.printer("\nVersion: %s" % version)
 
-    #: The misspelled name the method shipped under, kept for one release for
-    #: any caller outside this package that used it. A generated build.py is
-    #: not one: it calls ``builder.run()``, which reaches the printer inside
-    #: the same installed xmsconan.
-    print_ascci_art = print_ascii_art
-
     def print_message(self, title, body=""):
         """Print a message."""
         self.printer("\n >> %s\n" % title)

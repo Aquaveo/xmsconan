@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 from uv import find_uv_bin
@@ -268,37 +268,6 @@ def test_wheel_dir_holding_glob_metacharacters_is_read(mock_run, mock_uv, tmp_pa
 
 
 @patch_env(clear=True)
-@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
-def test_unknown_client_raises(mock_run, tmp_path):
-    """A client outside UPLOAD_CLIENTS is refused before anything runs."""
-    with pytest.raises(ValueError, match="Unknown upload client 'twine'"):
-        wheel_deploy(wheel_dir=_wheelhouse(tmp_path), url="https://x/", username="u", password="p",
-                     client="twine")
-
-    mock_run.assert_not_called()
-
-
-@patch_env(clear=True)
-@patch("xmsconan.ci_tools.wheel_deploy.subprocess.run")
-def test_devpi_client_keeps_the_previous_sequence(mock_run, tmp_path, capsys):
-    """--client devpi is the one-release fallback: the old three calls, and a warning."""
-    wheel_dir = _wheelhouse(tmp_path)
-
-    wheel_deploy(wheel_dir=wheel_dir, url="https://example.com/dev/", username="user", password="pass",
-                 client="devpi")
-
-    # In sequence, not assert_any_call: `use` selects the index `login`
-    # authenticates against and `upload` writes to, so the order is the
-    # behavior, and three order-free assertions would pass on any permutation.
-    assert mock_run.mock_calls == [
-        call(["devpi", "use", "https://example.com/dev/"], check=True),
-        call(["devpi", "login", "user", "--password", "pass"], check=True),
-        call(["devpi", "upload", "--from-dir", wheel_dir], check=True),
-    ]
-    assert "--client devpi" in capsys.readouterr().err
-
-
-@patch_env(clear=True)
 @patch("xmsconan.ci_tools.wheel_deploy.subprocess.run", side_effect=subprocess.CalledProcessError(1, "uv"))
 def test_propagates_called_process_error(mock_run, tmp_path):
     """Verify CalledProcessError propagates to caller."""
@@ -324,7 +293,7 @@ def test_main_has_no_password_flag(mock_deploy, monkeypatch, capsys):
 
 @patch("xmsconan.ci_tools.wheel_deploy.wheel_deploy")
 def test_main_reads_the_password_file(mock_deploy, monkeypatch, tmp_path):
-    """--password-file hands the file's content to wheel_deploy; the client defaults to uv."""
+    """--password-file hands the file's content to wheel_deploy."""
     password_file = tmp_path / "aquapi-password"
     password_file.write_text("s3cret\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", [
@@ -334,7 +303,7 @@ def test_main_reads_the_password_file(mock_deploy, monkeypatch, tmp_path):
     main()
 
     mock_deploy.assert_called_once_with(
-        wheel_dir="wh", url=None, username=None, password="s3cret", client="uv",
+        wheel_dir="wh", url=None, username=None, password="s3cret",
     )
 
 
@@ -351,16 +320,6 @@ def test_main_reports_an_unusable_password_file(mock_deploy, monkeypatch, tmp_pa
     assert exc_info.value.code == 2
     mock_deploy.assert_not_called()
     assert "password file not found" in capsys.readouterr().err
-
-
-@patch("xmsconan.ci_tools.wheel_deploy.wheel_deploy")
-def test_main_passes_the_client_through(mock_deploy, monkeypatch):
-    """--client devpi reaches wheel_deploy."""
-    monkeypatch.setattr(sys, "argv", ["xmsconan_wheel_deploy", "--client", "devpi"])
-
-    main()
-
-    assert mock_deploy.call_args.kwargs["client"] == "devpi"
 
 
 @patch("xmsconan.ci_tools.wheel_deploy.wheel_deploy",
@@ -390,10 +349,10 @@ def test_main_does_not_absorb_an_unrelated_value_error(mock_deploy, monkeypatch)
 
 
 @patch("xmsconan.ci_tools.wheel_deploy.wheel_deploy",
-       side_effect=FileNotFoundError(2, "No such file or directory", "devpi"))
+       side_effect=FileNotFoundError(2, "No such file or directory", "uv"))
 def test_main_reports_a_missing_upload_tool(mock_deploy, monkeypatch, capsys):
     """An upload tool that cannot be started is one line and exit 2."""
-    monkeypatch.setattr(sys, "argv", ["xmsconan_wheel_deploy", "--client", "devpi"])
+    monkeypatch.setattr(sys, "argv", ["xmsconan_wheel_deploy"])
 
     with pytest.raises(SystemExit) as exc_info:
         main()
@@ -423,7 +382,8 @@ def test_docs_describe_the_uv_publish_upload():
     assert "UV_PUBLISH_USERNAME" in section
     assert "UV_PUBLISH_PASSWORD" in section
     assert "--password-file" in section
-    assert "--client devpi" in section
+    # The fallback is gone: the docs must not describe it again.
+    assert "--client devpi" not in section
     assert "find_uv_bin" in section
 
     readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")

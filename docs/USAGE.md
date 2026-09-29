@@ -1004,11 +1004,6 @@ next to it (`uv.find_uv_bin()`), not whatever `uv` is first on `PATH`, so it
 is present wherever xmsconan is installed, a `uv tool install` or pipx layout
 included; a generated job needs nothing extra.
 
-`--client devpi` keeps the previous `devpi use` / `devpi login --password` /
-`devpi upload` sequence for one release. It is the last place xmsconan passes a
-password on a subprocess's command line, it prints a warning saying so, and it
-is removed in the release after this one.
-
 An empty wheel directory is an error, not a no-op: `uv publish` given no files
 would fall back to `dist/*`, and a deploy job that uploads nothing must not go
 green.

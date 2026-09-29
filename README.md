@@ -281,9 +281,7 @@ The upload is `uv publish`, with the username and password handed to it in its
 environment (`UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD`), so the password is
 never on a command line — not this process's (there is deliberately no
 `--password` flag, only `--password-file`, as with `conan-setup`) and not the
-child's. `--client devpi` keeps the old devpi-client path for one release; it is
-the last place a password went on a subprocess's argv. See `docs/USAGE.md` §13
-and §17.
+child's. See `docs/USAGE.md` §13 and §17.
 
 #### Conan Deploy
 

@@ -3,7 +3,7 @@
 Usage::
 
     xmsconan_wheel_deploy [--wheel-dir DIR] [--url URL] [--username USER]
-                          [--password-file PATH] [--client {uv,devpi}]
+                          [--password-file PATH]
 
 Credentials are resolved in order:
   1. CLI arguments (``--url``, ``--username``, ``--password-file``)
@@ -11,11 +11,10 @@ Credentials are resolved in order:
   3. ``~/.xmsconan.toml`` config file (see :mod:`xmsconan.ci_tools.credentials`)
 
 For this entry point the password never goes on a command line, in either
-direction -- except on the deprecated ``--client devpi`` path described
-below, which is the one place it still does.  There is no ``--password``
-flag, for the reason ``conan-setup`` has none: a process's argv is copied
-into shell history, ``ps`` output, and the Windows Event 4688 / Sysmon
-record that ships to the SIEM in cleartext.
+direction.  There is no ``--password`` flag, for the reason
+``conan-setup`` has none: a process's argv is copied into shell history,
+``ps`` output, and the Windows Event 4688 / Sysmon record that ships to
+the SIEM in cleartext.
 And the upload itself is ``uv publish``, which reads ``UV_PUBLISH_USERNAME``
 and ``UV_PUBLISH_PASSWORD`` from its environment, so the child gets the secret
 the way ``conan remote login`` gets ``CONAN_PASSWORD_<REMOTE>`` from
@@ -32,14 +31,6 @@ xmsconan -- installed next to this code, found with ``uv.find_uv_bin()``.
 Not whatever ``uv`` is first on ``PATH``: a ``uv tool install`` or pipx
 layout exposes only xmsconan's own entry points, and the manual VS2019 track
 runs ``xmsconan_wheel_deploy`` from exactly such an install.
-
-``--client devpi`` keeps the previous ``devpi use`` / ``devpi login
---password`` / ``devpi upload`` sequence for one release.  It is the last
-place xmsconan puts a password on a subprocess's argv, it says so on stderr
-every time it runs, and it goes away in the release after this one.  The two
-clients do not upload the same files: ``devpi upload --from-dir`` ships the
-whole directory, sdists and anything stale in it included, where the uv path
-ships exactly the ``*.whl`` :func:`_wheels_in` found.
 """
 import argparse
 import os
@@ -55,8 +46,6 @@ from xmsconan.ci_tools.credentials import (
     load_credentials,
     read_password_file,
 )
-
-UPLOAD_CLIENTS = ("uv", "devpi")
 
 
 class WheelDeployError(ValueError):
@@ -137,26 +126,7 @@ def _publish_with_uv(url, username, password, wheels):
     )
 
 
-def _publish_with_devpi(url, username, password, wheel_dir):
-    """Run the pre-uv devpi-client sequence.  Deprecated: the password is on argv."""
-    print(
-        "xmsconan wheel-deploy: --client devpi puts the password on `devpi login`'s "
-        "command line and is removed in the next release; drop the flag to upload "
-        "with `uv publish`.",
-        file=sys.stderr,
-    )
-    subprocess.run(["devpi", "use", url], check=True)
-    subprocess.run(
-        ["devpi", "login", username, "--password", password],
-        check=True,
-    )
-    subprocess.run(
-        ["devpi", "upload", "--from-dir", wheel_dir],
-        check=True,
-    )
-
-
-def wheel_deploy(wheel_dir="wheelhouse", *, url=None, username=None, password=None, client="uv"):
+def wheel_deploy(wheel_dir="wheelhouse", *, url=None, username=None, password=None):
     """Upload the wheels in *wheel_dir* to a devpi index.
 
     Everything after *wheel_dir* is keyword-only.  Four bare strings in a row,
@@ -175,24 +145,14 @@ def wheel_deploy(wheel_dir="wheelhouse", *, url=None, username=None, password=No
             then ``~/.xmsconan.toml``.
         password: devpi password.  Falls back to ``$AQUAPI_PASSWORD``,
             then ``~/.xmsconan.toml``.
-        client: ``"uv"`` runs ``uv publish`` with the credentials in its
-            environment.  ``"devpi"`` runs the previous devpi-client
-            sequence, which passes the password on ``devpi login``'s
-            command line; kept for one release.
 
     Raises:
         WheelDeployError: A credential is missing or is not a string, or
             *wheel_dir* holds no wheel.
         CredentialsError: ``~/.xmsconan.toml`` exists but cannot be used.
-        ValueError: *client* is not one of ``UPLOAD_CLIENTS``.
         FileNotFoundError: The upload tool is not installed.
         subprocess.CalledProcessError: The upload tool failed.
     """
-    if client not in UPLOAD_CLIENTS:
-        raise ValueError(
-            f"Unknown upload client {client!r}; expected one of {', '.join(UPLOAD_CLIENTS)}"
-        )
-
     creds = load_credentials()
     url = url or os.environ.get("AQUAPI_URL") or creds.get("url")
     username = username or os.environ.get("AQUAPI_USERNAME") or creds.get("username")
@@ -226,14 +186,10 @@ def wheel_deploy(wheel_dir="wheelhouse", *, url=None, username=None, password=No
                 f'~/.xmsconan.toml write it quoted: {name} = "..."'
             )
 
-    # The emptiness check applies to both clients: a deploy with nothing to
-    # upload is an error whichever tool would have run.
+    # A deploy with nothing to upload is an error, not a no-op: the caller
+    # asked for a publish and none happened.
     wheels = _wheels_in(wheel_dir)
-
-    if client == "devpi":
-        _publish_with_devpi(url, username, password, wheel_dir)
-    else:
-        _publish_with_uv(url, username, password, wheels)
+    _publish_with_uv(url, username, password, wheels)
 
 
 def _build_parser():
@@ -266,12 +222,6 @@ def _build_parser():
              "Falls back to $AQUAPI_PASSWORD, then ~/.xmsconan.toml. There is "
              "deliberately no --password: see the module docstring.",
     )
-    parser.add_argument(
-        "--client", choices=UPLOAD_CLIENTS, default="uv",
-        help="Upload tool (default: uv). 'devpi' keeps the previous devpi-client "
-             "sequence for one release; it passes the password on devpi login's "
-             "command line.",
-    )
     add_refused_password_flag(parser, env_var="AQUAPI_PASSWORD", section="aquapi")
     return parser
 
@@ -287,7 +237,6 @@ def main():
             url=args.url,
             username=args.username,
             password=password,
-            client=args.client,
         )
     except (CredentialsError, WheelDeployError) as exc:
         # Usage errors -- an unusable --password-file or ~/.xmsconan.toml, a
@@ -298,7 +247,7 @@ def main():
         # a usage error.
         parser.error(str(exc))
     except FileNotFoundError as exc:
-        # The uv package without its binary, or no `devpi` on PATH.
+        # The uv package installed without its binary.
         parser.error(f"could not start the upload tool: {exc}")
     except subprocess.CalledProcessError as exc:
         sys.exit(exc.returncode)
