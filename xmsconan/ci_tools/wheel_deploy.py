@@ -247,7 +247,7 @@ def main():
         # a usage error.
         parser.error(str(exc))
     except FileNotFoundError as exc:
-        # The uv package without its binary, or no `devpi` on PATH.
+        # The uv package installed without its binary.
         parser.error(f"could not start the upload tool: {exc}")
     except subprocess.CalledProcessError as exc:
         sys.exit(exc.returncode)

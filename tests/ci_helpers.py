@@ -175,12 +175,22 @@ def requirement_names(line):
     return names
 
 
-def ci_extra():
-    """The ``[ci]`` extra as pyproject.toml declares it: one requirement string per entry.
+def _project_table():
+    """pyproject.toml's ``[project]`` table.
 
     Read from the file rather than ``importlib.metadata``: an editable
     install's metadata is written at sync time, so an unsynced pyproject.toml
-    edit would be tested against the previous extra.
+    edit would be tested against the previous requirements.
     """
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-    return loads(pyproject.read_text(encoding="utf-8"))["project"]["optional-dependencies"]["ci"]
+    return loads(pyproject.read_text(encoding="utf-8"))["project"]
+
+
+def ci_extra():
+    """The ``[ci]`` extra as pyproject.toml declares it: one requirement string per entry."""
+    return _project_table()["optional-dependencies"]["ci"]
+
+
+def runtime_dependencies():
+    """The dependencies xmsconan declares: what every ``pip install xmsconan`` brings, one string per entry."""
+    return _project_table()["dependencies"]
