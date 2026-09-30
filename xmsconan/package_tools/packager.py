@@ -269,7 +269,8 @@ class XmsConanPackager(object):
 
     # The class's public defaults before the matrix moved to its own module;
     # kept as the module's own objects so an outside caller reading them here
-    # keeps working.
+    # keeps working. Reading only: resolution uses the module's values, so
+    # overriding these on a subclass no longer changes any default.
     DEFAULT_PYTHON_VERSIONS = build_matrix.DEFAULT_PYTHON_VERSIONS
     DEFAULT_PYBIND_BUILD_TYPES = build_matrix.DEFAULT_PYBIND_BUILD_TYPES
 

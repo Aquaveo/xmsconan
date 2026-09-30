@@ -1,4 +1,4 @@
-"""Tests for package_tools.packager."""
+"""Tests for package_tools.packager and the matrix module it delegates to."""
 import json
 import os
 from pathlib import Path
@@ -431,6 +431,20 @@ def test_module_generate_configurations_rejects_unknown_matrix_key():
     with pytest.raises(ValueError, match="compiler_runtimes"):
         build_matrix.generate_configurations(
             "linux", python_versions=["3.13"], matrix={"compiler_runtimes": ["dynamic"]})
+
+
+@patch_env(clear=True)
+def test_module_generate_configurations_makes_artifacts_dir_absolute():
+    """A relative ``artifacts_dir`` reaches ``[buildenv]`` absolute, as the packager's constructor makes it.
+
+    The recipe joins ``XMS_TEST_ARTIFACTS_DIR`` as it finds it while the
+    build runs in Conan's build folder, so a relative value would name a
+    directory under that folder.
+    """
+    configs = build_matrix.generate_configurations(
+        "linux", python_versions=["3.13"], artifacts_dir="artifacts")
+
+    assert {c["buildenv"]["XMS_TEST_ARTIFACTS_DIR"] for c in configs} == {os.path.abspath("artifacts")}
 
 
 @patch_env(clear=True)

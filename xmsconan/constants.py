@@ -136,7 +136,7 @@ def build_folder_for_generator(generator, kind, discriminators):
       first one's toolchain and the build links against the wrong runtime.
 
     ``compiler.version`` is deliberately not among them, though it is part of the
-    package id. Every matrix in ``XmsConanPackager.configurations`` pins exactly
+    package id. Every matrix in ``matrix.configurations`` pins exactly
     one, so it never separates two configurations in the same generated
     CMakePresets.json; the only exposure is building ``windows`` (msvc 194) and
     ``windows_vs2019`` (msvc 192) from one clone, and covering that would put the

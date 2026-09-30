@@ -343,7 +343,7 @@ def _reference_matrix(platform_name, python_versions=None, coverage=False, matri
         matrix=matrix,
         python_versions=list(python_versions) if python_versions else list(DEFAULT_PYTHON_VERSIONS),
         coverage=coverage,
-        artifacts_dir=os.path.abspath('artifacts'),
+        artifacts_dir='artifacts',
     )
 
 
@@ -690,9 +690,12 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
             configurations :func:`is_instrumented_configuration` selects.
             Never read from ``XMS_COVERAGE`` here; the packager's
             constructor does that.
-        artifacts_dir: An absolute directory exported as
-            ``XMS_TEST_ARTIFACTS_DIR`` in every configuration's
-            ``[buildenv]``, or None to leave the name out.
+        artifacts_dir: A directory exported as ``XMS_TEST_ARTIFACTS_DIR``
+            in every configuration's ``[buildenv]``, made absolute against
+            the current directory, or None to leave the name out. The
+            recipe joins the value as it finds it while the build runs in
+            Conan's build folder, where a relative path would name
+            somewhere else.
 
     Returns:
         The configurations.
@@ -712,6 +715,7 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
     # error whichever path reads it.
     python_versions = resolve_python_versions(python_versions)
     matrix = resolve_matrix(matrix)
+    artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
 
     # Get system_platform name
     auto_detected = system_platform is None
