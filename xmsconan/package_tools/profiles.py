@@ -4,9 +4,10 @@ Split out of :mod:`xmsconan.package_tools.packager`, which still re-exports
 the public names that were module-level there. Its class delegates its
 profile and preset methods here.
 
-Nothing here runs Conan or generates configurations. Every function takes
-configurations, or a :func:`plan_profiles` plan of them, from its caller,
-and reads nothing from the environment. Files are written only by
+Nothing here runs Conan, generates configurations or reads the environment.
+The queries and writers take configurations, or a :func:`plan_profiles` plan
+of them, from the caller; the two ``resolve_*`` functions take the
+``build.toml`` values as it spells them. Files are written only by
 :func:`serialize_profile`, :func:`write_profiles` and
 :func:`write_cmake_presets`, and only at the path the caller names.
 """
@@ -430,6 +431,8 @@ def plan_profiles(configurations, *, profile_conf=None, profile_variants=None):
         ValueError: When ``profile_variants`` fails
             :func:`resolve_profile_variants`.
     """
+    # Both resolvers return resolved input as an equal copy, so a caller that
+    # has already resolved (the packager's constructor) pays only a re-check.
     profile_conf = resolve_profile_conf(profile_conf)
     profile_variants = resolve_profile_variants(profile_variants)
 
@@ -483,7 +486,7 @@ def preset_name(configuration, variant_name=None, include_build_type=False):
 
 
 def plan_cmake_presets(plan, *, coverage=False):
-    """Return the CMakePresets.json document for this repository.
+    """Return the CMakePresets.json document for the profiles in ``plan``.
 
     Derived from the same plan as the profiles, so a preset and the profile
     that provisions it always name the same generator and build folder --
