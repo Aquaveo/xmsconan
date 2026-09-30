@@ -14,7 +14,7 @@ left the deploy restoring a path that no longer existed; this globs
 with what the build wrote. And the remote/query pairing was three literals in
 the template, where a toolchain bump makes ``-p compiler.version=194`` match
 nothing and the job publish nothing, green -- so it is one mapping here, over
-the version :func:`~xmsconan.package_tools.packager.only_msvc_version` reads
+the version :func:`~xmsconan.package_tools.matrix.only_msvc_version` reads
 from the matrix itself.
 
 The two halves are separately selectable because the two forges run them
@@ -46,7 +46,7 @@ from xmsconan.exit_codes import EXIT_OK
 from xmsconan.generator_tools.version import (FALLBACK_VERSION, is_release_version,
                                               resolve_version)
 from xmsconan.job_tools import common
-from xmsconan.package_tools.packager import only_msvc_version
+from xmsconan.package_tools.matrix import only_msvc_version
 
 #: Tarballs this job restores, in name order -- not newest-first or -last,
 #: which the names do not encode: sorted so two runs over the same artifacts

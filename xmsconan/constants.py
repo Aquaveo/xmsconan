@@ -73,7 +73,7 @@ VS2019_REMOTE_URL = f"{ARTIFACTORY_BASE_URL}/aquaveo-vs2019"
 #: :data:`VS2019_REMOTE_NAME` rather than to :data:`DEFAULT_REMOTE_NAME`.
 MSVC_VS2019_VERSION = "192"
 
-#: Key into :data:`xmsconan.package_tools.packager.configurations` selecting
+#: Key into :data:`xmsconan.package_tools.matrix.configurations` selecting
 #: the msvc 192 matrix.
 #:
 #: Named here rather than in one of its callers because there are now two:
@@ -85,7 +85,7 @@ MSVC_VS2019_VERSION = "192"
 VS2019_PLATFORM_KEY = "windows_vs2019"
 
 
-#: Key into :data:`xmsconan.package_tools.packager.configurations` selecting
+#: Key into :data:`xmsconan.package_tools.matrix.configurations` selecting
 #: the msvc 194 matrix -- the Windows one every job outside the VS2019 track
 #: builds and publishes.
 #:
@@ -161,7 +161,7 @@ def build_folder_for_generator(generator, kind, discriminators):
         suffix = "vs" if key.startswith("visual studio") else re.sub(r"[^a-z0-9]+", "-", key).strip("-")
     # Slug the discriminators the same way the generator suffix is slugged above.
     # Every value reaching here today is already path-safe -- fixed matrix enums
-    # plus a python version matched by `_PYTHON_VERSION_RE` -- but this is the one
+    # plus a python version matched by `matrix.PYTHON_VERSION_RE` -- but this is the one
     # place that can hold that true for the next axis someone adds.
     parts = [str(part) for part in discriminators if part]
     parts = [re.sub(r"[^A-Za-z0-9]+", "-", part).strip("-") for part in parts]

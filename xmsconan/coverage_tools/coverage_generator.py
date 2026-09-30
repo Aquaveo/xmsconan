@@ -57,7 +57,7 @@ from xmsconan.generator_tools.ci_file_generator import (
     _resolve_coverage_python_version,
 )
 from xmsconan.job_tools import xvfb
-from xmsconan.package_tools.packager import COVERAGE_PYBIND_BUILD_TYPE
+from xmsconan.package_tools.matrix import COVERAGE_PYBIND_BUILD_TYPE
 
 
 LOGGER = logging.getLogger(__name__)

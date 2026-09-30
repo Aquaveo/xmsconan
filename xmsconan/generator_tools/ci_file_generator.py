@@ -533,7 +533,7 @@ def plan_ci(
         "vs2019_platform_key": VS2019_PLATFORM_KEY,
         # Prose only, in the header on "Conan Build - Windows VS2019". No job
         # renders a `--package-query` any more: `xmsconan job deploy` composes
-        # it from packager.only_msvc_version, so the version the query names
+        # it from matrix.only_msvc_version, so the version the query names
         # cannot be one the matrix does not pin.
         "vs2019_msvc_version": MSVC_VS2019_VERSION,
         "ci_linux": config.ci.linux_enabled,

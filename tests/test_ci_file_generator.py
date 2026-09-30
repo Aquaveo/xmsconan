@@ -1558,7 +1558,7 @@ def _tool_export_name(toml_path, job, platform_key=None, platform="linux"):
     assertion rather than assumptions restated here. They are patched into
     ``os.environ`` as well as passed, because the packager resolves the ABI
     it fans pybind out over from the process environment
-    (``XmsConanPackager._resolve_python_versions``) rather than from anything
+    (``matrix.resolve_python_versions``) rather than from anything
     a caller hands it -- so a job's matrix is not reproducible without them.
     """
     tokens = _job_build_tokens(job)

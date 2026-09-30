@@ -131,7 +131,7 @@ LOGGER = logging.getLogger(__name__)
 #: CLI, the environment, nor ``~/.xmsconan.toml`` names one.
 DEFAULT_REMOTE_USERNAME = "aquaveo"
 
-#: Key into :data:`xmsconan.package_tools.packager.configurations`.  Aliases
+#: Key into :data:`xmsconan.package_tools.matrix.configurations`.  Aliases
 #: :data:`~xmsconan.constants.VS2019_PLATFORM_KEY`, which the GitLab generator
 #: also reads, so the workstation build and the generated pipeline cannot end
 #: up naming different matrices.

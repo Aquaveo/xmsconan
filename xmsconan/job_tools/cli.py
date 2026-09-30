@@ -30,7 +30,7 @@ from xmsconan.job_tools import common, pages, xvfb
 from xmsconan.job_tools.build import job_build
 from xmsconan.job_tools.deploy import job_deploy
 from xmsconan.job_tools.pages import job_coverage_pages
-from xmsconan.package_tools import packager
+from xmsconan.package_tools import matrix as build_matrix
 
 LOGGER = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def _add_build_arguments(parser):
              f"${common.BUILD_TYPE_VARIABLE} and the build.toml [filter].",
     )
     parser.add_argument(
-        "--platform", default=None, choices=sorted(packager.configurations),
+        "--platform", default=None, choices=sorted(build_matrix.configurations),
         help="Matrix to build. Default: detect from the running machine. "
              f"{VS2019_PLATFORM_KEY} also appends the VS2019 Conan remote, "
              "builds missing dependencies from source, and stages no wheel.",
@@ -151,7 +151,7 @@ def _add_build_arguments(parser):
 def _add_deploy_arguments(parser):
     """Flags for ``job deploy``."""
     parser.add_argument(
-        "--platform", default=None, choices=sorted(packager.configurations),
+        "--platform", default=None, choices=sorted(build_matrix.configurations),
         help="Matrix whose remote this publishes to. Default: detect from the "
              f"running machine. Only {VS2019_PLATFORM_KEY} changes the answer, "
              "sending its binaries to the VS2019 remote instead of the CI one.",

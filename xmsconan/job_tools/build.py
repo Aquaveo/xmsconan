@@ -30,6 +30,7 @@ from xmsconan.generator_tools.build_file_generator import generate_build_files
 from xmsconan.generator_tools.version import is_release_version, resolve_version
 from xmsconan.job_tools import common, xvfb
 from xmsconan.package_tools import packager
+from xmsconan.package_tools.matrix import config_label
 
 #: ``sys.platform`` prefix -> the segment naming it in an export tarball. The
 #: names are the ones the GitLab template rendered, so a pipeline's tarballs
@@ -57,7 +58,7 @@ def export_tarball_name(library_name, version, configurations, leg=None,
     only job is to keep two of them apart:
 
     * A job that named a leg builds one configuration, and its
-      :func:`~xmsconan.package_tools.packager.config_label` is what
+      :func:`~xmsconan.package_tools.matrix.config_label` is what
       distinguishes it -- two legs can share a build type (a library and a
       testing configuration both build Release) and an ABI is not a
       distinguisher at all for a library configuration, which has none.
@@ -71,7 +72,7 @@ def export_tarball_name(library_name, version, configurations, leg=None,
     """
     environ = os.environ if environ is None else environ
     if leg is not None and len(configurations) == 1:
-        discriminator = packager.config_label(configurations[0])
+        discriminator = config_label(configurations[0])
     else:
         python_version = environ.get(common.PYTHON_TARGET_VARIABLE)
         discriminator = f"py{python_version}" if python_version else None
@@ -100,7 +101,7 @@ def export_package_query(configurations, platform=None):
         ValueError: A Windows build whose configurations do not agree on a
             single ``compiler.version``. Saving unqueried is the failure this
             query exists to prevent, so there is nothing safe to fall back to
-            -- :func:`~xmsconan.package_tools.packager.only_msvc_version`,
+            -- :func:`~xmsconan.package_tools.matrix.only_msvc_version`,
             which the deploy's query and the generated template both read,
             raises on the same condition one layer up.
     """

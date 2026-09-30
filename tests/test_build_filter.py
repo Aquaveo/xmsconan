@@ -17,7 +17,7 @@ from xmsconan.generator_tools.build_filter import (
     GITHUB_JOB_PLATFORMS,
     load_build_filter,
 )
-from xmsconan.package_tools.packager import (
+from xmsconan.package_tools.matrix import (
     configurations,
     COVERAGE_PYBIND_BUILD_TYPE,
 )
