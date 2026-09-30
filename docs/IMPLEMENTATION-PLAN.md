@@ -2,29 +2,30 @@
 
 | | |
 |---|---|
-| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0–2.30.2; the current release is 2.31.0; #151–#153 on master are unreleased); Phase 5 exit criteria 1 and 2 met, 3 and 4 open; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
-| **Date** | 2026-09-03; status reconciled 2026-09-26 |
+| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0–2.30.2; the current release is 2.32.0, and nothing on master is unreleased); Phase 5 exit criteria 1 and 2 met, 3 and 4 open; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
+| **Date** | 2026-09-03; status reconciled 2026-09-29 |
 | **Inputs** | [REVIEW-2026-09-03.md](REVIEW-2026-09-03.md) (R1–R24, S1–S6) and [DESIGN-ci-job-commands.md](DESIGN-ci-job-commands.md) |
-| **Anchored to** | xmsconan `8084d9a` (the plan); master `e2a03c2` (the status) |
+| **Anchored to** | xmsconan `8084d9a` (the plan); master `c3933b7` (the status) |
 
 ## Status
 
-Reconciled against master `e2a03c2` on 2026-09-26. Every commit between the
-anchor and master is one of #134–#146 or #150–#153. Each row marked Done
-was checked against the code, not only against the PR title. This pass
-added #152 and #153 to 5.4, re-measured criterion 3, and re-checked every
-line anchor a commit since `f4a7de8` could have moved: the two
-`docs/USAGE.md` anchors below each shifted by one line, and the GitLab
-template's did not move, because nothing since has touched that file.
+Reconciled against master `c3933b7` on 2026-09-29. Every commit between the
+anchor and master is one of #134–#146, #150–#153 or #158. Each row marked
+Done was checked against the code, not only against the PR title. This pass
+added #158, which removed both one-release fallbacks, and the 2.32.0
+release; re-measured criterion 3; and re-checked every line anchor into a
+file #158 touched. One `docs/USAGE.md` anchor below moved up five lines,
+and the two into `wheel_deploy.py` and `printer.py` went with the code
+they pointed at.
 
 | Phase | Status | Landed as |
 |---|---|---|
 | 0 | Not tracked here — an owner action in GitLab settings, which git does not record | — |
 | 1 | Done | #134 `1d6844a` |
-| 2a | Done; the `--client devpi` fallback is still in place | #135 `4298061` |
+| 2a | Done; the `--client devpi` fallback removed | #135 `4298061`; removal #158 `c3933b7` |
 | 2b | Done; S6 as written superseded by #143 | #136 `e10ab49`, #143 `81d5b1e` |
 | 3 | Done | #137 `eaa2ca0` |
-| 4 | Done; the `print_ascci_art` alias is still in place | #138 `0eef40d` |
+| 4 | Done; the `print_ascci_art` alias removed | #138 `0eef40d`; removal #158 `c3933b7` |
 | 5.1 | Done | #139 `815a4d4` |
 | 5.2 | Done | #140 `94a6158` |
 | 5.3 | Done | #141 `e62763b` |
@@ -37,10 +38,14 @@ template's did not move, because nothing since has touched that file.
 2.29.2 predates the `xmsconan job` CLI. 2.30.1 (`81d5b1e`) adds #143, and
 2.30.2 (`7195bc0`) adds #144–#146. 2.31.0 (`1753643`) adds #150: Node 24
 action versions, and `actions/github-script` in place of the archived
-`upload-release-asset`. Nothing after it is released yet: #151 (`f4a7de8`),
-which changes only the repo's Claude Code configuration, #152 (`f07979c`)
-and #153 (`e2a03c2`) all wait for the next tag. One of them is a bug fix,
-so that tag is due — see item 2 below.
+`upload-release-asset`. 2.32.0 (`c3933b7`, tagged 2026-09-29) adds #151
+(`f4a7de8`), which changes only the repo's Claude Code configuration,
+#152 (`f07979c`), #153 (`e2a03c2`) and #158 (`c3933b7`), which removed
+both one-release fallbacks. It stayed a minor rather than 3.0.0 by
+decision. A generated job pins
+`xmsconan[ci]>=<generating version>,<<major+1>`, so 3.0.0 would have
+reached no consumer until each was regenerated, and nothing generated
+used either removed name. Nothing on master is unreleased.
 
 **5.4's tag regression.** `--release-skips-testing` reached the GitHub
 template in 5.4 itself: `a492ba1` is the first commit to put it in
@@ -53,7 +58,7 @@ release while branch pipelines, which resolve `0.0.0`, stayed green.
 (`e2a03c2`) adds a generation-time warning for the case one platform
 empties a leg the shared axis cannot narrow. No workspace consumer had hit
 it: `xmsvtk` is the only repository setting `wheel_only`, and it generates
-GitLab.
+GitLab. Both fixes shipped in 2.32.0.
 
 **Consumer verification**, against 2.30.1, on a branch and on a tag per
 host: xmsgrid `9.1.2` on GitHub (15 legs; wheels, Conan packages and release
@@ -74,34 +79,32 @@ assets uploaded by the `actions/github-script` step on its first run. Both
 Linux Release legs first failed on a 504 from the wheel index and passed
 on a re-run.
 
+Against 2.32.0: none yet. Every generated job installs `xmsconan[ci]` with
+`--upgrade` under a `<3` ceiling, so each consumer runs it on its next
+pipeline without regenerating.
+
 ### What's left, in order
 
 1. **Close Phase 5** against its [exit criteria](#phase-5-exit-criteria):
    criterion 1 is met (#146, which also did 7.6), and criterion 2 was run
    on a workstation on 2026-09-22. Decide criteria 3 and 4.
-2. **Remove the two one-release fallbacks**, then cut the release. Both
-   have shipped in every release from 2.30.0 through 2.31.0, and master
-   already holds two unreleased commits, so the next tag is due
-   regardless. Order matters — remove them first and that tag carries the
-   removals; tag first and both ship in a fourth release after being
-   promised for one:
-   - 2a.1's `--client devpi` (`ci_tools/wheel_deploy.py:270`). Its module
-     docstring calls it the one place this entry point still puts the
-     password on a command line, and the warning it prints says it goes in
-     the next release.
-   - 4.4's `print_ascci_art` alias (`package_tools/printer.py:42`).
-3. **Phase 6**, starting with 6.1 (R1). It changes no template, so no
+2. **Phase 6**, starting with 6.1 (R1). It changes no template, so no
    consumer needs regenerating.
-4. **Phase 7**, the rows still open.
-5. **Phase 0** stays with the project owner.
+3. **Phase 7**, the rows still open.
+4. **Phase 0** stays with the project owner.
 
 ### Outside the plan
 
-- `docs/USAGE.md:708` and `:1384` say only the tag-time deploy needs
+- `docs/USAGE.md:708` and `:1379` say only the tag-time deploy needs
   `CONAN_LOGIN_USERNAME_AQUAVEO_VS2019` / `CONAN_PASSWORD_AQUAVEO_VS2019`.
   #130, closed unmerged on 2026-09-02 with no comment, said the msvc 192
   build needs them too. One of the two is wrong; unresolved.
 - #78 (`xmsconan format`) is open and is not part of this plan.
+- `xmsconan publish --password` (`ci_tools/publish.py:240`) still takes
+  the devpi password on `publish`'s own command line. 2a.1 closed that
+  gap for `wheel-deploy` only, so since #158 removed `--client devpi`,
+  this is the last password xmsconan accepts on argv. USAGE §15
+  documents none of `publish`'s `--url`, `--username` or `--password`.
 - Node 20 in the generated GitHub workflows: #150 (`1753643`) moved them
   to `actions/checkout@v7`, `actions/setup-python@v7`,
   `actions/upload-artifact@v7`, `actions/github-script@v9` and
@@ -192,8 +195,9 @@ Phase 5 rewrites.
 ### PR 2a — tool side
 
 **Status:** Done — #135 (`4298061`). The `--client devpi` fallback that
-2a.1 keeps "for one release" is still in place and is now due for removal
-(see [What's left](#whats-left-in-order)).
+2a.1 kept "for one release" shipped in 2.30.0 through 2.31.0. #158
+(`c3933b7`) removed it along with the `devpi-client` dependency, and
+2.32.0 released the removal.
 
 | # | Item | Change | Test |
 |---|---|---|---|
@@ -247,8 +251,8 @@ Size: M. Docs: USAGE §4 (`--check`), `CONTRIBUTING`-style note in README on
 ## Phase 4 — CLI consolidation (mechanical)
 
 **Status:** Done — #138 (`0eef40d`). The `print_ascci_art` alias that 4.4
-keeps "for one release" is still in place (`package_tools/printer.py:42`)
-and is now due for removal.
+kept "for one release" shipped in 2.30.0 through 2.31.0. #158 (`c3933b7`)
+removed it, and 2.32.0 released the removal.
 
 One PR. Pure refactor; a prerequisite for Phase 5 because the `job`
 commands need one logging setup and one exit-code vocabulary to build on.
@@ -358,12 +362,12 @@ Size: M. Verify on one GitHub consumer (`xmscore`) on a branch and a tag.
 
 ### Phase 5 exit criteria
 
-| Criterion | Status (2026-09-26) |
+| Criterion | Status (2026-09-29) |
 |---|---|
 | Both templates contain no `pip install` other than the `[ci]` line, no `export`, no `xvfb-run`, no `--filter`, no inline HTML. | **Met** — #146 (`7195bc0`) removed the three `pip install --upgrade pip` lines. No `xvfb-run`, no inline HTML, and `--filter` survives only in comments. Two recorded exceptions, each explained by a comment in the template: `export CTEST_PARALLEL_LEVEL` in the instrumented coverage jobs (`gitlab-ci.yml.jinja:144`, `:843`), which follows from dropping `job coverage --leg/--report`; and `pip install … flake8-aquaveo` in the GitLab lint job (`:500`), kept out of `[ci]` so the GitHub flake job does not gain the AQU rules. Revisit that one if the two hosts should lint alike. |
 | `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.13 xmsconan job build` on a workstation produces the same `.export/` tarball name a CI leg does. | **Met**, except the platform segment, which differs by design. On 2026-09-22, `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.14 xmsconan job build --export` with xmsconan 2.31.0, on macOS, in xmsconstraint checked out at tag `6.0.14`, wrote `xmsconstraint-macos-py3.14-6.0.14.tar.gz`. That tag's pipeline (xmsconan 2.30.1; `export_tarball_name` is unchanged since) wrote `xmsconstraint-linux-py3.14-6.0.14.tar.gz` and `xmsconstraint-windows-py3.14-6.0.14.tar.gz`. The library, `py<version>` and version segments agree. The version agrees only because the checkout was exactly on a clean tag; anywhere else setuptools-scm gives a dev version. The platform segment comes from `sys.platform`, and only GitLab jobs write `.export/` (GitHub legs deploy with `--from-cache`), none of them on macOS, so a literal match needs a Linux or Windows workstation. The command as worded needs `--export` to write a tarball at all, and 3.14 stood in for 3.13 because the tag pipeline built only 3.10 and 3.14. A workstation also needs a Conan login for the `aquaveo` remote, which refuses anonymous reads. |
-| `tests/test_ci_file_generator.py` shrinks; the removed assertions are covered by `job_tools` unit tests and the golden files. | **Not met**, and moving away from it: 3300 lines at `8084d9a`, 3977 at `f4a7de8`, 4070 after #152, 4199 on master (`e2a03c2`) — +899 since the anchor, and every GitHub template change adds to it. Decide whether to move the assertions the golden files already pin, or retire the criterion. |
-| Open questions in the design §7 are each answered in the PR that touches them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in 5.2, upload client in 2a). | **4 of 5.** Name: `xmsconan job`. Pin policy: `>=X,<X+1`. Release asset: stayed on `upload-release-asset` in 5.4, and #150 (`1753643`) later replaced it with `actions/github-script@v9`, since `upload-release-asset` is archived. Upload client: `uv publish`. `build.py` is still open — the design says keep it for one release cycle, then decide — and `build.py.jinja` still ships. |
+| `tests/test_ci_file_generator.py` shrinks; the removed assertions are covered by `job_tools` unit tests and the golden files. | **Not met**, and moving away from it: 3300 lines at `8084d9a`, 3977 at `f4a7de8`, 4070 after #152, 4199 at `e2a03c2`, 4208 on master (`c3933b7`) — +908 since the anchor, and every GitHub template change adds to it. Decide whether to move the assertions the golden files already pin, or retire the criterion. |
+| Open questions in the design §7 are each answered in the PR that touches them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in 5.2, upload client in 2a). | **4 of 5.** Name: `xmsconan job`. Pin policy: `>=X,<X+1`. Release asset: stayed on `upload-release-asset` in 5.4, and #150 (`1753643`) later replaced it with `actions/github-script@v9`, since `upload-release-asset` is archived. Upload client: `uv publish`, the only one since #158 (`c3933b7`) removed `--client devpi`. `build.py` is still open — the design says keep it for one release cycle, then decide — and `build.py.jinja` still ships. |
 
 ---
 
