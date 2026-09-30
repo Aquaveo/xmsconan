@@ -1,4 +1,4 @@
-"""Tests for package_tools.packager and the matrix module it delegates to."""
+"""Tests for package_tools.packager and the matrix and profiles modules it delegates to."""
 import json
 import os
 from pathlib import Path
@@ -18,7 +18,7 @@ from xmsconan.constants import (
     VS2019_REMOTE_NAME,
 )
 from xmsconan.job_tools.common import SKIP_CXX_TESTS_VARIABLE
-from xmsconan.package_tools import matrix as build_matrix, packager as packager_module
+from xmsconan.package_tools import matrix as build_matrix, packager as packager_module, profiles
 from xmsconan.package_tools.matrix import (
     config_label,
     configurations,
@@ -28,7 +28,8 @@ from xmsconan.package_tools.matrix import (
     summarize_filter_matches,
     validate_filter_dict,
 )
-from xmsconan.package_tools.packager import PUBLIC_BUILDENV_KEYS, XmsConanPackager
+from xmsconan.package_tools.packager import XmsConanPackager
+from xmsconan.package_tools.profiles import PUBLIC_BUILDENV_KEYS
 from .utils import patch_env
 
 # --- the matrix's names, re-exported ---
@@ -76,6 +77,36 @@ def test_packager_resolve_matrix_delegates_to_the_matrix():
     assert XmsConanPackager.resolve_matrix(table) == build_matrix.resolve_matrix(table)
     with pytest.raises(ValueError, match="compiler_runtimes"):
         XmsConanPackager.resolve_matrix({"compiler_runtimes": ["dynamic"]})
+
+
+# --- the profiles module's names, re-exported ---
+
+
+@pytest.mark.parametrize("name", ["DEFAULT_PROFILE_CONF", "ProfilePlan", "PUBLIC_BUILDENV_KEYS"])
+def test_packager_reexports_the_profiles_module(name):
+    """A name that moved to the profiles module still resolves from packager, as the same object."""
+    assert getattr(packager_module, name) is getattr(profiles, name)
+
+
+_WINDOWS_PYTHON_DEBUG = {
+    "os": "Windows", "build_type": "Debug", "compiler.runtime": "static",
+    "options": {"pybind": True, "testing": False, "python_version": "3.13"},
+}
+
+
+@pytest.mark.parametrize("name,args,kwargs", [
+    pytest.param("platform_key", (_WINDOWS_PYTHON_DEBUG,), {}, id="platform_key"),
+    pytest.param("configuration_kind", (_WINDOWS_PYTHON_DEBUG,), {}, id="configuration_kind"),
+    pytest.param("variant_applies", ({"name": "vs", "kinds": ["python"]}, _WINDOWS_PYTHON_DEBUG), {},
+                 id="variant_applies"),
+    pytest.param("variant_applies", ({"name": "vs", "platforms": ["linux"]}, _WINDOWS_PYTHON_DEBUG), {},
+                 id="variant_does_not_apply"),
+    pytest.param("profile_name", (_WINDOWS_PYTHON_DEBUG,), {}, id="profile_name"),
+    pytest.param("preset_name", (_WINDOWS_PYTHON_DEBUG, "vs"), {"include_build_type": True}, id="preset_name"),
+])
+def test_packager_class_queries_delegate_to_the_profiles_module(name, args, kwargs):
+    """Each class-level profile query answers as the module function it delegates to."""
+    assert getattr(XmsConanPackager, name)(*args, **kwargs) == getattr(profiles, name)(*args, **kwargs)
 
 
 # --- get_current_arch ---
@@ -2024,7 +2055,7 @@ def _linux_packager(**kwargs):
 ])
 def test_profile_name(configuration, expected):
     """Configuration maps to the xmsvtk-style profile file stem."""
-    assert XmsConanPackager.profile_name(configuration) == expected
+    assert profiles.profile_name(configuration) == expected
 
 
 def test_write_profiles_writes_one_file_per_configuration(tmp_path):
@@ -2274,7 +2305,7 @@ def test_serialize_profile_refuses_a_buildenv_name_outside_the_allow_list(tmp_pa
     path = tmp_path / "leaky.txt"
 
     with pytest.raises(ValueError, match="AQUAPI_PASSWORD"):
-        packager._serialize_profile(configuration, str(path))
+        profiles.serialize_profile(configuration, str(path), profile_options={})
 
     assert not path.exists()
 
@@ -2299,15 +2330,15 @@ VS_VARIANT = {
 ])
 def test_variant_applies(configuration, expected):
     """A variant only matches the platforms and kinds it declares."""
-    assert XmsConanPackager.variant_applies(VS_VARIANT, configuration) is expected
+    assert profiles.variant_applies(VS_VARIANT, configuration) is expected
 
 
 def test_variant_without_filters_applies_everywhere():
     """Omitting platforms/kinds means the variant is unrestricted."""
     variant = {"name": "alt", "conf": {}}
 
-    assert XmsConanPackager.variant_applies(variant, {"os": "Linux", "options": {}})
-    assert XmsConanPackager.variant_applies(variant, {"os": "Windows", "options": {"testing": True}})
+    assert profiles.variant_applies(variant, {"os": "Linux", "options": {}})
+    assert profiles.variant_applies(variant, {"os": "Windows", "options": {"testing": True}})
 
 
 @pytest.mark.parametrize("configuration,expected", [
@@ -2318,7 +2349,7 @@ def test_variant_without_filters_applies_everywhere():
 ])
 def test_configuration_kind(configuration, expected):
     """Kind is derived from the testing/pybind options, testing taking precedence."""
-    assert XmsConanPackager.configuration_kind(configuration) == expected
+    assert profiles.configuration_kind(configuration) == expected
 
 
 def test_write_profiles_emits_scoped_variant_profiles(tmp_path):
@@ -2734,6 +2765,30 @@ def test_valid_profile_variant_is_accepted():
     packager = XmsConanPackager("xmscore", profile_variants=[VS_VARIANT])
 
     assert packager._profile_variants == [VS_VARIANT]
+
+
+def test_module_plan_profiles_resolves_raw_input():
+    """The module ``plan_profiles`` resolves ``profile_conf`` and ``profile_variants`` itself.
+
+    As the packager's constructor does, so a caller without a packager can
+    hand it the values as ``build.toml`` spells them: no ``[conf]`` table
+    for the default, and the variant list as written.
+    """
+    packager = _packager_for("windows", profile_variants=[VS_VARIANT])
+
+    plan = profiles.plan_profiles(packager.configurations, profile_variants=[VS_VARIANT])
+
+    assert plan == packager.plan_profiles()
+    assert {entry.conf["tools.cmake.cmaketoolchain:generator"] for entry in plan} == {
+        "Ninja Multi-Config", "Visual Studio 17 2022"}
+
+
+def test_module_plan_profiles_rejects_an_unknown_variant_key():
+    """A raw variant list gets the same validation the packager's constructor gives it."""
+    packager = _linux_packager()
+
+    with pytest.raises(ValueError, match="unknown key"):
+        profiles.plan_profiles(packager.configurations, profile_variants=[{"name": "vs", "platform": ["linux"]}])
 
 
 # --- colliding profile stems ---
