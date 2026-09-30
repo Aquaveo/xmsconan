@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0–2.30.2; the current release is 2.32.0, and nothing on master is unreleased); Phase 5 exit criteria 1 and 2 met, 3 and 4 open; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
+| **Status** | In progress — Phases 1–5 merged and released (xmsconan 2.30.0–2.30.2; the current release is 2.32.0, and nothing on master is unreleased); Phase 5 exit criteria 1, 2 and 4 met, 3 open; Phases 6 and 7 open; Phase 0 is an owner action this doc does not track. See [Status](#status). |
 | **Date** | 2026-09-03; status reconciled 2026-09-29 |
 | **Inputs** | [REVIEW-2026-09-03.md](REVIEW-2026-09-03.md) (R1–R24, S1–S6) and [DESIGN-ci-job-commands.md](DESIGN-ci-job-commands.md) |
 | **Anchored to** | xmsconan `8084d9a` (the plan); master `c3933b7` (the status) |
@@ -16,7 +16,9 @@ added #158, which removed both one-release fallbacks, and the 2.32.0
 release; re-measured criterion 3; and re-checked every line anchor into a
 file #158 touched. One `docs/USAGE.md` anchor below moved up five lines,
 and the two into `wheel_deploy.py` and `printer.py` went with the code
-they pointed at.
+they pointed at. A second pass the same day recorded the decision to keep
+the generated `build.py` (criterion 4), and found that one of 5.2's rows,
+`publish.py`, never landed.
 
 | Phase | Status | Landed as |
 |---|---|---|
@@ -27,10 +29,10 @@ they pointed at.
 | 3 | Done | #137 `eaa2ca0` |
 | 4 | Done; the `print_ascci_art` alias removed | #138 `0eef40d`; removal #158 `c3933b7` |
 | 5.1 | Done | #139 `815a4d4` |
-| 5.2 | Done | #140 `94a6158` |
+| 5.2 | Done, except the `publish.py` row | #140 `94a6158` |
 | 5.3 | Done | #141 `e62763b` |
 | 5.4 | Done; two parts dropped by decision; release step replaced by #150; the tag regression it introduced fixed by #152–#153 | #142 `a492ba1`; follow-ups #144 `1078397`, #145 `94664ea`, #150 `1753643`, #152 `f07979c`, #153 `e2a03c2` |
-| 5, exit | Criteria 1 and 2 met; 3 and 4 open | #146 `7195bc0`; see [Phase 5 exit criteria](#phase-5-exit-criteria) |
+| 5, exit | Criteria 1, 2 and 4 met; 3 open | #146 `7195bc0`; see [Phase 5 exit criteria](#phase-5-exit-criteria) |
 | 6 | Not started | — |
 | 7 | 7.6 done; 7.1, 7.9 and 7.10 partly done; the rest not started | 7.6: #146 `7195bc0` |
 
@@ -87,7 +89,8 @@ pipeline without regenerating.
 
 1. **Close Phase 5** against its [exit criteria](#phase-5-exit-criteria):
    criterion 1 is met (#146, which also did 7.6), and criterion 2 was run
-   on a workstation on 2026-09-22. Decide criteria 3 and 4.
+   on a workstation on 2026-09-22. Criterion 4 was decided on 2026-09-29:
+   keep `build.py`. Decide criterion 3.
 2. **Phase 6**, starting with 6.1 (R1). It changes no template, so no
    consumer needs regenerating.
 3. **Phase 7**, the rows still open.
@@ -100,6 +103,10 @@ pipeline without regenerating.
   #130, closed unmerged on 2026-09-02 with no comment, said the msvc 192
   build needs them too. One of the two is wrong; unresolved.
 - #78 (`xmsconan format`) is open and is not part of this plan.
+- Two comments still say the GitLab Windows builds run `build.py`:
+  `gitlab-ci.yml.jinja:399` ("the same `build.py` the msvc 194 job runs")
+  and `build_tools/vs2019_build.py:11`. Both jobs run `xmsconan job build`
+  (`gitlab-ci.yml.jinja:387-389` and `:485`).
 - `xmsconan publish --password` (`ci_tools/publish.py:240`) still takes
   the devpi password on `publish`'s own command line. 2a.1 closed that
   gap for `wheel-deploy` only, so since #158 removed `--client devpi`,
@@ -308,7 +315,11 @@ No build behavior changes. Size: M.
 
 ### PR 5.2 — `job build` on GitLab (+ `job test`, `job package`, `job lint`)
 
-**Status:** Done — #140 (`94a6158`).
+**Status:** Done — #140 (`94a6158`), except the `publish.py` row, which
+did not land. `publish` still runs `build.py` for its build step
+(`ci_tools/publish.py:164`); only its deploy steps call `wheel_deploy` and
+`conan_deploy` in-process. Keeping `build.py` (criterion 4) keeps that path
+working, so closing Phase 5 does not wait on it.
 
 | Change | Test |
 |---|---|
@@ -367,7 +378,7 @@ Size: M. Verify on one GitHub consumer (`xmscore`) on a branch and a tag.
 | Both templates contain no `pip install` other than the `[ci]` line, no `export`, no `xvfb-run`, no `--filter`, no inline HTML. | **Met** — #146 (`7195bc0`) removed the three `pip install --upgrade pip` lines. No `xvfb-run`, no inline HTML, and `--filter` survives only in comments. Two recorded exceptions, each explained by a comment in the template: `export CTEST_PARALLEL_LEVEL` in the instrumented coverage jobs (`gitlab-ci.yml.jinja:144`, `:843`), which follows from dropping `job coverage --leg/--report`; and `pip install … flake8-aquaveo` in the GitLab lint job (`:500`), kept out of `[ci]` so the GitHub flake job does not gain the AQU rules. Revisit that one if the two hosts should lint alike. |
 | `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.13 xmsconan job build` on a workstation produces the same `.export/` tarball name a CI leg does. | **Met**, except the platform segment, which differs by design. On 2026-09-22, `BUILD_TYPE=Release PYTHON_TARGET_VERSION=3.14 xmsconan job build --export` with xmsconan 2.31.0, on macOS, in xmsconstraint checked out at tag `6.0.14`, wrote `xmsconstraint-macos-py3.14-6.0.14.tar.gz`. That tag's pipeline (xmsconan 2.30.1; `export_tarball_name` is unchanged since) wrote `xmsconstraint-linux-py3.14-6.0.14.tar.gz` and `xmsconstraint-windows-py3.14-6.0.14.tar.gz`. The library, `py<version>` and version segments agree. The version agrees only because the checkout was exactly on a clean tag; anywhere else setuptools-scm gives a dev version. The platform segment comes from `sys.platform`, and only GitLab jobs write `.export/` (GitHub legs deploy with `--from-cache`), none of them on macOS, so a literal match needs a Linux or Windows workstation. The command as worded needs `--export` to write a tarball at all, and 3.14 stood in for 3.13 because the tag pipeline built only 3.10 and 3.14. A workstation also needs a Conan login for the `aquaveo` remote, which refuses anonymous reads. |
 | `tests/test_ci_file_generator.py` shrinks; the removed assertions are covered by `job_tools` unit tests and the golden files. | **Not met**, and moving away from it: 3300 lines at `8084d9a`, 3977 at `f4a7de8`, 4070 after #152, 4199 at `e2a03c2`, 4208 on master (`c3933b7`) — +908 since the anchor, and every GitHub template change adds to it. Decide whether to move the assertions the golden files already pin, or retire the criterion. |
-| Open questions in the design §7 are each answered in the PR that touches them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in 5.2, upload client in 2a). | **4 of 5.** Name: `xmsconan job`. Pin policy: `>=X,<X+1`. Release asset: stayed on `upload-release-asset` in 5.4, and #150 (`1753643`) later replaced it with `actions/github-script@v9`, since `upload-release-asset` is archived. Upload client: `uv publish`, the only one since #158 (`c3933b7`) removed `--client devpi`. `build.py` is still open — the design says keep it for one release cycle, then decide — and `build.py.jinja` still ships. |
+| Open questions in the design §7 are each answered in the PR that touches them (name in 5.2, pin policy in 5.1, release asset in 5.4, `build.py` in 5.2, upload client in 2a). | **Met.** Name: `xmsconan job`. Pin policy: `>=X,<X+1`. Release asset: stayed on `upload-release-asset` in 5.4, and #150 (`1753643`) later replaced it with `actions/github-script@v9`, since `upload-release-asset` is archived. Upload client: `uv publish`, the only one since #158 (`c3933b7`) removed `--client devpi`. `build.py`: kept, decided 2026-09-29, after 5.2 rather than in it. Developers are used to having it generated and running it (USAGE §9), so `build.py.jinja` keeps shipping. The build jobs stopped running it in 2.30.0, but `xmsconan coverage` (`coverage_tools/coverage_generator.py:185`), which the generated coverage jobs call, and `publish` (`ci_tools/publish.py:164`) still do. |
 
 ---
 
