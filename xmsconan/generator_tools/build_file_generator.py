@@ -25,7 +25,7 @@ from xmsconan.generator_tools.output_plan import (
     describe_plan,
     write_text_lf,
 )
-from xmsconan.package_tools.packager import XmsConanPackager
+from xmsconan.package_tools.matrix import resolve_matrix
 
 LOGGER = logging.getLogger(__name__)
 
@@ -215,8 +215,8 @@ def plan_template_render(
     # Validated here rather than only where it is consumed: this function writes
     # [matrix] verbatim into the generated conanfile.py, so a caller that renders
     # templates without going on to generate profiles would otherwise produce an
-    # artifact from unvalidated input. XmsConanPackager owns the vocabulary.
-    XmsConanPackager.resolve_matrix(config.matrix)
+    # artifact from unvalidated input. The matrix module owns the vocabulary.
+    resolve_matrix(config.matrix)
     _validate_vocabularies(config, toml_file)
     context = _render_context(config, version)
 

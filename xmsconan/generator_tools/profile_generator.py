@@ -23,7 +23,8 @@ from xmsconan._cli import add_verbosity_args, configure_logging, run_main
 from xmsconan.build_toml import read_build_toml
 from xmsconan.exit_codes import EXIT_OK
 from xmsconan.generator_tools.output_plan import check_plan
-from xmsconan.package_tools.packager import configurations, XmsConanPackager
+from xmsconan.package_tools.matrix import configurations
+from xmsconan.package_tools.packager import XmsConanPackager
 
 LOGGER = logging.getLogger(__name__)
 

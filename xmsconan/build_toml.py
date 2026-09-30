@@ -131,8 +131,8 @@ class BuildToml:
 
     Field names are the file's top-level keys; see ``docs/USAGE.md`` §5 for
     what each one means. ``[matrix]`` and ``[filter]`` stay plain dicts: the
-    packager owns their vocabulary and both are written verbatim into generated
-    files.
+    matrix module owns their vocabulary and both are written verbatim into
+    generated files.
     """
 
     library_name: str
@@ -179,7 +179,7 @@ class BuildToml:
 #: A key absent from here is a typo: the readers fall back to a default, so a
 #: misspelling has no symptom until a generated artifact is not what was asked
 #: for. The sub-tables ``[ci]`` (_validate_ci_table), ``[matrix]``
-#: (XmsConanPackager.resolve_matrix), ``[filter]`` (build_filter.load_build_filter),
+#: (matrix.resolve_matrix), ``[filter]`` (build_filter.load_build_filter),
 #: ``conan_profile_variants`` and ``vs2019_dependency_overrides`` enforce the same
 #: rule for their own keys.
 _KNOWN_KEYS = frozenset(f.name for f in fields(BuildToml))

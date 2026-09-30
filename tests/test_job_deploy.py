@@ -18,7 +18,7 @@ from xmsconan.constants import (DEFAULT_REMOTE_NAME, VS2019_PLATFORM_KEY, VS2019
 from xmsconan.exit_codes import EXIT_OK
 from xmsconan.generator_tools.version import FALLBACK_VERSION, GITLAB_TAG_VARIABLE
 from xmsconan.job_tools import common, deploy
-from xmsconan.package_tools.packager import configurations
+from xmsconan.package_tools.matrix import configurations
 from .job_helpers import write_build_toml as _toml
 
 

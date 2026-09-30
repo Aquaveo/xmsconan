@@ -1,4 +1,4 @@
-"""Tests for package_tools.packager."""
+"""Tests for package_tools.packager and the matrix module it delegates to."""
 import json
 import os
 from pathlib import Path
@@ -18,18 +18,65 @@ from xmsconan.constants import (
     VS2019_REMOTE_NAME,
 )
 from xmsconan.job_tools.common import SKIP_CXX_TESTS_VARIABLE
-from xmsconan.package_tools.packager import (
+from xmsconan.package_tools import matrix as build_matrix, packager as packager_module
+from xmsconan.package_tools.matrix import (
     config_label,
     configurations,
     emitted_buildenv_keys,
     get_current_arch,
     only_msvc_version,
-    PUBLIC_BUILDENV_KEYS,
     summarize_filter_matches,
     validate_filter_dict,
-    XmsConanPackager,
 )
+from xmsconan.package_tools.packager import PUBLIC_BUILDENV_KEYS, XmsConanPackager
 from .utils import patch_env
+
+# --- the matrix's names, re-exported ---
+
+
+@pytest.mark.parametrize("name", [
+    "config_label",
+    "configurations",
+    "COVERAGE_PYBIND_BUILD_TYPE",
+    "COVERAGE_TESTING_BUILD_TYPES",
+    "emitted_buildenv_keys",
+    "filter_matches",
+    "FILTER_NESTED_KEYS",
+    "FILTER_OPTION_KEYS",
+    "FILTER_OPTION_VALUES",
+    "FILTER_SETTING_KEYS",
+    "FILTER_SETTING_VALUES",
+    "get_current_arch",
+    "is_instrumented_configuration",
+    "only_msvc_version",
+    "PYTHON_VERSION_RE",
+    "summarize_filter_matches",
+    "validate_filter_dict",
+])
+def test_packager_reexports_the_matrix(name):
+    """A name that moved to the matrix module still resolves from packager, as the same object.
+
+    The ``build.py`` template reads ``packager.configurations``, so every
+    generated ``build.py`` depends on it; the rest moved with it and stay
+    reachable for callers outside this repository.
+    """
+    assert getattr(packager_module, name) is getattr(build_matrix, name)
+
+
+@pytest.mark.parametrize("name", ["DEFAULT_PYBIND_BUILD_TYPES", "DEFAULT_PYTHON_VERSIONS"])
+def test_packager_class_keeps_the_matrix_defaults(name):
+    """The class's public defaults still resolve on the class, as the matrix module's own objects."""
+    assert getattr(XmsConanPackager, name) is getattr(build_matrix, name)
+
+
+def test_packager_resolve_matrix_delegates_to_the_matrix():
+    """``XmsConanPackager.resolve_matrix`` answers as the module function does, rejections included."""
+    table = {"wheel_only": True}
+
+    assert XmsConanPackager.resolve_matrix(table) == build_matrix.resolve_matrix(table)
+    with pytest.raises(ValueError, match="compiler_runtimes"):
+        XmsConanPackager.resolve_matrix({"compiler_runtimes": ["dynamic"]})
+
 
 # --- get_current_arch ---
 
@@ -43,7 +90,7 @@ from .utils import patch_env
 ])
 def test_get_current_arch(machine, expected):
     """Platform machine string maps to Conan architecture."""
-    with patch("xmsconan.package_tools.packager.platform.machine", return_value=machine):
+    with patch("xmsconan.package_tools.matrix.platform.machine", return_value=machine):
         assert get_current_arch() == expected
 
 
@@ -328,8 +375,8 @@ def test_generate_configurations_auto_detects_platform_and_arch():
     The explicit-platform path keeps the configured arch; only the
     auto-detected path substitutes the machine's real architecture.
     """
-    with patch("xmsconan.package_tools.packager.platform.system", return_value="Linux"), \
-            patch("xmsconan.package_tools.packager.platform.machine", return_value="aarch64"):
+    with patch("xmsconan.package_tools.matrix.platform.system", return_value="Linux"), \
+            patch("xmsconan.package_tools.matrix.platform.machine", return_value="aarch64"):
         p = XmsConanPackager("xmscore")
         configs = p.generate_configurations()
 
@@ -354,6 +401,50 @@ def test_generate_configurations_rejects_unknown_platform():
     assert "windows_vs2017" in message
     for valid in ("windows", "windows_vs2019", "linux", "darwin"):
         assert valid in message
+
+
+@patch_env(clear=True)
+def test_module_generate_configurations_resolves_raw_input():
+    """The module function takes the tables as build.toml spells them, not only pre-resolved.
+
+    The packager hands it values its constructor already resolved; a caller
+    without a packager hands it the raw ``[matrix]`` table and version list.
+    Both have to describe the same builds.
+    """
+    raw_matrix = {"wheel_only": True}
+    raw_versions = ["3.12"]
+
+    from_raw = build_matrix.generate_configurations(
+        "linux", matrix=raw_matrix, python_versions=raw_versions)
+    from_resolved = build_matrix.generate_configurations(
+        "linux",
+        matrix=build_matrix.resolve_matrix(raw_matrix),
+        python_versions=build_matrix.resolve_python_versions(raw_versions),
+    )
+
+    assert from_raw == from_resolved
+
+
+@patch_env(clear=True)
+def test_module_generate_configurations_rejects_unknown_matrix_key():
+    """A misspelled ``[matrix]`` key fails here too, rather than leaving the full fan-out in place."""
+    with pytest.raises(ValueError, match="compiler_runtimes"):
+        build_matrix.generate_configurations(
+            "linux", python_versions=["3.13"], matrix={"compiler_runtimes": ["dynamic"]})
+
+
+@patch_env(clear=True)
+def test_module_generate_configurations_makes_artifacts_dir_absolute():
+    """A relative ``artifacts_dir`` reaches ``[buildenv]`` absolute, as the packager's constructor makes it.
+
+    The recipe joins ``XMS_TEST_ARTIFACTS_DIR`` as it finds it while the
+    build runs in Conan's build folder, so a relative value would name a
+    directory under that folder.
+    """
+    configs = build_matrix.generate_configurations(
+        "linux", python_versions=["3.13"], artifacts_dir="artifacts")
+
+    assert {c["buildenv"]["XMS_TEST_ARTIFACTS_DIR"] for c in configs} == {os.path.abspath("artifacts")}
 
 
 @patch_env(clear=True)
@@ -593,7 +684,7 @@ def test_python_versions_default_when_env_unset(monkeypatch):
     """python_versions falls back to the default list when env is unset."""
     monkeypatch.delenv("PYTHON_TARGET_VERSION", raising=False)
     p = XmsConanPackager("xmscore")
-    assert p.python_versions == XmsConanPackager.DEFAULT_PYTHON_VERSIONS
+    assert p.python_versions == build_matrix.DEFAULT_PYTHON_VERSIONS
 
 
 def test_python_versions_honors_env_when_arg_missing(monkeypatch):
@@ -636,7 +727,7 @@ def test_python_versions_rejects_non_list():
 def test_python_versions_empty_list_falls_back_to_default():
     """An empty list is treated like None — fall back to env / default."""
     p = XmsConanPackager("xmscore", python_versions=[])
-    assert p.python_versions == XmsConanPackager.DEFAULT_PYTHON_VERSIONS
+    assert p.python_versions == build_matrix.DEFAULT_PYTHON_VERSIONS
 
 
 @patch_env({"PYTHON_TARGET_VERSION": "py313"}, clear=True)
@@ -898,7 +989,7 @@ def test_validate_filter_dict_rejects_unrenderable_value():
 def test_summarize_filter_matches_ignores_the_ambient_python_version():
     """The reference matrix must not read PYTHON_TARGET_VERSION from the shell.
 
-    _resolve_python_versions falls back to that variable, so passing None
+    resolve_python_versions falls back to that variable, so passing None
     through made `xmsconan gen` accept or reject an options.python_version pin
     according to what the developer's shell exported, while every generated CI
     leg exports the default. Same build.toml, two answers, two machines.

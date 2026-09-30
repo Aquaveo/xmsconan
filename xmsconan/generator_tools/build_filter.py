@@ -22,14 +22,14 @@ from typing import NamedTuple, Optional
 # 3. Aquaveo modules
 from xmsconan.build_toml import BuildToml
 from xmsconan.constants import version_sort_key
-from xmsconan.package_tools.packager import (
+from xmsconan.package_tools.matrix import (
     config_label,
     COVERAGE_PYBIND_BUILD_TYPE,
     filter_matches,
     is_instrumented_configuration,
+    resolve_matrix,
     summarize_filter_matches,
     validate_filter_dict,
-    XmsConanPackager,
 )
 
 #: Build types the generated CI matrix covers when ``[filter]`` doesn't pin one.
@@ -170,7 +170,7 @@ def _reject_matrix_conflict(build_filter: dict, matrix) -> None:
     Raises:
         ValueError: When the two tables cannot both hold.
     """
-    resolved = XmsConanPackager.resolve_matrix(matrix)
+    resolved = resolve_matrix(matrix)
     runtimes = resolved.get("compiler_runtime")
     pinned = build_filter.get("compiler.runtime")
     if runtimes and pinned is not None and pinned not in runtimes:
