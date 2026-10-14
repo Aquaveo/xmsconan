@@ -1,3 +1,7 @@
 library_name = "xmscore"
 description = "Core"
 ci_type = "github"
+
+[ci]
+python_versions = ["3.13"]
+windows_wheel_repair = true

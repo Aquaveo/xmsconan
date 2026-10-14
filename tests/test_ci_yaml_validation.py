@@ -471,7 +471,13 @@ def _write_filtered_toml(tmp_path, ci_type, filter_table):
         'description = "Core library"\n'
         f'ci_type = "{ci_type}"\n'
         'python_namespaced_dir = "core"\n'
-        "\n[ci]\nlinux_arm = true\ndeploy = true\n\n" + filter_table,
+        "\n"
+        "[ci]\n"
+        "python_versions = [\"3.13\"]\n"
+        "windows_wheel_repair = true\n"
+        "linux_arm = true\n"
+        "deploy = true\n"
+        "\n" + filter_table,
         encoding="utf-8",
     )
     return toml_file

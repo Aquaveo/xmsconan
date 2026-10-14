@@ -96,7 +96,11 @@ def test_toml_defaults_applied(tmp_path):
     """Optional keys get defaults so Jinja2 StrictUndefined doesn't fail."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n',
+        'library_name = "xmscore"\ndescription = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -128,7 +132,11 @@ def test_xms_dependencies_normalized(tmp_path):
         'description = "desc"\n'
         '[[xms_dependencies]]\n'
         'name = "xmscore"\n'
-        'version = "7.0.0"\n',
+        'version = "7.0.0"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -314,7 +322,11 @@ def _advertising_toml(tmp_path):
         'library_name = "xmscore"\n'
         'description = "Core library"\n'
         'python_namespaced_dir = "core"\n'
-        'pybind_advertises_module = true\n',
+        'pybind_advertises_module = true\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     return toml_file
@@ -505,6 +517,10 @@ def _write_extra_dependency_toml(tmp_path, extra_lines=""):
         'description = "Core library"\n'
         'python_namespaced_dir = "core"\n'
         'extra_dependencies = ["cereal/1.3.0", "xmdf/2.0.1"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
     )
     toml_file.write_text(base + extra_lines, encoding="utf-8")
     return toml_file
@@ -590,7 +606,11 @@ def test_conan_profile_options_reaches_template_context(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         '[conan_profile_options.boost]\n'
-        'wchar_t = "builtin"\n',
+        'wchar_t = "builtin"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -637,7 +657,11 @@ def test_generates_conanfile_with_profile_options(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         '[conan_profile_options.boost]\n'
-        'wchar_t = "builtin"\n',
+        'wchar_t = "builtin"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         tmp_path,
     )
 
@@ -647,7 +671,12 @@ def test_generates_conanfile_with_profile_options(tmp_path):
 def test_generates_conanfile_without_profile_options(tmp_path):
     """Generated conanfile.py defines CONAN_PROFILE_OPTIONS = {} when TOML omits the key."""
     content = _render_conanfile(
-        'library_name = "xmscore"\ndescription = "desc"\n', tmp_path
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', tmp_path
     )
 
     assert "CONAN_PROFILE_OPTIONS = {}" in content
@@ -664,7 +693,11 @@ def test_generates_conanfile_with_matrix_table(tmp_path):
         'description = "desc"\n'
         '[matrix]\n'
         'compiler_runtime = ["dynamic"]\n'
-        'pybind_build_types = ["Release", "Debug"]\n',
+        'pybind_build_types = ["Release", "Debug"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         tmp_path,
     )
 
@@ -675,7 +708,12 @@ def test_generates_conanfile_with_matrix_table(tmp_path):
 def test_generates_conanfile_without_matrix_table(tmp_path):
     """Omitting [matrix] yields an empty table, i.e. the full fan-out."""
     content = _render_conanfile(
-        'library_name = "xmscore"\ndescription = "desc"\n', tmp_path
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', tmp_path
     )
 
     assert "CONAN_MATRIX = {}" in content
@@ -685,7 +723,12 @@ def test_generated_build_py_passes_the_matrix_to_the_packager(tmp_path):
     """build.py must forward CONAN_MATRIX; the constant alone changes nothing."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', encoding="utf-8"
     )
     tpl_dir = tmp_path / "tpl"
     tpl_dir.mkdir()
@@ -707,7 +750,12 @@ def _render_build_py_text(tmp_path):
     """Render build.py from this repository's template and return its text."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', encoding="utf-8"
     )
     tpl_dir = tmp_path / "tpl"
     tpl_dir.mkdir()
@@ -788,7 +836,12 @@ def test_generated_build_py_builds_the_msvc_192_matrix_when_asked(tmp_path):
     packager could stop recognizing without any of the text changing.
     """
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         'description = "Core"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     output_dir = tmp_path / "output"
     render_template_with_toml(
         toml_file_path=str(toml_file),
@@ -827,7 +880,12 @@ def test_generated_build_py_can_skip_the_dependency_libs_pass(tmp_path):
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', encoding="utf-8"
     )
     tpl_dir = tmp_path / "tpl"
     tpl_dir.mkdir()
@@ -858,7 +916,11 @@ def test_generates_conanfile_with_vs2019_dependency_overrides(tmp_path):
         'library_name = "xmsgrid"\n'
         'description = "desc"\n'
         '[vs2019_dependency_overrides]\n'
-        'xmscore = "xmscore/[>=6.0.1 <7.0.0]"\n',
+        'xmscore = "xmscore/[>=6.0.1 <7.0.0]"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         tmp_path,
     )
 
@@ -878,7 +940,12 @@ def test_generates_conanfile_without_vs2019_dependency_overrides(tmp_path):
     carrying a redundant `= {}` line, matching xms_dependency_options.
     """
     content = _render_conanfile(
-        'library_name = "xmscore"\ndescription = "desc"\n', tmp_path
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', tmp_path
     )
 
     assert "vs2019_dependency_overrides" not in content
@@ -901,7 +968,11 @@ def test_cmake_template_emits_source_group_tree(tmp_path):
         'library_headers = []\n'
         'testing_headers = []\n'
         'pybind_sources = []\n'
-        'pybind_headers = []\n',
+        'pybind_headers = []\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -966,7 +1037,11 @@ def test_testing_sources_are_compiled_into_the_library(framework, tmp_path):
         'testing_sources = ["xmscore/testing/TestTools.cpp"]\n'
         'testing_headers = []\n'
         'pybind_sources = []\n'
-        'pybind_headers = []\n',
+        'pybind_headers = []\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -1008,7 +1083,11 @@ def test_gtest_registers_one_in_process_ctest_entry(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         'python_namespaced_dir = "core"\n'
-        'testing_framework = "gtest"\n',
+        'testing_framework = "gtest"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -1032,7 +1111,11 @@ def test_gtest_discovery_survives_behind_an_opt_in_option(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         'python_namespaced_dir = "core"\n'
-        'testing_framework = "gtest"\n',
+        'testing_framework = "gtest"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -1108,7 +1191,12 @@ def test_render_raises_clear_error_for_missing_toml_key(tmp_path):
     """Missing required keys produce a 'Missing field in build.toml' error message."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "x"\ndescription = "y"\n',
+        'library_name = "x"\n'
+        'description = "y"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -1145,19 +1233,24 @@ BASE_TOML = (
     'xms_dependencies = [{ name = "xmscore", version = "7.0.12" }]\n'
 )
 
+#: The required [ci] keys, appended after a body's top-level keys so the body
+#: can keep adding top-level keys to BASE_TOML.
+_REQUIRED_CI_TABLE = '\n[ci]\npython_versions = ["3.13"]\nwindows_wheel_repair = true\n'
+
 
 def _render_pyproject(tmp_path, toml_body):
     """Render the shipped ``_package`` templates against ``toml_body``.
 
     Args:
         tmp_path: pytest temporary directory.
-        toml_body: Contents of the ``build.toml`` to render with.
+        toml_body: Contents of the ``build.toml`` to render with, minus the
+            ``[ci]`` table, which is appended here.
 
     Returns:
         The rendered ``pyproject.toml`` text.
     """
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text(toml_body, encoding="utf-8")
+    toml_file.write_text(toml_body + _REQUIRED_CI_TABLE, encoding="utf-8")
     out = tmp_path / "out"
     render_template_with_toml(
         toml_file_path=str(toml_file),
@@ -1226,7 +1319,11 @@ def test_xms_python_dependencies_stay_out_of_the_conan_graph(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         'xms_dependencies = [{ name = "xmscore", version = "7.0.0" }]\n'
-        'xms_python_dependencies = ["geopandas", "data_objects>=4.0.0"]\n',
+        'xms_python_dependencies = ["geopandas", "data_objects>=4.0.0"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         tmp_path,
     )
 
@@ -1246,8 +1343,14 @@ def _minimal_build_toml(tmp_path):
     """A build.toml complete enough for a full xmsconan_gen run."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core library"\n'
-        'python_namespaced_dir = "core"\nci_type = "github"\n',
+        'library_name = "xmscore"\n'
+        'description = "Core library"\n'
+        'python_namespaced_dir = "core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     return toml_file
@@ -1359,7 +1462,11 @@ def test_extra_dependencies_are_deduped_against_the_template_builtins(tmp_path):
         'library_name = "xmscore"\n'
         'description = "Core library"\n'
         'python_namespaced_dir = "core"\n'
-        'extra_dependencies = ["zlib/1.3.1", "boost/1.86.0", "pybind11/3.0.1", "cereal/1.3.0"]\n',
+        'extra_dependencies = ["zlib/1.3.1", "boost/1.86.0", "pybind11/3.0.1", "cereal/1.3.0"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     content = _render_cmakelists(toml_file, tmp_path)
@@ -1383,7 +1490,11 @@ def test_extra_dependency_duplicating_an_xms_dependency_is_not_found_twice(tmp_p
         'extra_dependencies = ["xmscore/7.1.0"]\n'
         '\n[[xms_dependencies]]\n'
         'name = "xmscore"\n'
-        'version = "7.0.0"\n',
+        'version = "7.0.0"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     content = _render_cmakelists(toml_file, tmp_path)
@@ -1404,7 +1515,11 @@ def test_generation_rejects_a_malformed_matrix_table(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         '[matrix]\n'
-        'compiler_runtimes = ["dynamic"]\n',
+        'compiler_runtimes = ["dynamic"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     tpl_dir = tmp_path / "tpl"
@@ -1427,6 +1542,10 @@ _FILTER_TOML = """\
 library_name = "xmscore"
 description = "Core library"
 python_namespaced_dir = "core"
+
+[ci]
+python_versions = ["3.13"]
+windows_wheel_repair = true
 
 [filter]
 build_type = "Release"
@@ -1605,9 +1724,25 @@ def _render(toml_file, template_dir, tmp_path):
 
 
 @pytest.mark.parametrize("body,offender", [
-    ('library_name = "xmscore"\nhas_test_files = true\n', "has_test_files"),
-    ('library_name = "xmscore"\nlibrary_source = []\n', "library_source"),
-    ('library_name = "xmscore"\n[cci]\ncoverage = true\n', "cci"),
+    ('library_name = "xmscore"\n'
+     'has_test_files = true\n'
+     '\n'
+     '[ci]\n'
+     'python_versions = ["3.13"]\n'
+     'windows_wheel_repair = true\n', "has_test_files"),
+    ('library_name = "xmscore"\n'
+     'library_source = []\n'
+     '\n'
+     '[ci]\n'
+     'python_versions = ["3.13"]\n'
+     'windows_wheel_repair = true\n', "library_source"),
+    ('library_name = "xmscore"\n'
+     '[cci]\n'
+     'coverage = true\n'
+     '\n'
+     '[ci]\n'
+     'python_versions = ["3.13"]\n'
+     'windows_wheel_repair = true\n', "cci"),
 ])
 def test_unknown_top_level_key_raises(body, offender, template_dir, tmp_path):
     """An unrecognized key fails, naming itself.
@@ -1694,8 +1829,8 @@ def test_every_documented_key_is_accepted(template_dir, tmp_path):
             lines.append(f"{key} = {{}}")
         else:
             lines.append(f"{key} = []")
-    lines += ["[ci]", "coverage = true", "[coverage]", "cpp_threshold = 0", "[matrix]",
-              "[filter]"]
+    lines += ["[ci]", "coverage = true", 'python_versions = ["3.13"]', "windows_wheel_repair = true",
+              "[coverage]", "cpp_threshold = 0", "[matrix]", "[filter]"]
 
     toml_file = tmp_path / "build.toml"
     toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1704,8 +1839,18 @@ def test_every_documented_key_is_accepted(template_dir, tmp_path):
 
 
 @pytest.mark.parametrize("body,offender", [
-    ('library_name = "xmscore"\ntesting_framework = "gtst"\n', "testing_framework"),
-    ('library_name = "xmscore"\npython_binding_type = "pybind"\n', "python_binding_type"),
+    ('library_name = "xmscore"\n'
+     'testing_framework = "gtst"\n'
+     '\n'
+     '[ci]\n'
+     'python_versions = ["3.13"]\n'
+     'windows_wheel_repair = true\n', "testing_framework"),
+    ('library_name = "xmscore"\n'
+     'python_binding_type = "pybind"\n'
+     '\n'
+     '[ci]\n'
+     'python_versions = ["3.13"]\n'
+     'windows_wheel_repair = true\n', "python_binding_type"),
 ])
 def test_unknown_vocabulary_value_raises(body, offender, template_dir, tmp_path):
     """A near-miss framework or binding name fails at generate time."""
@@ -1723,7 +1868,11 @@ def test_dependency_options_for_undeclared_package_raises(template_dir, tmp_path
         'library_name = "xmsgrid"\n'
         'xms_dependencies = [{ name = "xmscore", version = "7.0.0" }]\n'
         '[xms_dependency_options.xmscoer]\n'
-        'pybind = false\n',
+        'pybind = false\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -1740,7 +1889,11 @@ def test_dependency_options_for_declared_package_is_accepted(template_dir, tmp_p
         'library_name = "xmsgrid"\n'
         'xms_dependencies = [{ name = "xmscore", version = "7.0.0" }]\n'
         '[xms_dependency_options.xmscore]\n'
-        'pybind = false\n',
+        'pybind = false\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -1760,7 +1913,12 @@ def test_generated_build_py_resolves_the_version_it_is_not_given(tmp_path):
     tpl_dir.mkdir()
     _copy_template("build.py.jinja", tpl_dir)
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         'description = "Core"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     output_dir = tmp_path / "output"
 
     render_template_with_toml(
@@ -1804,7 +1962,12 @@ def test_generated_build_py_refuses_to_upload_without_a_release_version(xms_vers
 
     real_templates = Path(generator_tools.__file__).parent / "templates"
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         'description = "Core"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     output_dir = tmp_path / "output"
     render_template_with_toml(
         toml_file_path=str(toml_file),

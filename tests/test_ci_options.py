@@ -8,35 +8,28 @@ from xmsconan.ci_options import repairs_windows_wheel
 # --- repairs_windows_wheel ----------------------------------------------
 
 
-@pytest.mark.parametrize("ci_type,expected", [
-    ("github", True),
-    ("gitlab", False),
-])
-def test_default_follows_ci_type(ci_type, expected):
-    """The default is derived from who installs the wheel, not hardcoded.
-
-    GitHub wheels go to a public index and are installed into arbitrary Python
-    environments, which supply no XMS runtime -- they need their DLLs bundled.
-    GitLab wheels are internal and loaded only by the XMS Python, which puts its
-    own shipped C++ runtime on PATH deliberately; repairing those vendors a
-    private mangled msvcp140 that overrides it.
-
-    A flat default is wrong in one direction or the other, and both directions
-    change what an existing repo publishes on its next tag.
-    """
-    config = BuildToml(library_name="xmscore", ci_type=ci_type)
-    assert repairs_windows_wheel(config) is expected
-
-
-@pytest.mark.parametrize("ci_type", ["github", "gitlab"])
+@pytest.mark.parametrize("ci_type", ["github", "gitlab", None])
 @pytest.mark.parametrize("explicit", [True, False])
-def test_explicit_value_overrides_the_default(ci_type, explicit):
-    """An explicit key wins on either host."""
+def test_the_explicit_value_is_the_answer_on_every_host(ci_type, explicit):
+    """``ci_type`` has no say any more.
+
+    It used to pick the default (repair on GitHub, not on GitLab) as a proxy
+    for who installs the wheel, and the proxy went stale: libraries whose
+    wheels the desktop products load and libraries whose wheels go to plain
+    Python environments now live on both hosts.
+    """
     config = BuildToml(library_name="xmscore", ci_type=ci_type, ci=CiTable(windows_wheel_repair=explicit))
     assert repairs_windows_wheel(config) is explicit
 
 
-def test_unknown_ci_type_repairs():
-    """An unrecognized (or absent) ci_type keeps the safer, DLL-bundling default."""
-    config = BuildToml(library_name="xmscore")
-    assert repairs_windows_wheel(config) is True
+@pytest.mark.parametrize("ci_type", ["github", "gitlab", None])
+def test_an_unset_key_is_refused_rather_than_guessed(ci_type):
+    """A config built in code without the key gets an error naming it.
+
+    A file cannot reach here unset -- the reader rejects it -- so this guards
+    the programmatic path, where a silent default would bring back the guess
+    the reader exists to prevent.
+    """
+    config = BuildToml(library_name="xmscore", ci_type=ci_type)
+    with pytest.raises(ValueError, match=r"\[ci\]\.windows_wheel_repair is not set"):
+        repairs_windows_wheel(config)

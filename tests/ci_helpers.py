@@ -39,16 +39,36 @@ def _toml_value(value):
     return f'"{value}"'
 
 
+def required_ci_keys(ci_type=None):
+    """The ``[ci]`` keys every build.toml must set, at the values their old defaults gave.
+
+    ``windows_wheel_repair`` used to follow ``ci_type`` (off on GitLab, on
+    everywhere else) and ``python_versions`` used to be ``["3.13"]``. Fixtures
+    that are not about either key keep those values so they test what they did.
+    """
+    return {"python_versions": ["3.13"], "windows_wheel_repair": ci_type != "gitlab"}
+
+
+#: ``required_ci_keys`` as TOML lines, for fixtures that write a raw body.
+REQUIRED_CI_LINES = '[ci]\npython_versions = ["3.13"]\nwindows_wheel_repair = true\n'
+REQUIRED_GITLAB_CI_LINES = '[ci]\npython_versions = ["3.13"]\nwindows_wheel_repair = false\n'
+
+
 def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Snap",
                      coverage_table=None, matrix_table=None, **ci_flags):
-    """Write a minimal build.toml with the given ci_type, [ci], [coverage] and [matrix] tables."""
+    """Write a minimal build.toml with the given ci_type, [ci], [coverage] and [matrix] tables.
+
+    The two required ``[ci]`` keys are filled in unless *ci_flags* names them,
+    at the values their old defaults produced, so a test about some other key
+    reads the same as before they became required.
+    """
     lines = [
         f'library_name = "{library_name}"',
         f'description = "{description}"',
         f'ci_type = "{ci_type}"',
     ]
-    if ci_flags:
-        lines += ["", "[ci]"] + [f"{key} = {_toml_value(value)}" for key, value in ci_flags.items()]
+    ci_flags = {**required_ci_keys(ci_type), **ci_flags}
+    lines += ["", "[ci]"] + [f"{key} = {_toml_value(value)}" for key, value in ci_flags.items()]
     if coverage_table:
         lines += ["", "[coverage]"] + [
             f"{key} = {_toml_value(value)}" for key, value in coverage_table.items()

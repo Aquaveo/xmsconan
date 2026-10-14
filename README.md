@@ -59,6 +59,10 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 |-------|------|-------------|----------|
 | `library_name` | string | Name of the library | `"xmscore"` |
 | `description` | string | Brief description | `"Support library for XMS products"` |
+| `[ci].python_versions` | array[string] | Python versions to build Windows wheels for. Add `"3.10"` for a library the desktop products consume. | `["3.10", "3.13"]` |
+| `[ci].windows_wheel_repair` | boolean | Repair the Windows wheel. `true` when it is installed into plain Python environments, `false` when the desktop products load it (see the Wheel Repair section). | `true` |
+
+The two `[ci]` keys used to have defaults, and each default was right for only one kind of library. Every `xmsconan` command rejects a `build.toml` that leaves either out.
 
 ### Source Files
 
@@ -175,6 +179,10 @@ testing_headers = [
 pybind_sources = [
     "xmscore/python/xmscore_py.cpp",
 ]
+
+[ci]
+python_versions = ["3.10", "3.13"]
+windows_wheel_repair = false
 ```
 
 #### Example generation
@@ -256,13 +264,14 @@ xmsconan wheel-repair --wheel-dir wheelhouse
 xmsconan wheel-repair --wheel-dir wheelhouse --platform macos
 ```
 
-Windows repair can be switched off per library with
-`[ci].windows_wheel_repair`, which turns it off inside the **Windows build job**
-of the generated CI — that is where it runs, since only a Windows host can run
-delvewheel — and in `xmsconan publish` and the `xmsconan vs2019` track. The
-default follows `ci_type` — on for `github` (public wheels need their DLLs
-bundled), off for `gitlab` (internal wheels are loaded by a host that supplies
-the C++ runtime itself). See `docs/USAGE.md` §12.1.
+Every library says whether its Windows wheel is repaired with the required
+`[ci].windows_wheel_repair` key. `false` turns it off inside the **Windows build
+job** of the generated CI — that is where it runs, since only a Windows host can
+run delvewheel — and in `xmsconan publish` and the `xmsconan vs2019` track. Set
+`true` when the wheel is installed into plain Python environments, which need
+their DLLs bundled, and `false` when the desktop products load it, since they
+supply the C++ runtime themselves. There is no default: the forge used to stand
+in for the consumer, and it no longer does. See `docs/USAGE.md` §12.1.
 
 #### Wheel Deploy
 

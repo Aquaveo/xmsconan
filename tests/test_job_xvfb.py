@@ -22,7 +22,11 @@ from .job_helpers import build_toml_config
 from .utils import patch_env
 
 #: What every case here needs before xvfb is even considered.
-XVFB_BODY = 'library_name = "xmscore"\n[ci]\nxvfb = true\n'
+XVFB_BODY = ('library_name = "xmscore"\n'
+             '[ci]\n'
+             'python_versions = ["3.13"]\n'
+             'windows_wheel_repair = true\n'
+             'xvfb = true\n')
 
 
 # --- wants_xvfb ---

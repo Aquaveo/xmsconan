@@ -3,5 +3,7 @@ description = "Snap"
 ci_type = "gitlab"
 
 [ci]
+python_versions = ["3.13"]
+windows_wheel_repair = false
 deploy = false
 windows = false

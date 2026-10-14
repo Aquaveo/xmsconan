@@ -26,3 +26,7 @@ testing_sources = ["stub/testing/test_tools.cpp"]
 cpp_threshold = 0
 python_threshold = 0
 filters = ["stub/"]
+
+[ci]
+python_versions = ["3.13"]
+windows_wheel_repair = true

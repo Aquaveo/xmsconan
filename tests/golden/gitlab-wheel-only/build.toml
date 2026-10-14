@@ -3,6 +3,8 @@ description = "Snap"
 ci_type = "gitlab"
 
 [ci]
+python_versions = ["3.13"]
+windows_wheel_repair = false
 coverage = true
 docker_image = "registry.aquaveo.com/xms/custom-builder:latest"
 linux_python_versions = ["3.10", "3.13"]

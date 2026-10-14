@@ -48,14 +48,20 @@ class XmsDependency:
 class CiTable:
     """The ``[ci]`` table with its documented defaults applied.
 
-    Three fields keep ``None`` for "not set" rather than a default, because a
-    reader needs to tell the two apart:
+    Two keys have no default in the file: :func:`read_build_toml` rejects a
+    ``build.toml`` that leaves out ``python_versions`` or
+    ``windows_wheel_repair`` (see :data:`_REQUIRED_CI_KEYS`). A table read
+    from disk therefore always carries both. The field defaults below exist
+    for constructing one in code, where ``windows_wheel_repair = None`` still
+    means "not set" and :func:`xmsconan.ci_options.repairs_windows_wheel`
+    refuses to guess.
+
+    Two more fields keep ``None`` for "not set" rather than a default, because
+    a reader needs to tell the two apart:
 
     * ``windows`` and ``linux``: the GitHub generator warns about *any*
       explicit setting, true or false, since it ignores both. Read the
       effective value through :attr:`windows_enabled` / :attr:`linux_enabled`.
-    * ``windows_wheel_repair``: the default follows ``ci_type``, resolved by
-      :func:`xmsconan.ci_options.repairs_windows_wheel`.
     * ``linux_python_versions`` / ``mac_python_versions``: the default is the
       highest entry of ``python_versions``, resolved by the CI generator.
     """
@@ -222,6 +228,53 @@ _CI_KEY_TYPES = {
     "mac_python_versions": list,
 }
 
+#: ``[ci]`` keys every build.toml must set, each with the reason a default
+#: would be wrong. Both used to default, and both defaults fit only one of the
+#: two kinds of library this tool builds: the desktop products need a 3.14
+#: Windows wheel that a ``["3.13"]`` default doesn't build, and they load wheels
+#: from a host that supplies its own C++ runtime, which a repaired wheel
+#: overrides with a vendored copy. A library that leaves either unset gets
+#: the wrong one for its consumers, and nothing says so until the wheel is
+#: installed -- which is why the file reader insists instead.
+_REQUIRED_CI_KEYS = {
+    "python_versions": (
+        'the Python versions to build Windows wheels for, e.g. ["3.13"]; '
+        'add "3.14" for a library the desktop products (GMS/SMS/WMS) consume'
+    ),
+    "windows_wheel_repair": (
+        "true to bundle the DLLs a wheel needs (installed into plain Python "
+        "environments); false when the host application supplies the C++ "
+        "runtime itself (the desktop products)"
+    ),
+}
+
+
+def _reject_missing_ci_keys(raw: dict, toml_path) -> None:
+    """Raise a ``ValueError`` naming every required ``[ci]`` key ``raw`` leaves out."""
+    missing = [key for key in _REQUIRED_CI_KEYS if key not in raw]
+    if missing:
+        lines = [f"{toml_path}: [ci] must set {', '.join(missing)}."]
+        lines += [f"  {key}: {_REQUIRED_CI_KEYS[key]}" for key in missing]
+        raise ValueError("\n".join(lines))
+
+
+def _validate_python_versions(value: list, key: str, toml_path) -> None:
+    """Raise a ``ValueError`` unless ``value`` is a non-empty list of strings.
+
+    Whether each string names a supported version is the CI generator's
+    check; this only catches the TOML mistakes that would otherwise read as
+    a valid list.
+    """
+    if not value:
+        raise ValueError(f"{toml_path}: [ci].{key} must name at least one Python version")
+    for entry in value:
+        if not isinstance(entry, str):
+            # An unquoted `3.10` is the TOML float 3.1; coercing it would build
+            # a version nobody wrote.
+            raise ValueError(
+                f'{toml_path}: [ci].{key} entries must be quoted strings like "3.13", got {entry!r}'
+            )
+
 
 def _reject_unknown_keys(table: dict, accepted: frozenset, where: str, kind: str = "key") -> None:
     """Raise a ``ValueError`` naming ``where`` when ``table`` has a key outside ``accepted``."""
@@ -247,6 +300,11 @@ def _validate_ci_table(raw, toml_path) -> None:
                 f"{toml_path}: [ci].{key} must be {expected.__name__}, got "
                 f"{type(value).__name__} ({value!r})"
             )
+        if key.endswith("python_versions"):
+            _validate_python_versions(value, key, toml_path)
+    # Last, so a typo or a mistyped value is reported as what it is rather
+    # than as a missing key.
+    _reject_missing_ci_keys(raw, toml_path)
 
 
 def _ci_table(raw, toml_path) -> CiTable:
@@ -330,17 +388,21 @@ def _toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
         The typed configuration with every default applied.
 
     Raises:
-        ValueError: When ``library_name`` is missing, or a sub-table carries an
-            unknown key or the wrong shape.
+        ValueError: When ``library_name`` is missing, a sub-table carries an
+            unknown key or the wrong shape, ``[ci]`` leaves out a key in
+            :data:`_REQUIRED_CI_KEYS`, or a ``[ci]`` version list is empty or
+            holds a non-string.
     """
     if not toml_data.get("library_name"):
         raise ValueError(f"{toml_path} does not define library_name")
     values = dict(toml_data)
-    values["ci"] = _ci_table(values.get("ci", {}), toml_path)
     values["coverage"] = _coverage_table(values.get("coverage", {}), toml_path)
     values["xms_dependencies"] = [
         _xms_dependency(entry, toml_path) for entry in values.get("xms_dependencies", [])
     ]
+    # [ci] last: it is the one table with required keys, and a file with a
+    # typo elsewhere should hear about the typo first.
+    values["ci"] = _ci_table(values.get("ci", {}), toml_path)
     return BuildToml(**values)
 
 
@@ -355,8 +417,10 @@ def read_build_toml(toml_path: str | Path) -> BuildToml:
 
     Raises:
         FileNotFoundError: The file does not exist.
-        ValueError: The file does not parse, carries a key nothing knows, or is
-            missing ``library_name``. Parse errors name the file.
+        ValueError: The file does not parse, carries a key nothing knows, is
+            missing ``library_name``, or leaves out a required ``[ci]`` key
+            (``python_versions``, ``windows_wheel_repair``). Every message
+            names the file.
     """
     try:
         data = _load_toml(toml_path)

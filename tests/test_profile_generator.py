@@ -13,6 +13,7 @@ def _write_build_toml(tmp_path, **keys):
     lines = [f'library_name = "{keys.pop("library_name", "xmscore")}"', 'description = "Core"']
     for key, value in keys.items():
         lines.append(f"{key} = {json.dumps(value)}")
+    lines += ["[ci]", 'python_versions = ["3.13"]', "windows_wheel_repair = true"]
     toml_file = tmp_path / "build.toml"
     toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return toml_file
@@ -35,7 +36,12 @@ def test_filter_table_does_not_narrow_profiles(tmp_path):
         directory.mkdir()
         toml_file = directory / "build.toml"
         toml_file.write_text(
-            'library_name = "xmscore"\ndescription = "Core"\n' + table,
+            'library_name = "xmscore"\n'
+            'description = "Core"\n'
+            '\n'
+            '[ci]\n'
+            'python_versions = ["3.13"]\n'
+            'windows_wheel_repair = true\n' + table,
             encoding="utf-8")
         written = generate_profiles(toml_file_path=str(toml_file), system_platform="linux")
         return sorted(os.path.basename(path) for path in written)
@@ -176,7 +182,11 @@ def test_variant_keys_reach_the_packager(tmp_path):
         'platforms = ["windows"]\n'
         'kinds = ["testing"]\n'
         '[conan_profile_variants.conf]\n'
-        '"tools.cmake.cmaketoolchain:generator" = "Visual Studio 17 2022"\n',
+        '"tools.cmake.cmaketoolchain:generator" = "Visual Studio 17 2022"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -199,7 +209,11 @@ def test_matrix_table_narrows_the_generated_profiles(tmp_path):
         'description = "Core"\n'
         '[matrix]\n'
         'compiler_runtime = ["dynamic"]\n'
-        'pybind_build_types = ["Release", "Debug"]\n',
+        'pybind_build_types = ["Release", "Debug"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -218,7 +232,11 @@ def test_malformed_variant_is_rejected_by_name(tmp_path):
         'description = "Core"\n'
         '[[conan_profile_variants]]\n'
         'name = "vs"\n'
-        'platforms = ["macos"]\n',
+        'platforms = ["macos"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -239,7 +257,12 @@ def test_stale_profiles_are_removed(tmp_path):
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', encoding="utf-8"
     )
     first = generate_profiles(toml_file_path=str(toml_file), system_platform="windows")
     assert any("static" in os.path.basename(path) for path in first)
@@ -248,7 +271,11 @@ def test_stale_profiles_are_removed(tmp_path):
         'library_name = "xmscore"\n'
         'description = "Core"\n'
         '[matrix]\n'
-        'compiler_runtime = ["dynamic"]\n',
+        'compiler_runtime = ["dynamic"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     generate_profiles(toml_file_path=str(toml_file), system_platform="windows")
@@ -262,7 +289,12 @@ def test_unrelated_files_in_the_profiles_directory_survive(tmp_path):
     """Only generated .txt profiles are pruned."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', encoding="utf-8"
     )
     generate_profiles(toml_file_path=str(toml_file), system_platform="linux")
     keep = tmp_path / DEFAULT_OUTPUT_DIR / "notes.md"

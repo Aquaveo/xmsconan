@@ -4,6 +4,7 @@ import logging
 import pytest
 
 from xmsconan.generator_tools import version as version_module
+from .ci_helpers import REQUIRED_CI_LINES
 
 
 # tests/fixtures/coverage_stub/_package/tests/test_stub.py is part of the
@@ -90,10 +91,8 @@ def update_golden(request):
 def build_toml(tmp_path):
     """Write a minimal build.toml with library_name and description, return path."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core library"\npython_namespaced_dir = "core"\n',
-        encoding="utf-8",
-    )
+    body = 'library_name = "xmscore"\ndescription = "Core library"\npython_namespaced_dir = "core"\n'
+    toml_file.write_text(body + REQUIRED_CI_LINES, encoding="utf-8")
     return toml_file
 
 
@@ -112,10 +111,8 @@ def template_dir(tmp_path):
 def ci_toml(tmp_path):
     """Write a build.toml with ci_type field, return path."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core library"\nci_type = "github"\n',
-        encoding="utf-8",
-    )
+    body = 'library_name = "xmscore"\ndescription = "Core library"\nci_type = "github"\n'
+    toml_file.write_text(body + REQUIRED_CI_LINES, encoding="utf-8")
     return toml_file
 
 

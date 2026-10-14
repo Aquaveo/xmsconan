@@ -9,6 +9,10 @@ from xmsconan.build_toml import (
 )
 
 
+#: A [ci] table carrying only what the reader insists on.
+_REQUIRED_CI = {"python_versions": ["3.13"], "windows_wheel_repair": True}
+
+
 def test_load_toml_returns_the_parsed_table(tmp_path):
     """_load_toml is a plain parser: no validation, no defaults."""
     toml_file = tmp_path / "build.toml"
@@ -95,11 +99,11 @@ def test_toml_to_dataclass_converts_sub_tables():
     """[ci], [coverage] and xms_dependencies come back typed."""
     config = _toml_to_dataclass({
         "library_name": "xmscore",
-        "ci": {"xvfb": True, "python_versions": ["3.10", "3.13"]},
+        "ci": {"xvfb": True, "python_versions": ["3.10", "3.13"], "windows_wheel_repair": False},
         "coverage": {"cpp_threshold": 80, "python_version": "3.13"},
         "xms_dependencies": [{"name": "xmsgrid", "version": "7.0.0", "no_python": True}],
     }, "build.toml")
-    assert config.ci == CiTable(xvfb=True, python_versions=["3.10", "3.13"])
+    assert config.ci == CiTable(xvfb=True, python_versions=["3.10", "3.13"], windows_wheel_repair=False)
     assert config.coverage.cpp_threshold == 80.0
     assert isinstance(config.coverage.cpp_threshold, float)
     assert config.coverage.python_version == "3.13"
@@ -110,6 +114,7 @@ def test_toml_to_dataclass_leaves_matrix_and_filter_as_dicts():
     """The packager owns those vocabularies and the templates write them verbatim."""
     config = _toml_to_dataclass({
         "library_name": "xmscore",
+        "ci": dict(_REQUIRED_CI),
         "matrix": {"compiler_runtime": ["dynamic"]},
         "filter": {"build_type": "Release"},
     }, "build.toml")
@@ -161,6 +166,51 @@ def test_toml_to_dataclass_rejects_bad_ci_keys_and_types(table, expected):
     and the only symptom is the thing the switch exists to prevent.
     """
     with pytest.raises(ValueError, match=expected):
+        _toml_to_dataclass({"library_name": "x", "ci": table}, "build.toml")
+
+
+@pytest.mark.parametrize("table,expected", [
+    (None, r"\[ci\] must set python_versions, windows_wheel_repair\."),
+    ({}, r"\[ci\] must set python_versions, windows_wheel_repair\."),
+    ({"xvfb": True}, r"\[ci\] must set python_versions, windows_wheel_repair\."),
+    ({"python_versions": ["3.13"]}, r"\[ci\] must set windows_wheel_repair\.\n  windows_wheel_repair: "),
+    ({"windows_wheel_repair": False}, r"\[ci\] must set python_versions\.\n  python_versions: "),
+], ids=["no-table", "empty-table", "other-keys-only", "repair-missing", "versions-missing"])
+def test_toml_to_dataclass_requires_python_versions_and_windows_wheel_repair(table, expected):
+    """Both keys are required, and the error names every one that is missing.
+
+    Each used to default, and each default fit only one of the two kinds of
+    library this tool builds -- so a developer who never thought about the key
+    found out from a broken install, after the release. The reader asks up
+    front instead, and explains what each key decides so the answer can be
+    given without opening the docs.
+    """
+    data = {"library_name": "x"}
+    if table is not None:
+        data["ci"] = table
+    with pytest.raises(ValueError, match=r"build\.toml: " + expected):
+        _toml_to_dataclass(data, "build.toml")
+
+
+def test_a_typo_in_ci_is_reported_before_a_missing_required_key():
+    """The more specific error wins: a misspelled key is not 'missing'."""
+    with pytest.raises(ValueError, match=r"unknown key\(s\) window_wheel_repair"):
+        _toml_to_dataclass({"library_name": "x", "ci": {"window_wheel_repair": False}}, "build.toml")
+
+
+@pytest.mark.parametrize("key", ["python_versions", "linux_python_versions", "mac_python_versions"])
+def test_toml_to_dataclass_rejects_an_empty_python_versions_list(key):
+    """An empty list satisfies 'required' and builds no pybind leg; it is refused."""
+    table = {**_REQUIRED_CI, key: []}
+    with pytest.raises(ValueError, match=rf"\[ci\]\.{key} must name at least one Python version"):
+        _toml_to_dataclass({"library_name": "x", "ci": table}, "build.toml")
+
+
+@pytest.mark.parametrize("key", ["python_versions", "linux_python_versions", "mac_python_versions"])
+def test_toml_to_dataclass_rejects_an_unquoted_python_version(key):
+    """`python_versions = [3.10]` is the float 3.1; the fix is the quotes, so the error says so."""
+    table = {**_REQUIRED_CI, key: [3.1]}
+    with pytest.raises(ValueError, match=rf'\[ci\]\.{key} entries must be quoted strings like "3\.13", got 3\.1'):
         _toml_to_dataclass({"library_name": "x", "ci": table}, "build.toml")
 
 
@@ -232,16 +282,29 @@ def test_read_build_toml_returns_a_typed_config(tmp_path):
     """One call parses, validates, and converts."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\n[ci]\nxvfb = true\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
+        'xvfb = true\n', encoding="utf-8"
     )
     config = read_build_toml(toml_file)
-    assert config == BuildToml(library_name="xmscore", description="Core", ci=CiTable(xvfb=True))
+    assert config == BuildToml(
+        library_name="xmscore", description="Core",
+        ci=CiTable(xvfb=True, python_versions=["3.13"], windows_wheel_repair=True),
+    )
 
 
 def test_read_build_toml_rejects_an_unknown_top_level_key(tmp_path):
     """The reader validates; _load_toml alone does not."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         'has_test_files = true\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
         read_build_toml(toml_file)
 
@@ -268,5 +331,9 @@ def test_read_optional_build_toml_returns_none_when_absent(tmp_path):
 def test_read_optional_build_toml_reads_a_present_file(tmp_path):
     """Present files go through the same reader as the required form."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     assert read_optional_build_toml(toml_file) == read_build_toml(toml_file)
