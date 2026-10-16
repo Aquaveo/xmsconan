@@ -70,6 +70,35 @@ def test_packager_class_keeps_the_matrix_defaults(name):
     assert getattr(XmsConanPackager, name) is getattr(build_matrix, name)
 
 
+@pytest.mark.parametrize("table,expected", [
+    (None, {"wheel_only": False, "compiler_runtime": None, "pybind_build_types": ("Release",)}),
+    ({}, {"wheel_only": False, "compiler_runtime": None, "pybind_build_types": ("Release",)}),
+    ({"compiler_runtime": ["dynamic"], "pybind_build_types": ["Release", "Debug"], "wheel_only": True},
+     {"wheel_only": True, "compiler_runtime": ("dynamic",), "pybind_build_types": ("Release", "Debug")}),
+    (MatrixTable(compiler_runtime=("static",)),
+     {"wheel_only": False, "compiler_runtime": ("static",), "pybind_build_types": ("Release",)}),
+], ids=["absent", "empty", "full", "already-a-table"])
+def test_packager_resolve_matrix_keeps_the_resolved_dict_shape(table, expected):
+    """The classmethod still answers as it did before the table became a MatrixTable.
+
+    Kept for callers outside this repository: every key present, the Release
+    default filled in, and the table accepted in any of the forms a caller
+    might hold.
+    """
+    assert XmsConanPackager.resolve_matrix(table) == expected
+
+
+@pytest.mark.parametrize("table,expected", [
+    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),
+    ({"compiler_runtime": []}, "would build nothing"),
+    ({"pybind_build_types": []}, "would build nothing"),
+], ids=["misspelled-key", "empty-runtime-list", "empty-build-type-list"])
+def test_packager_resolve_matrix_still_rejects_what_it_rejected(table, expected):
+    """The shape checks come from the reader and the empty-list refusal from the fan-out; both still fire here."""
+    with pytest.raises(ValueError, match=expected):
+        XmsConanPackager.resolve_matrix(table)
+
+
 # --- get_current_arch ---
 
 

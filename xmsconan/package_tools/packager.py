@@ -285,6 +285,38 @@ class XmsConanPackager(object):
     _VARIANT_KINDS = frozenset({'library', 'python', 'testing'})
 
     @classmethod
+    def resolve_matrix(cls, matrix) -> dict:
+        """Validate a ``[matrix]`` table and return it as a dict with its defaults filled in.
+
+        Kept for callers outside this repository that validated the table
+        through the class before it became a
+        :class:`~xmsconan.build_toml.MatrixTable`. Code inside the repository
+        reads the table the reader hands out and never needs this shape.
+
+        Args:
+            matrix: The table as ``build.toml`` spells it, None for an absent
+                table, or a :class:`~xmsconan.build_toml.MatrixTable`.
+
+        Returns:
+            ``wheel_only`` as a bool, ``compiler_runtime`` as a tuple or None
+            when unrestricted, and ``pybind_build_types`` as a tuple with the
+            ``Release`` default applied.
+
+        Raises:
+            ValueError: The table is malformed, or a list is empty.
+        """
+        table = matrix_table(matrix, where='[matrix]')
+        build_matrix.reject_empty_matrix_lists(table)
+        pybind_build_types = table.pybind_build_types
+        if pybind_build_types is None:
+            pybind_build_types = build_matrix.DEFAULT_PYBIND_BUILD_TYPES
+        return {
+            'wheel_only': table.wheel_only,
+            'compiler_runtime': table.compiler_runtime,
+            'pybind_build_types': pybind_build_types,
+        }
+
+    @classmethod
     def _resolve_profile_variants(cls, profile_variants):
         """Validate and normalize the ``conan_profile_variants`` list.
 

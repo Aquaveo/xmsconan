@@ -529,6 +529,25 @@ DEFAULT_PYTHON_VERSIONS = ["3.13"]
 DEFAULT_PYBIND_BUILD_TYPES = ('Release',)
 
 
+def reject_empty_matrix_lists(matrix: MatrixTable) -> None:
+    """Raise when a ``[matrix]`` list is present but empty.
+
+    The reader lets an empty list through: it is well-typed, and what it
+    would do is the fan-out's business. What it would do is build nothing,
+    which looks exactly like a build that succeeded.
+
+    Raises:
+        ValueError: ``compiler_runtime`` or ``pybind_build_types`` is set to
+            an empty list.
+    """
+    for key in ('compiler_runtime', 'pybind_build_types'):
+        if getattr(matrix, key) == ():
+            raise ValueError(
+                f'matrix.{key} is empty, which would build nothing. '
+                f'Omit the key for every value, or name at least one.'
+            )
+
+
 def resolve_python_versions(python_versions: Optional[list[str]]):
     """Resolve a python_versions list from the caller's value or the environment.
 
@@ -621,16 +640,9 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
     # already resolved (the packager's constructor) pays only a re-check.
     python_versions = resolve_python_versions(python_versions)
     matrix = MatrixTable() if matrix is None else matrix
-    # The reader lets an empty list through: it is well-typed, and what it
-    # would do is this function's business. What it would do is build
-    # nothing, which looks exactly like a build that succeeded. Checked on
-    # every platform, before compiler_runtime is found to be inert here.
-    for key in ('compiler_runtime', 'pybind_build_types'):
-        if getattr(matrix, key) == ():
-            raise ValueError(
-                f'matrix.{key} is empty, which would build nothing. '
-                f'Omit the key for every value, or name at least one.'
-            )
+    # Checked on every platform, before compiler_runtime is found to be
+    # inert here.
+    reject_empty_matrix_lists(matrix)
     artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
 
     # Get system_platform name
