@@ -4,8 +4,8 @@ from dataclasses import fields, FrozenInstanceError
 import pytest
 
 from xmsconan.build_toml import (
-    _CI_KEY_TYPES, _load_toml, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, read_build_toml,
-    read_optional_build_toml, XmsDependency
+    _CI_KEY_TYPES, _load_toml, _matrix_table, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, matrix_table,
+    MatrixTable, read_build_toml, read_optional_build_toml, XmsDependency
 )
 
 
@@ -337,3 +337,95 @@ def test_read_optional_build_toml_reads_a_present_file(tmp_path):
                          'python_versions = ["3.13"]\n'
                          'windows_wheel_repair = true\n', encoding="utf-8")
     assert read_optional_build_toml(toml_file) == read_build_toml(toml_file)
+
+
+# --- [matrix] ---
+
+
+def test_matrix_table_reads_a_full_table():
+    """Every key lands in its field; lists become tuples because the record is frozen."""
+    table = matrix_table({
+        "compiler_runtime": ["dynamic"],
+        "pybind_build_types": ["Release", "Debug"],
+        "wheel_only": True,
+    }, "build.toml: [matrix]")
+    assert table == MatrixTable(compiler_runtime=("dynamic",), pybind_build_types=("Release", "Debug"),
+                                wheel_only=True)
+
+
+@pytest.mark.parametrize("raw", [None, {}], ids=["absent", "empty"])
+def test_matrix_table_absent_is_all_unset(raw):
+    """No table and an empty table both mean the file said nothing."""
+    assert matrix_table(raw, "build.toml: [matrix]") == MatrixTable()
+
+
+def test_matrix_table_returns_a_table_unchanged():
+    """A caller that already has a MatrixTable pays nothing and gets the same object back."""
+    table = MatrixTable(wheel_only=True)
+    assert matrix_table(table, "anywhere") is table
+
+
+def test_matrix_table_accepts_an_empty_list():
+    """An empty list is well-typed. Whether it builds anything is for the code that reads it."""
+    table = matrix_table({"compiler_runtime": []}, "build.toml: [matrix]")
+    assert table.compiler_runtime == ()
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (["dynamic"], r"\[matrix\] must be a table, got list"),
+    ({"compiler_runtimes": ["dynamic"]},
+     r"\[matrix\] has unknown key\(s\) compiler_runtimes\. Accepted keys: compiler_runtime, pybind_build_types, "
+     r"wheel_only\."),
+    ({"wheel_only": "true"}, r"\[matrix\]\.wheel_only must be a boolean, got str \('true'\)"),
+    ({"wheel_only": 1}, r"\[matrix\]\.wheel_only must be a boolean, got int \(1\)"),
+    ({"compiler_runtime": "dynamic"}, r"\[matrix\]\.compiler_runtime must be a list, got str"),
+    ({"compiler_runtime": ["MD"]},
+     r"\[matrix\]\.compiler_runtime names unknown value\(s\) MD\. Accepted values: dynamic, static\."),
+    ({"pybind_build_types": ["RelWithDebInfo", "Release"]},
+     r"\[matrix\]\.pybind_build_types names unknown value\(s\) RelWithDebInfo\. Accepted values: Release, Debug\."),
+    ({"pybind_build_types": [1]}, r"\[matrix\]\.pybind_build_types names unknown value\(s\) 1\."),
+], ids=[
+    "not-a-table", "misspelled-key", "quoted-boolean", "int-for-boolean", "string-for-list",
+    "unknown-runtime", "unknown-build-type", "non-string-entry",
+])
+def test_matrix_table_rejects_bad_shape_naming_the_file(raw, expected):
+    """A typo, a wrong type, or a word outside the vocabulary fails at read time, naming the file.
+
+    The accepted words are build.toml's own. They match Conan's and CMake's
+    spellings today because the file was designed that way, which is why the
+    check lives in the reader and not with the code that hands them to Conan.
+    """
+    with pytest.raises(ValueError, match=r"build\.toml: " + expected):
+        matrix_table(raw, "build.toml: [matrix]")
+
+
+def test_matrix_table_prefixes_messages_with_where():
+    """The generated conanfile hands the packager the same table, and its errors should name that file."""
+    with pytest.raises(ValueError, match=r"^conanfile\.py CONAN_MATRIX\.wheel_only must be a boolean"):
+        matrix_table({"wheel_only": "yes"}, "conanfile.py CONAN_MATRIX")
+
+
+def test_private_matrix_table_names_the_toml_path():
+    """The reader's wrapper supplies the ``<path>: [matrix]`` prefix the other tables use."""
+    with pytest.raises(ValueError, match=r"^sub/build\.toml: \[matrix\] has unknown key"):
+        _matrix_table({"bogus": 1}, "sub/build.toml")
+
+
+@pytest.mark.parametrize("table,expected", [
+    (MatrixTable(), {}),
+    (MatrixTable(wheel_only=False), {}),
+    (MatrixTable(compiler_runtime=("dynamic",)), {"compiler_runtime": ["dynamic"]}),
+    (MatrixTable(compiler_runtime=("dynamic", "static"), pybind_build_types=("Release", "Debug"), wheel_only=True),
+     {"compiler_runtime": ["dynamic", "static"], "pybind_build_types": ["Release", "Debug"], "wheel_only": True}),
+], ids=["default", "explicit-false", "one-key", "all-keys"])
+def test_matrix_table_to_dict_spells_the_table_as_the_file_would(table, expected):
+    """Only set keys appear, as lists, so the generated CONAN_MATRIX literal reads as before."""
+    assert table.to_dict() == expected
+
+
+def test_matrix_table_round_trips_through_to_dict():
+    """What the reader accepts, to_dict reproduces, and the reader accepts again."""
+    raw = {"compiler_runtime": ["static"], "pybind_build_types": ["Debug"], "wheel_only": True}
+    table = matrix_table(raw, "build.toml: [matrix]")
+    assert table.to_dict() == raw
+    assert matrix_table(table.to_dict(), "build.toml: [matrix]") == table

@@ -134,6 +134,36 @@ class CoverageTable:
 
 
 @dataclass(frozen=True)
+class MatrixTable:
+    """The ``[matrix]`` table as the file wrote it.
+
+    None means the file did not set the key. What an unset key means -- which
+    runtimes build, which build types get a pybind variant -- is decided where
+    the table is read, in :mod:`xmsconan.package_tools.matrix`, not here.
+    See ``docs/USAGE.md`` §5.4.1 for the keys.
+    """
+
+    compiler_runtime: Optional[tuple[str, ...]] = None
+    pybind_build_types: Optional[tuple[str, ...]] = None
+    wheel_only: bool = False
+
+    def to_dict(self) -> dict:
+        """The table as the file would spell it: only the keys that were set, with lists for lists.
+
+        An absent table comes back as ``{}``, so a generated file that writes
+        this literal is the same whether the table was read or built in code.
+        """
+        table = {}
+        if self.compiler_runtime is not None:
+            table["compiler_runtime"] = list(self.compiler_runtime)
+        if self.pybind_build_types is not None:
+            table["pybind_build_types"] = list(self.pybind_build_types)
+        if self.wheel_only:
+            table["wheel_only"] = True
+        return table
+
+
+@dataclass(frozen=True)
 class BuildToml:
     """A parsed ``build.toml`` with every optional key at its documented default.
 
@@ -358,6 +388,74 @@ def _coverage_table(raw, toml_path) -> CoverageTable:
             f"got {python_version!r}"
         )
     return CoverageTable(**values)
+
+
+_MATRIX_KEYS = frozenset(f.name for f in fields(MatrixTable))
+
+#: The words each list-valued ``[matrix]`` key may hold. This is build.toml's
+#: vocabulary. It matches Conan's runtime names and CMake's build types today
+#: because the file was designed that way, not because it is bound to them;
+#: if either tool renamed, the file format or a conversion would change, and
+#: the check here would not.
+_MATRIX_VOCABULARY = {
+    "compiler_runtime": ("dynamic", "static"),
+    "pybind_build_types": ("Release", "Debug"),
+}
+
+
+def matrix_table(raw, where: str) -> MatrixTable:
+    """Validate ``raw`` as a ``[matrix]`` table and return it as a :class:`MatrixTable`.
+
+    The checks are about the file's shape: the table is a table, its keys are
+    spelled right, each value has the right type, and each list names only
+    accepted words. Whether a well-typed value makes sense -- an empty list
+    builds nothing -- is a question for the code that reads the table.
+
+    Args:
+        raw: The table as parsed, None for an absent table, or an existing
+            :class:`MatrixTable`, which is returned as is.
+        where: The prefix for error messages, such as ``build.toml: [matrix]``
+            or the path of a generated ``conanfile.py``.
+
+    Raises:
+        ValueError: ``raw`` is not a table, carries an unknown key, gives a
+            key the wrong type, or names a word outside the key's vocabulary.
+    """
+    if raw is None:
+        return MatrixTable()
+    if isinstance(raw, MatrixTable):
+        return raw
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where} must be a table, got {type(raw).__name__}")
+    _reject_unknown_keys(raw, _MATRIX_KEYS, where)
+
+    values = {}
+    if "wheel_only" in raw:
+        flag = raw["wheel_only"]
+        # A quoted "true" is the likely typo, and it is truthy: unchecked, it
+        # would turn the switch on for a file that wrote it wrong.
+        if not isinstance(flag, bool):
+            raise ValueError(f"{where}.wheel_only must be a boolean, got {type(flag).__name__} ({flag!r})")
+        values["wheel_only"] = flag
+    for key, accepted in _MATRIX_VOCABULARY.items():
+        if key not in raw:
+            continue
+        words = raw[key]
+        if not isinstance(words, (list, tuple)):
+            raise ValueError(f"{where}.{key} must be a list, got {type(words).__name__}")
+        unknown = sorted(str(word) for word in words if not isinstance(word, str) or word not in accepted)
+        if unknown:
+            raise ValueError(
+                f"{where}.{key} names unknown value(s) {', '.join(unknown)}. "
+                f"Accepted values: {', '.join(accepted)}."
+            )
+        values[key] = tuple(words)
+    return MatrixTable(**values)
+
+
+def _matrix_table(raw, toml_path) -> MatrixTable:
+    """Validate ``raw`` as a ``[matrix]`` table and return it as a :class:`MatrixTable`."""
+    return matrix_table(raw, f"{toml_path}: [matrix]")
 
 
 def _xms_dependency(entry, toml_path) -> XmsDependency:
