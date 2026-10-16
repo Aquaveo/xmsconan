@@ -137,10 +137,7 @@ class CoverageTable:
 class MatrixTable:
     """The ``[matrix]`` table as the file wrote it.
 
-    None means the file did not set the key. What an unset key means -- which
-    runtimes build, which build types get a pybind variant -- is decided where
-    the table is read, in :mod:`xmsconan.package_tools.matrix`, not here.
-    See ``docs/USAGE.md`` §5.4.1 for the keys.
+    `None` indicates the file didn't have that key.
     """
 
     compiler_runtime: Optional[tuple[str, ...]] = None
@@ -392,11 +389,7 @@ def _coverage_table(raw, toml_path) -> CoverageTable:
 
 _MATRIX_KEYS = frozenset(f.name for f in fields(MatrixTable))
 
-#: The words each list-valued ``[matrix]`` key may hold. This is build.toml's
-#: vocabulary. It matches Conan's runtime names and CMake's build types today
-#: because the file was designed that way, not because it is bound to them;
-#: if either tool renamed, the file format or a conversion would change, and
-#: the check here would not.
+#: Mapping from ``[matrix]`` key to accepted values for the key.
 _MATRIX_VOCABULARY = {
     "compiler_runtime": ("dynamic", "static"),
     "pybind_build_types": ("Release", "Debug"),
@@ -406,10 +399,8 @@ _MATRIX_VOCABULARY = {
 def matrix_table(raw, where: str) -> MatrixTable:
     """Validate ``raw`` as a ``[matrix]`` table and return it as a :class:`MatrixTable`.
 
-    The checks are about the file's shape: the table is a table, its keys are
-    spelled right, each value has the right type, and each list names only
-    accepted words. Whether a well-typed value makes sense -- an empty list
-    builds nothing -- is a question for the code that reads the table.
+    Only validates the file's structure. What values mean and whether they
+    make sense and are consistent is a higher level concern.
 
     Args:
         raw: The table as parsed, None for an absent table, or an existing
@@ -432,7 +423,7 @@ def matrix_table(raw, where: str) -> MatrixTable:
     values = {}
     if "wheel_only" in raw:
         flag = raw["wheel_only"]
-        # A quoted "true" is the likely typo, and it is truthy: unchecked, it
+        # A quoted "false" is the likely typo, and it is truthy: unchecked, it
         # would turn the switch on for a file that wrote it wrong.
         if not isinstance(flag, bool):
             raise ValueError(f"{where}.wheel_only must be a boolean, got {type(flag).__name__} ({flag!r})")
