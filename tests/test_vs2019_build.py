@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 
+from xmsconan.build_toml import MatrixTable
 from xmsconan.build_tools import vs2019_build as vs
 from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
 from .utils import patch_env
@@ -618,13 +619,13 @@ def test_preview_honors_the_library_matrix_table(tmp_path, capsys):
     assert "==> xmscore: 7 configuration(s)" in out
 
 
-def test_library_matrix_is_empty_without_a_build_toml(tmp_path):
+def test_library_matrix_is_unset_without_a_build_toml(tmp_path):
     """A checkout with no build.toml previews and builds the full fan-out."""
-    assert vs._library_matrix(str(tmp_path)) == {}
+    assert vs._library_matrix(str(tmp_path)) == MatrixTable()
 
 
 def test_library_matrix_reads_the_table(tmp_path):
-    """The table is returned as declared, for the packager to validate."""
+    """The table comes back as the reader typed it, already validated."""
     (tmp_path / "build.toml").write_text(
         'library_name = "xmscore"\n'
         'description = "desc"\n'
@@ -636,7 +637,7 @@ def test_library_matrix_reads_the_table(tmp_path):
         'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
-    assert vs._library_matrix(str(tmp_path)) == {"pybind_build_types": ["Release", "Debug"]}
+    assert vs._library_matrix(str(tmp_path)) == MatrixTable(pybind_build_types=("Release", "Debug"))
 
 
 # --- build_library -------------------------------------------------------
@@ -728,10 +729,9 @@ def test_build_library_success(mock_run, mock_generate, mock_packager_cls, libra
         apply_boost_defaults=False,
         python_versions=["3.10", "3.13"],
         # This checkout's build.toml declares no [matrix], so the fan-out is
-        # unrestricted -- the table is read per library, not per run. Passed
-        # through as the empty table rather than coerced to None, so a malformed
-        # value would reach resolve_matrix and be rejected.
-        matrix={},
+        # unrestricted -- the table is read per library, not per run, and
+        # arrives as the reader's all-unset table rather than None.
+        matrix=MatrixTable(),
     )
     packager.generate_configurations.assert_called_once_with("windows_vs2019")
     packager.filter_configurations.assert_not_called()
@@ -1451,9 +1451,7 @@ def test_build_library_passes_the_librarys_own_matrix(mock_generate, mock_packag
 
     vs.build_library(XMSCORE, str(tmp_path), version="7.0.0", python_versions=["3.13"])
 
-    assert mock_packager_cls.call_args.kwargs["matrix"] == {
-        "compiler_runtime": ["dynamic"],
-    }
+    assert mock_packager_cls.call_args.kwargs["matrix"] == MatrixTable(compiler_runtime=("dynamic",))
 
 
 def test_library_matrix_rejects_an_unknown_top_level_key(tmp_path):

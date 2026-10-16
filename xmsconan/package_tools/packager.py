@@ -11,6 +11,7 @@ import tempfile
 import time
 from typing import Any, NamedTuple, Optional
 
+from xmsconan.build_toml import matrix_table
 from xmsconan.constants import (
     build_folder_for_generator,
     DEFAULT_REMOTE_NAME,
@@ -235,7 +236,10 @@ class XmsConanPackager(object):
         self._profile_conf = dict(DEFAULT_PROFILE_CONF) if profile_conf is None else dict(profile_conf)
         self._profile_variants = self._resolve_profile_variants(profile_variants)
         self._python_versions = build_matrix.resolve_python_versions(python_versions)
-        self._matrix = build_matrix.resolve_matrix(matrix)
+        # The generated build.py hands the table over as the CONAN_MATRIX dict
+        # literal, so this is the one place the reader's checks run outside
+        # the reader. Every other caller passes the MatrixTable it read.
+        self._matrix = matrix_table(matrix, where='[matrix]')
         self._coverage = (
             coverage if coverage is not None
             else os.environ.get('XMS_COVERAGE') == '1'
@@ -279,17 +283,6 @@ class XmsConanPackager(object):
 
     #: Values ``kinds`` may name; the return values of :meth:`configuration_kind`.
     _VARIANT_KINDS = frozenset({'library', 'python', 'testing'})
-
-    @classmethod
-    def resolve_matrix(cls, matrix: Optional[dict]) -> dict:
-        """Validate the ``[matrix]`` table and fill in its defaults.
-
-        A delegate to :func:`xmsconan.package_tools.matrix.resolve_matrix`,
-        which documents the table and its failure modes. Kept for callers
-        outside this repository that validated ``[matrix]`` through the
-        class; code inside it calls the module function.
-        """
-        return build_matrix.resolve_matrix(matrix)
 
     @classmethod
     def _resolve_profile_variants(cls, profile_variants):

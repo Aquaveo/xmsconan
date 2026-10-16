@@ -27,7 +27,6 @@ from xmsconan.package_tools.matrix import (
     COVERAGE_PYBIND_BUILD_TYPE,
     filter_matches,
     is_instrumented_configuration,
-    resolve_matrix,
     summarize_filter_matches,
     validate_filter_dict,
 )
@@ -165,13 +164,12 @@ def _reject_matrix_conflict(build_filter: dict, matrix) -> None:
 
     Args:
         build_filter: The validated ``[filter]`` table.
-        matrix: The ``[matrix]`` table, or None.
+        matrix: The ``[matrix]`` table as the reader hands it out.
 
     Raises:
         ValueError: When the two tables cannot both hold.
     """
-    resolved = resolve_matrix(matrix)
-    runtimes = resolved.get("compiler_runtime")
+    runtimes = matrix.compiler_runtime
     pinned = build_filter.get("compiler.runtime")
     if runtimes and pinned is not None and pinned not in runtimes:
         raise ValueError(

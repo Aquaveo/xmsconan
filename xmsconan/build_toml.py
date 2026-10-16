@@ -168,9 +168,9 @@ class BuildToml:
     """A parsed ``build.toml`` with every optional key at its documented default.
 
     Field names are the file's top-level keys; see ``docs/USAGE.md`` §5 for
-    what each one means. ``[matrix]`` and ``[filter]`` stay plain dicts: the
-    matrix module owns their vocabulary and both are written verbatim into
-    generated files.
+    what each one means. ``[filter]`` stays a plain dict: its settings
+    vocabulary comes from the platform table in the matrix module, and the
+    generated ``build.py`` carries it verbatim.
     """
 
     library_name: str
@@ -205,7 +205,7 @@ class BuildToml:
     ci: CiTable = field(default_factory=CiTable)
     coverage: CoverageTable = field(default_factory=CoverageTable)
     filter: dict = field(default_factory=dict)
-    matrix: dict = field(default_factory=dict)
+    matrix: MatrixTable = field(default_factory=MatrixTable)
 
     def __post_init__(self):
         """Derive ``python_namespaced_dir`` from ``library_name`` when unset."""
@@ -217,7 +217,7 @@ class BuildToml:
 #: A key absent from here is a typo: the readers fall back to a default, so a
 #: misspelling has no symptom until a generated artifact is not what was asked
 #: for. The sub-tables ``[ci]`` (_validate_ci_table), ``[matrix]``
-#: (matrix.resolve_matrix), ``[filter]`` (build_filter.load_build_filter),
+#: (_matrix_table), ``[filter]`` (build_filter.load_build_filter),
 #: ``conan_profile_variants`` and ``vs2019_dependency_overrides`` enforce the same
 #: rule for their own keys.
 _KNOWN_KEYS = frozenset(f.name for f in fields(BuildToml))
@@ -499,6 +499,7 @@ def _toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
         raise ValueError(f"{toml_path} does not define library_name")
     values = dict(toml_data)
     values["coverage"] = _coverage_table(values.get("coverage", {}), toml_path)
+    values["matrix"] = _matrix_table(values.get("matrix", {}), toml_path)
     values["xms_dependencies"] = [
         _xms_dependency(entry, toml_path) for entry in values.get("xms_dependencies", [])
     ]
