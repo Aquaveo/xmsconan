@@ -218,7 +218,7 @@ pybind_build_types = ["Release", "Debug"]   # the desktop application links the 
 wheel_only = true                           # only the wheel ships; 3 builds, not 13
 ```
 
-An unknown key, a value outside the accepted set (`"MD"`, `"RelWithDebInfo"`), or an empty list is rejected when the packager is constructed. An empty list would build nothing at all, which looks exactly like a successful build — omit the key instead.
+An unknown key, a value of the wrong type, or a value outside the accepted set (`"MD"`, `"RelWithDebInfo"`) is rejected when `build.toml` is read, by every tool that reads it, with a message naming the file and the key. The generated `build.py` reads the table from `CONAN_MATRIX` instead and reports the same problems when the packager is constructed. An empty list passes the reader and is rejected when the configurations are generated: it would build nothing at all, which looks exactly like a successful build — omit the key instead.
 
 The table reaches the packager as `CONAN_MATRIX` in the generated `conanfile.py`, which `build.py` forwards. `xmsconan vs2019` reads the `build.toml` in each checkout directly, so the same table applies on that track (§16).
 

@@ -134,13 +134,40 @@ class CoverageTable:
 
 
 @dataclass(frozen=True)
+class MatrixTable:
+    """The ``[matrix]`` table as the file wrote it.
+
+    `None` indicates the file didn't have that key.
+    """
+
+    compiler_runtime: Optional[tuple[str, ...]] = None
+    pybind_build_types: Optional[tuple[str, ...]] = None
+    wheel_only: bool = False
+
+    def to_dict(self) -> dict:
+        """The table as the file would spell it: only the keys that were set, with lists for lists.
+
+        An absent table comes back as ``{}``, so a generated file that writes
+        this literal is the same whether the table was read or built in code.
+        """
+        table = {}
+        if self.compiler_runtime is not None:
+            table["compiler_runtime"] = list(self.compiler_runtime)
+        if self.pybind_build_types is not None:
+            table["pybind_build_types"] = list(self.pybind_build_types)
+        if self.wheel_only:
+            table["wheel_only"] = True
+        return table
+
+
+@dataclass(frozen=True)
 class BuildToml:
     """A parsed ``build.toml`` with every optional key at its documented default.
 
     Field names are the file's top-level keys; see ``docs/USAGE.md`` §5 for
-    what each one means. ``[matrix]`` and ``[filter]`` stay plain dicts: the
-    matrix module owns their vocabulary and both are written verbatim into
-    generated files.
+    what each one means. ``[filter]`` stays a plain dict: its settings
+    vocabulary comes from the platform table in the matrix module, and the
+    generated ``build.py`` carries it verbatim.
     """
 
     library_name: str
@@ -175,7 +202,7 @@ class BuildToml:
     ci: CiTable = field(default_factory=CiTable)
     coverage: CoverageTable = field(default_factory=CoverageTable)
     filter: dict = field(default_factory=dict)
-    matrix: dict = field(default_factory=dict)
+    matrix: MatrixTable = field(default_factory=MatrixTable)
 
     def __post_init__(self):
         """Derive ``python_namespaced_dir`` from ``library_name`` when unset."""
@@ -187,7 +214,7 @@ class BuildToml:
 #: A key absent from here is a typo: the readers fall back to a default, so a
 #: misspelling has no symptom until a generated artifact is not what was asked
 #: for. The sub-tables ``[ci]`` (_validate_ci_table), ``[matrix]``
-#: (matrix.resolve_matrix), ``[filter]`` (build_filter.load_build_filter),
+#: (_matrix_table), ``[filter]`` (build_filter.load_build_filter),
 #: ``conan_profile_variants`` and ``vs2019_dependency_overrides`` enforce the same
 #: rule for their own keys.
 _KNOWN_KEYS = frozenset(f.name for f in fields(BuildToml))
@@ -360,6 +387,68 @@ def _coverage_table(raw, toml_path) -> CoverageTable:
     return CoverageTable(**values)
 
 
+_MATRIX_KEYS = frozenset(f.name for f in fields(MatrixTable))
+
+#: Mapping from ``[matrix]`` key to accepted values for the key.
+_MATRIX_VOCABULARY = {
+    "compiler_runtime": ("dynamic", "static"),
+    "pybind_build_types": ("Release", "Debug"),
+}
+
+
+def matrix_table(raw, where: str) -> MatrixTable:
+    """Validate ``raw`` as a ``[matrix]`` table and return it as a :class:`MatrixTable`.
+
+    Only validates the file's structure. What values mean and whether they
+    make sense and are consistent is a higher level concern.
+
+    Args:
+        raw: The table as parsed, None for an absent table, or an existing
+            :class:`MatrixTable`, which is returned as is.
+        where: The prefix for error messages, such as ``build.toml: [matrix]``
+            or the path of a generated ``conanfile.py``.
+
+    Raises:
+        ValueError: ``raw`` is not a table, carries an unknown key, gives a
+            key the wrong type, or names a word outside the key's vocabulary.
+    """
+    if raw is None:
+        return MatrixTable()
+    if isinstance(raw, MatrixTable):
+        return raw
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where} must be a table, got {type(raw).__name__}")
+    _reject_unknown_keys(raw, _MATRIX_KEYS, where)
+
+    values = {}
+    if "wheel_only" in raw:
+        flag = raw["wheel_only"]
+        # A quoted "false" is the likely typo, and it is truthy: unchecked, it
+        # would turn the switch on for a file that wrote it wrong.
+        if not isinstance(flag, bool):
+            raise ValueError(f"{where}.wheel_only must be a boolean, got {type(flag).__name__} ({flag!r})")
+        values["wheel_only"] = flag
+    for key, accepted in _MATRIX_VOCABULARY.items():
+        if key not in raw:
+            continue
+        words = raw[key]
+        if not isinstance(words, (list, tuple)):
+            raise ValueError(f"{where}.{key} must be a list, got {type(words).__name__}")
+        unknown = sorted(str(word) for word in words if not isinstance(word, str) or word not in accepted)
+        if unknown:
+            raise ValueError(
+                f"{where}.{key} names unknown value(s) {', '.join(unknown)}. "
+                f"Accepted values: {', '.join(accepted)}."
+            )
+        values[key] = tuple(words)
+    return MatrixTable(**values)
+
+
+def _matrix_table(raw, toml_path) -> MatrixTable:
+    """Validate ``raw`` as a ``[matrix]`` table and return it as a :class:`MatrixTable`."""
+    return matrix_table(raw, f"{toml_path}: [matrix]")
+
+
 def _xms_dependency(entry, toml_path) -> XmsDependency:
     """Validate one ``xms_dependencies`` entry and return it as an :class:`XmsDependency`."""
     where = f"{toml_path}: xms_dependencies entry"
@@ -401,6 +490,7 @@ def _toml_to_dataclass(toml_data: dict, toml_path) -> BuildToml:
         raise ValueError(f"{toml_path} does not define library_name")
     values = dict(toml_data)
     values["coverage"] = _coverage_table(values.get("coverage", {}), toml_path)
+    values["matrix"] = _matrix_table(values.get("matrix", {}), toml_path)
     values["xms_dependencies"] = [
         _xms_dependency(entry, toml_path) for entry in values.get("xms_dependencies", [])
     ]

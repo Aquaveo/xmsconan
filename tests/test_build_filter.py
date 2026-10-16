@@ -1,7 +1,7 @@
 """Tests for generator_tools.build_filter."""
 import pytest
 
-from xmsconan.build_toml import BuildToml, CiTable
+from xmsconan.build_toml import BuildToml, CiTable, matrix_table
 from xmsconan.generator_tools.build_filter import (
     _name_build_jobs,
     ci_build_jobs,
@@ -175,7 +175,7 @@ def test_load_build_filter_rejects_a_runtime_matrix_excludes():
     """
     config = BuildToml(
         library_name="xmscore",
-        matrix={"compiler_runtime": ["dynamic"]},
+        matrix=matrix_table({"compiler_runtime": ["dynamic"]}, "[matrix]"),
         filter={"compiler.runtime": "static"},
     )
 
@@ -187,7 +187,7 @@ def test_load_build_filter_accepts_a_runtime_the_matrix_keeps():
     """The same pin is fine when [matrix] still builds it."""
     config = BuildToml(
         library_name="xmscore",
-        matrix={"compiler_runtime": ["dynamic", "static"]},
+        matrix=matrix_table({"compiler_runtime": ["dynamic", "static"]}, "[matrix]"),
         filter={"compiler.runtime": "static"},
     )
 
@@ -209,7 +209,7 @@ def test_load_build_filter_checks_the_filter_against_the_narrowed_matrix():
 
     widened = BuildToml(
         library_name="xmscore",
-        matrix={"pybind_build_types": ["Release", "Debug"]},
+        matrix=matrix_table({"pybind_build_types": ["Release", "Debug"]}, "[matrix]"),
         filter=debug_pybind,
     )
     assert load_build_filter(widened) == debug_pybind
@@ -258,7 +258,7 @@ def test_load_build_filter_accepts_python_version_from_a_platform_key():
 
 def _effects(build_filter, matrix=None):
     """Measure a filter the way generate_ci does, through load_build_filter."""
-    config = BuildToml(library_name="xmscore", filter=build_filter, matrix=matrix or {})
+    config = BuildToml(library_name="xmscore", filter=build_filter, matrix=matrix_table(matrix, "[matrix]"))
     build_filter = load_build_filter(config)
     return ci_filter_effects(build_filter, config)
 
@@ -658,7 +658,7 @@ def _wheel_only_jobs(**matrix):
     without a pinned ABI there is no "the build type the coverage run reads".
     """
     config = BuildToml(library_name="xmscore",
-                       matrix={"wheel_only": True, **matrix})
+                       matrix=matrix_table({"wheel_only": True, **matrix}, "[matrix]"))
     return ci_build_jobs({}, config, ["3.13"], coverage=True,
                          coverage_python_version="3.13")
 
@@ -700,7 +700,7 @@ def test_build_job_names_are_unique(matrix, versions):
     which does carry the build type.
     """
     config = BuildToml(library_name="xmscore",
-                       matrix={"wheel_only": True, **matrix})
+                       matrix=matrix_table({"wheel_only": True, **matrix}, "[matrix]"))
     jobs = ci_build_jobs({}, config, versions, coverage=True,
                          coverage_python_version=versions[0])
     names = [job["name"] for job in jobs]
