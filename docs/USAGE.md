@@ -133,6 +133,10 @@ How a failure is *reported* is one contract for `gen`, `ci`, `profiles`, and `bu
 |---|---|---|
 | `library_name` | string | Conan / CMake project name. e.g. `"xmscore"`. |
 | `description` | string | One-line summary; flows into `conanfile.py` and the wheel metadata. |
+| `[ci].python_versions` | array[string] | Python versions to build Windows wheels for, e.g. `["3.14"]`. Required because a fixed default goes stale: the desktop products embed one Python version and need a wheel for exactly that one. See §5.6 and §8. |
+| `[ci].windows_wheel_repair` | boolean | Whether the Windows wheel is repaired with `delvewheel`. Required because the right answer depends on who loads the wheel, and either default is wrong for one kind of library. See §5.6 and §12.1. |
+
+Every `xmsconan` command that reads `build.toml` rejects a file missing one of these, naming each missing key and what it decides.
 
 ### 5.2 Source layout
 
@@ -228,7 +232,7 @@ The table reaches the packager as `CONAN_MATRIX` in the generated `conanfile.py`
 
 ### 5.6 CI configuration (`[ci]` table)
 
-These drive the CI templates. All optional.
+These drive the CI templates. All optional except `[ci].python_versions` and `[ci].windows_wheel_repair`, which every reader of `build.toml` requires (§5.1).
 
 | Field | Default | Description |
 |---|---|---|
@@ -236,7 +240,7 @@ These drive the CI templates. All optional.
 | `[ci].windows` | `true` | Emit a Windows job. |
 | `[ci].linux` | `true` | Emit the Linux jobs. **GitLab only**, like `[ci].windows` — the GitHub templates ignore both. Setting it to `false` also removes `Repair Wheel`, `Wheel Deploy`, `Conan Deploy - Linux` and the `Package` stage: those three jobs are Linux-specific and consume the Linux job's artifacts through `dependencies:`. The Windows wheel jobs are unaffected — each platform stages and publishes its own wheel (§10.2). Intended for libraries that cannot build on Linux at all; see the note below. |
 | `[ci].windows_vs2019` | `false` | Also build the `windows_vs2019` (msvc 192) matrix and publish it to the `aquaveo-vs2019` remote. **GitLab only** — a GitHub project setting it gets a warning and no jobs. Emits `Conan Build - Windows VS2019` and (with `[ci].deploy`) `Conan Deploy - Windows VS2019`, beside the msvc 194 pair rather than instead of it, so it requires `[ci].windows` and is rejected with it off. Opt-in because it roughly doubles the Windows half of a pipeline and only the libraries the VS2019-era desktop products consume need msvc 192 binaries. No wheels: see §10.2. |
-| `[ci].windows_wheel_repair` | **derived from `ci_type`**: `true` on `github`, `false` on `gitlab` | Repair the Windows wheel. `false` skips the in-place `delvewheel` repair in the Windows build job on **both** GitLab and GitHub, drops the same step from `xmsconan publish` when it runs on Windows and from the `xmsconan vs2019` track, and skips staging the Conan cache's DLLs for a repair that no longer happens. On both forges the flag is read by `xmsconan job build` (§10.4) rather than rendered into the job, so changing it takes effect without regenerating the pipeline. The unrepaired wheel is still built, uploaded as an artifact, and deployed. Windows-scoped by design — see §12.1 for the default's rationale. |
+| `[ci].windows_wheel_repair` | **required** | Repair the Windows wheel. `true` for a wheel installed into ordinary Python environments, `false` for one the desktop products load; §12.1 explains why there is no default. `false` skips the in-place `delvewheel` repair in the Windows build job on **both** GitLab and GitHub, drops the same step from `xmsconan publish` when it runs on Windows and from the `xmsconan vs2019` track, and skips staging the Conan cache's DLLs for a repair that no longer happens. On both forges the flag is read by `xmsconan job build` (§10.4) rather than rendered into the job, so changing it takes effect without regenerating the pipeline. The unrepaired wheel is still built, uploaded as an artifact, and deployed. Windows-scoped by design — see §12.1. |
 | `[ci].linux_arm` | `false` | Emit a Linux ARM job (GitHub only). |
 | `[ci].deploy` | `true` | Emit deploy jobs (only run on tag pushes). |
 | `[ci].coverage` | `false` | Emit a coverage job. On GitLab adds a `Coverage` stage + Pages upload; on GitHub adds a separate `Coverage.yaml` workflow. Both delegate to `xmsconan coverage`. Thresholds and filters come from `[coverage]` (see §5.7). |
@@ -244,9 +248,9 @@ These drive the CI templates. All optional.
 | `[ci].split_tests` | `false` | Split build and C++ test into two stages so testing artifacts can be reused. The `Test` stage gets one `Run C++ Tests - <label>` job per testing configuration the build stages — `Release-testing` and `Debug-testing` on the default matrix — each naming its own artifact directory with `--label` (§10.2). Those jobs are `except: - tags`, so a tag pipeline never runs the Linux suite: it is left to the branch pipeline of the commit being tagged. |
 | `[ci].test_shards` | `0` | When >1, run the C++ tests as N gtest shards **inside a single container**. The recipe skips `cmake.test()` in this mode, so the shards are the only thing that runs the C++ tests — a missing runner binary fails the build rather than being skipped. Every `xmsconan job build` reads the count and shards in place, with one exception: under `split_tests = true`, GitLab's Linux build skips the C++ tests at any count, and each `Run C++ Tests - <label>` job runs `xmsconan job test`, which reads the count from `build.toml`, forks N runner processes (one when `test_shards` is 0 or 1) and merges their JUnit XML into one `TEST-cxxtest.xml` (§10.2). The shard count is per test job, so a two-configuration matrix runs `2 × N` processes across two containers. GitLab's Windows builds have no test job, so they shard in place under `split_tests` too. The count is rendered into neither pipeline, so raising it is a `build.toml` edit on either host, with no CI regeneration. This was previously GitLab's `parallel: N`, which bought its concurrency by starting N containers — each one repeating the container start, the `pip install` and the artifact download to run one Nth of the suite. |
 | `[ci].docker_image` | `""` | Override the build container image (skips the default Aquaveo images). |
-| `[ci].python_versions` | `["3.13"]` | Python versions to build **on Windows**. macOS and Linux take the highest entry unless they are given their own list below. Set to `["3.10", "3.13"]` to build a Windows 3.10 wheel + Conan binary in addition to 3.13. See §8. |
-| `[ci].mac_python_versions` | highest of `[ci].python_versions` | Python versions the macOS matrix fans out across. Separate from `python_versions` so a Windows-only ABI (3.10 ships in Windows wheels for the desktop products) does not silently multiply the mac matrix. See §8. |
-| `[ci].linux_python_versions` | highest of `[ci].python_versions` | Python versions the Linux and Linux-ARM matrices fan out across. Every entry needs a matching `conan-gcc13-py<version>` container to exist, which is why this tracks the published images rather than `python_versions`. See §8. |
+| `[ci].python_versions` | **required** | Python versions to build **on Windows**, as quoted `"X.Y"` strings; at least one. macOS and Linux take the highest entry unless they are given their own list below. Each entry builds a Windows wheel + Conan binary for that version; a library the desktop products consume must include the version they embed. See §8. |
+| `[ci].mac_python_versions` | highest of `[ci].python_versions` | Python versions the macOS matrix fans out across. Separate from `python_versions` so a Windows-only ABI (one the desktop products need in a Windows wheel and nothing else uses) does not silently multiply the mac matrix. Leave it out for the default; when written it must name at least one version, since an empty list is rejected. See §8. |
+| `[ci].linux_python_versions` | highest of `[ci].python_versions` | Python versions the Linux and Linux-ARM matrices fan out across. Every entry needs a matching `conan-gcc13-py<version>` container to exist, which is why this tracks the published images rather than `python_versions`. Leave it out for the default; when written it must name at least one version, since an empty list is rejected. See §8. |
 
 All three lists are checked against the conanfile's `python_version` option at generation time. A version the recipe does not allow fails `xmsconan ci` with a message naming the supported set, rather than generating a matrix leg that dies later at `conan` configure time in CI.
 
@@ -261,7 +265,7 @@ Consumed by `xmsconan coverage`; only relevant when `[ci].coverage = true` (or w
 | `[coverage].python_threshold` | `0` | Minimum Python line coverage percent (pytest-cov). |
 | `[coverage].filters` | `["<library_name>/"]` | gcovr `--filter` patterns. Defaults to the library's own source tree. |
 | `[coverage].excludes` | `[".*\\.t\\.h$", ".*/_package/tests/.*"]` | gcovr `--exclude` patterns. Strips test fixtures and the Python test tree from the C++ measurement. The pybind layer is **not** excluded any more: it was, back when only the testing build was read — and that build does not compile the bindings, so the exclude removed nothing that existed. Now that the pybind build is instrumented and merged in, excluding it would collect the binding layer's coverage and then throw it away. Name it here to restore the old behavior. |
-| `[coverage].python_version` | highest of `[ci].linux_python_versions` (default `"3.13"`) | The single Python ABI the pybind coverage build is pinned to. The fallback reads the **Linux** list because coverage only runs on Linux, and on GitLab the resolved version also selects the container image — taking the highest Windows entry could name a version with no published image. `xmsconan coverage` runs two builds: a `testing=True+pybind=False+Debug` build for C++ coverage (no ABI dependency) and a `pybind=True+testing=False+Release` build for Python coverage that gets pinned to this version. Multi-Python fan-out is intentionally collapsed on the pybind side so the Python report is deterministic. Override only when the highest CI version isn't the one you want to gate on. The resolved value is also exported as `PYTHON_TARGET_VERSION` into **both** coverage builds, so the matrix `build.py` generates can actually satisfy the `--filter` applied to it — `--filter` narrows an existing matrix and cannot introduce an ABI the matrix lacks. It **overrides** any ambient `PYTHON_TARGET_VERSION` (and logs a warning naming both values, plus the `[coverage].python_version` setting that would honor the one it ignored): the same resolved value drives the pybind `--filter` and the package lookup, and all three must agree or the build produces one ABI and the lookup searches for another. Like the `[ci]` lists, an explicit value here is checked against the conanfile's `python_version` option at resolution time — the coverage run reads this key directly rather than through the `[ci]` validation, so the check lives with the resolver and fires for `xmsconan ci` and `xmsconan coverage` alike. |
+| `[coverage].python_version` | highest of `[ci].linux_python_versions` | The single Python ABI the pybind coverage build is pinned to. The fallback reads the **Linux** list because coverage only runs on Linux, and on GitLab the resolved version also selects the container image — taking the highest Windows entry could name a version with no published image. `xmsconan coverage` runs two builds: a `testing=True+pybind=False+Debug` build for C++ coverage (no ABI dependency) and a `pybind=True+testing=False+Release` build for Python coverage that gets pinned to this version. Multi-Python fan-out is intentionally collapsed on the pybind side so the Python report is deterministic. Override only when the highest CI version isn't the one you want to gate on. The resolved value is also exported as `PYTHON_TARGET_VERSION` into **both** coverage builds, so the matrix `build.py` generates can actually satisfy the `--filter` applied to it — `--filter` narrows an existing matrix and cannot introduce an ABI the matrix lacks. It **overrides** any ambient `PYTHON_TARGET_VERSION` (and logs a warning naming both values, plus the `[coverage].python_version` setting that would honor the one it ignored): the same resolved value drives the pybind `--filter` and the package lookup, and all three must agree or the build produces one ABI and the lookup searches for another. Like the `[ci]` lists, an explicit value here is checked against the conanfile's `python_version` option at resolution time — the coverage run reads this key directly rather than through the `[ci]` validation, so the check lives with the resolver and fires for `xmsconan ci` and `xmsconan coverage` alike. |
 
 Both thresholds default to `0`, which means "report only, don't gate." Set them to real values once a baseline has been established.
 
@@ -330,6 +334,7 @@ pybind_sources  = ["xmscore/python/xmscore_py.cpp"]
 [ci]
 linux_arm = true
 python_versions = ["3.10", "3.13"]
+windows_wheel_repair = true
 ```
 
 ---
@@ -480,29 +485,34 @@ A library whose dependencies are all static needs none of this and is unaffected
 
 ## 8. Python version support (3.10, 3.13, 3.14)
 
-xmsconan defaults to **Python 3.13 only** everywhere. Each platform opts in to more
-versions through its own list, because what limits the fan-out differs per platform:
+Every `build.toml` names the Windows versions in `[ci].python_versions`; there is
+no default. It used to default to `["3.13"]`, and a fixed default goes stale for
+every library: the desktop products embed one Python version and need a Windows
+wheel for exactly that one, and nothing said the default had stopped building it
+until the wheel was missing at install time. Each platform opts in
+to more versions through its own list, because what limits the fan-out differs per
+platform:
 
 ```toml
 [ci]
-python_versions       = ["3.10", "3.13", "3.14"]   # Windows
+python_versions       = ["3.10", "3.13", "3.14"]   # Windows (required)
 mac_python_versions   = ["3.13", "3.14"]           # macOS
 linux_python_versions = ["3.13", "3.14"]           # Linux + Linux-ARM
 ```
 
 Both `mac_python_versions` and `linux_python_versions` default to the **highest**
 entry of `python_versions`, which is the behavior those platforms had when the
-version was hardcoded — so a project that sets none of them generates the same CI
-it did before.
+version was hardcoded — so a project that sets neither generates the same CI it
+did before.
 
 Why three lists instead of one:
 
 - **Windows** interpreters all come from `actions/setup-python` (GitHub) or
   `uv venv --python` on the `GLR-UV` runner (GitLab), so a version costs only
-  runner minutes. 3.10 lives here because the desktop products (GMS/SMS/WMS)
-  consume a 3.10 Windows wheel; nothing else needs it.
+  runner minutes. The version the desktop products (GMS/SMS/WMS) embed lives
+  here because they consume a Windows wheel for it; nothing else needs it.
 - **macOS** is cheap to fan out too, but inherits nothing from the Windows list —
-  adding 3.10 for the desktop products should not triple the mac matrix.
+  adding a version for the desktop products should not multiply the mac matrix.
 - **Linux** runs in a container, and each version needs a published
   `conan-gcc13-py<version>` image. Only **3.13 and 3.14** images exist; there is
   no `conan-gcc13-py3.10/3.11/3.12`. Naming a version with no image yields a job
@@ -947,21 +957,21 @@ delvewheel's default ignore lists excuse `vcruntime140.dll` and `vcruntime140_1.
 
 For a library whose `.pyd` statically links everything and imports nothing third-party there is nothing legitimate to bundle, so the entire outcome of repair is a second C++ runtime inside the process. That matters where the host application supplies the runtime itself — GMS/SMS/WMS scrub `PATH` in `dmGetScriptEnvironment` and point it at their own shipped `ms_redist_*` DLLs precisely so one CRT is in play.
 
-**The default is derived from `ci_type`, not hardcoded**, because `ci_type` is a proxy for who installs the wheel:
+**There is no default.** The right answer depends on who loads the wheel, and nothing else in `build.toml` says who that is:
 
-| `ci_type` | Default | Why |
+| Who installs the wheel | Set | Why |
 |---|---|---|
-| `github` | `true` | Those wheels are published for installation into arbitrary Python environments, which have no XMS runtime on `PATH`. The DLLs a module needs must travel with it. |
-| `gitlab` | `false` | Those wheels are internal, and the only thing that loads them supplies the C++ runtime itself. Repairing them vendors a private mangled copy of the runtime the host is deliberately controlling. |
+| Ordinary Python environments (a public index, a standalone venv) | `true` | They have no XMS runtime on `PATH`. The DLLs a module needs must travel with it. |
+| The desktop products (GMS/SMS/WMS) | `false` | The host supplies the C++ runtime itself. Repairing the wheel vendors a private mangled copy of the runtime the host is deliberately controlling. |
 
-A flat default would be wrong in one direction or the other: `true` everywhere would start the GitLab repos repairing wheels they previously never even staged, and `false` everywhere would stop the GitHub repos bundling DLLs their users need. Set the key explicitly to override either way:
+The key used to default from `ci_type` (on for `github`, off for `gitlab`) on the theory that the git server told you the consumer. It may have in the past, but GitLab now hosts packages for both XMS and next_ms, making the heuristic inaccurate today. A wrong guess is typically invisible until the package is used within a consumer, post release. The key is now required, which may result in false positives, but they happen at the *most* convenient time to fix instead of the *least*.
 
 ```toml
 [ci]
 windows_wheel_repair = false
 ```
 
-Every reader — `xmsconan job build`, `xmsconan publish`, and the `xmsconan vs2019` driver — resolves this through one function. The CI generator is no longer among them: the Windows repair happens inside the build job either way (only a Windows host can run delvewheel), so the key changes what that job does rather than which steps are rendered, and the generated workflow is identical at both settings, and the whole `[ci]` table is validated against a key allowlist with per-key types at generation time. A misspelled key (`windows_repair_wheel`) or a quoted boolean (`"false"`) is rejected rather than falling back to the default, because for a switch that turns work *off* the default means the work keeps happening and the only symptom is the harm the switch exists to prevent.
+Every reader — `xmsconan job build`, `xmsconan publish`, and the `xmsconan vs2019` driver — resolves this through one function. The CI generator is no longer among them: the Windows repair happens inside the build job either way (only a Windows host can run delvewheel), so the key changes what that job does rather than which steps are rendered, and the generated workflow is identical at both settings, and the whole `[ci]` table is validated against a key allowlist with per-key types at generation time. A misspelled key (`windows_repair_wheel`) or a quoted boolean (`"false"`) is rejected rather than read as anything, because for a switch that turns work *off* a silent fallback means the work keeps happening and the only symptom is the harm the switch exists to prevent.
 
 That skips the in-place repair inside `xmsconan job build` on both forges, skips it in `xmsconan publish` when it runs on Windows and in the `xmsconan vs2019` driver, and in each case leaves the hundreds of cache DLLs unstaged, since they exist only so the repair tools can resolve imports. No step disappears from either generated pipeline: the Windows job runs the same command at both settings and reads the key when it gets there. The wheel is still built, still uploaded as an artifact, and still deployed — unrepaired, which for such a library is what it already was in substance.
 

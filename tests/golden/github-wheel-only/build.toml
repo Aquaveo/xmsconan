@@ -3,6 +3,8 @@ description = "Snap"
 ci_type = "github"
 
 [ci]
+python_versions = ["3.13"]
+windows_wheel_repair = true
 linux_arm = true
 
 [matrix]

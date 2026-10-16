@@ -613,9 +613,10 @@ jobs:
    delvewheel resolves the DLL imports of a win_amd64 .pyd and can only run
    on a Windows host, so no other job in this workflow can do it;
    [ci].windows_wheel_repair = false skips it, and the dependency-libs
-   staging that exists only to feed it, without changing this line. Its
-   default is on for a GitHub library, whose wheels are installed into
-   arbitrary environments with no XMS runtime on PATH.
+   staging that exists only to feed it, without changing this line. The key
+   is required: true for a library whose wheels are installed into arbitrary
+   environments with no XMS runtime on PATH, false for one the desktop
+   products load with their own runtime.
 
    Two steps became one. The second existed to spell the tag filter
    inline, because `shell: cmd` expands %VAR% before the argument is

@@ -181,7 +181,11 @@ def test_split_tests_skips_the_run_only_where_the_generator_says_to(tmp_path):
     ``leg is None`` would skip the Windows suite entirely; inferring from
     ``leg == "testing"``, which this replaces, skipped it on neither.
     """
-    config = _config(tmp_path, 'library_name = "xmscore"\n[ci]\nsplit_tests = true\n')
+    config = _config(tmp_path, 'library_name = "xmscore"\n'
+                               '[ci]\n'
+                               'python_versions = ["3.13"]\n'
+                               'windows_wheel_repair = true\n'
+                               'split_tests = true\n')
     deferred = {}
     inline = {}
     common.set_job_environment(config, defer_cxx_tests=True, environ=deferred)

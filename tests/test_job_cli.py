@@ -99,7 +99,13 @@ def test_job_test_fills_its_arguments_in_from_build_toml(tmp_path):
         recorded.update(artifacts_dir=artifacts_dir, shards=shards, **kwargs)
         return EXIT_OK
 
-    body = 'library_name = "xmscore"\n[ci]\nsplit_tests = true\ntest_shards = 4\nxvfb = true\n'
+    body = ('library_name = "xmscore"\n'
+            '[ci]\n'
+            'python_versions = ["3.13"]\n'
+            'windows_wheel_repair = true\n'
+            'split_tests = true\n'
+            'test_shards = 4\n'
+            'xvfb = true\n')
     with patch.object(cli.xvfb, "wants_xvfb", return_value=True):
         with patch.object(cli.test_shards, "run", _run):
             result = cli.job_test(label="Release-testing", toml_path=_toml(tmp_path, body))
@@ -127,7 +133,11 @@ def test_job_test_asks_the_same_xvfb_predicate_the_build_asks(tmp_path):
         recorded.update(kwargs)
         return EXIT_OK
 
-    body = 'library_name = "xmscore"\n[ci]\nxvfb = true\n'
+    body = ('library_name = "xmscore"\n'
+            '[ci]\n'
+            'python_versions = ["3.13"]\n'
+            'windows_wheel_repair = true\n'
+            'xvfb = true\n')
     with patch.object(cli.xvfb, "wants_xvfb", return_value=False) as wants:
         with patch.object(cli.test_shards, "run", _run):
             cli.job_test(label="Release-testing", toml_path=_toml(tmp_path, body))
@@ -444,7 +454,11 @@ def test_main_dispatches_coverage_pages_with_the_library_name(tmp_path, monkeypa
     """
     monkeypatch.setattr("sys.argv", [
         "xmsconan job", "coverage", "--pages",
-        "--toml", _toml(tmp_path, 'library_name = "xmsgrid"\n'),
+        "--toml", _toml(tmp_path, 'library_name = "xmsgrid"\n'
+                                  '\n'
+                                  '[ci]\n'
+                                  'python_versions = ["3.13"]\n'
+                                  'windows_wheel_repair = true\n'),
     ])
 
     with patch.object(cli, "job_coverage_pages", autospec=True) as job_pages:

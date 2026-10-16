@@ -3,6 +3,7 @@ description = "Core"
 ci_type = "github"
 
 [ci]
+windows_wheel_repair = true
 coverage = true
 linux_arm = true
 python_versions = ["3.10", "3.13", "3.14"]

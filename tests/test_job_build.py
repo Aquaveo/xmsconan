@@ -20,7 +20,7 @@ from xmsconan.constants import VS2019_PLATFORM_KEY, VS2019_REMOTE_NAME
 from xmsconan.exit_codes import EXIT_ERROR, EXIT_OK
 from xmsconan.job_tools import build, common
 from xmsconan.job_tools.build import BuildSteps
-from .job_helpers import write_build_toml as _toml
+from .job_helpers import MINIMAL_BODY, write_build_toml as _toml
 
 #: What ``job_build`` handed the packager factory. Named rather than a bare
 #: tuple because the shard count is the field these tests assert, and a
@@ -170,7 +170,7 @@ def test_job_build_runs_the_steps_in_the_order_the_template_spelled_out(tmp_path
         < recorder.packager.events.index("run")
 
 
-def job_build_in(tmp_path, recorder, body='library_name = "xmscore"\n', environ=None, **kwargs):
+def job_build_in(tmp_path, recorder, body=MINIMAL_BODY, environ=None, **kwargs):
     """Run :func:`job_build` against a build.toml written under *tmp_path*."""
     environ = {} if environ is None else environ
     return build.job_build(toml_path=_toml(tmp_path, body), steps=recorder.steps(),
@@ -205,7 +205,11 @@ def test_the_defer_flag_reaches_the_environment_the_build_runs_under(
     job_build_in(
         tmp_path, recorder, version="1.2.3", environ=environ,
         defer_cxx_tests=defer,
-        body='library_name = "xmscore"\n[ci]\nsplit_tests = true\n',
+        body='library_name = "xmscore"\n'
+             '[ci]\n'
+             'python_versions = ["3.13"]\n'
+             'windows_wheel_repair = true\n'
+             'split_tests = true\n',
     )
 
     assert environ.get(common.SKIP_CXX_TESTS_VARIABLE) == expected
@@ -244,7 +248,13 @@ def test_both_filters_reach_the_packager_in_order(tmp_path):
     recorder = _Recorder(packager=_FakePackager(configurations=[_library_configuration()]))
     job_build_in(
         tmp_path, recorder,
-        body='library_name = "xmscore"\n[filter]\nbuild_type = "Release"\n',
+        body='library_name = "xmscore"\n'
+             '[filter]\n'
+             'build_type = "Release"\n'
+             '\n'
+             '[ci]\n'
+             'python_versions = ["3.13"]\n'
+             'windows_wheel_repair = true\n',
         environ={"BUILD_TYPE": "Release"}, leg="library", version="1.2.3",
     )
 
@@ -333,7 +343,10 @@ def test_a_failed_extraction_stages_no_dependency_libs(tmp_path):
     with patch.object(build.sys, "platform", "win32"):
         result = job_build_in(
             tmp_path, recorder, leg="pybind", version="1.2.3",
-            body='library_name = "xmscore"\n[ci]\nwindows_wheel_repair = true\n',
+            body='library_name = "xmscore"\n'
+                 '[ci]\n'
+                 'python_versions = ["3.13"]\n'
+                 'windows_wheel_repair = true\n',
         )
 
     assert result == EXIT_ERROR
@@ -359,7 +372,10 @@ def test_dependency_libs_are_skipped_when_repair_is_off(tmp_path):
     with patch.object(build.sys, "platform", "linux"):
         job_build_in(
             tmp_path, recorder, leg="pybind", version="1.2.3",
-            body='library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
+            body='library_name = "xmscore"\n'
+                 '[ci]\n'
+                 'python_versions = ["3.13"]\n'
+                 'windows_wheel_repair = false\n',
         )
 
     assert recorder.packager.dependency_lib_dirs == [os.path.join("wheelhouse", "libs")]
@@ -694,7 +710,11 @@ def test_the_build_runs_inside_a_display_when_the_repository_asks(tmp_path):
     than prefixing a command: there is no command here to prefix.
     """
     recorder = _Recorder()
-    config_path = _toml(tmp_path, 'library_name = "xmscore"\n[ci]\nxvfb = true\n')
+    config_path = _toml(tmp_path, 'library_name = "xmscore"\n'
+                                  '[ci]\n'
+                                  'python_versions = ["3.13"]\n'
+                                  'windows_wheel_repair = true\n'
+                                  'xvfb = true\n')
     build.job_build(toml_path=config_path, steps=recorder.steps(), environ={},
                     version="1.2.3")
 
@@ -730,7 +750,12 @@ def test_the_packager_is_constructed_from_build_toml(tmp_path):
     behavior.
     """
     toml_path = _toml(tmp_path, 'library_name = "xmscore"\n'
-                                '[matrix]\nwheel_only = true\n')
+                                '[matrix]\n'
+                                'wheel_only = true\n'
+                                '\n'
+                                '[ci]\n'
+                                'python_versions = ["3.13"]\n'
+                                'windows_wheel_repair = true\n')
     config = read_build_toml(toml_path)
     recorded = {}
 
@@ -776,7 +801,13 @@ def test_the_real_packager_accepts_what_build_toml_resolves_to(tmp_path):
     A renamed or dropped keyword would pass every assertion made against a
     fake and fail in CI at the first build.
     """
-    toml_path = _toml(tmp_path, 'library_name = "xmscore"\n[matrix]\nwheel_only = true\n')
+    toml_path = _toml(tmp_path, 'library_name = "xmscore"\n'
+                                '[matrix]\n'
+                                'wheel_only = true\n'
+                                '\n'
+                                '[ci]\n'
+                                'python_versions = ["3.13"]\n'
+                                'windows_wheel_repair = true\n')
     config = read_build_toml(toml_path)
 
     packager = build._make_packager(config, toml_path, build_missing=False, platform_key=None)
@@ -817,7 +848,10 @@ def test_windows_wheel_repair_can_be_turned_off(tmp_path):
     with patch.object(build.sys, "platform", "win32"):
         job_build_in(
             tmp_path, recorder, leg="pybind", version="1.2.3",
-            body='library_name = "xmscore"\n[ci]\nwindows_wheel_repair = false\n',
+            body='library_name = "xmscore"\n'
+                 '[ci]\n'
+                 'python_versions = ["3.13"]\n'
+                 'windows_wheel_repair = false\n',
         )
 
     assert recorder.repair_kwargs == []
@@ -838,7 +872,11 @@ def test_the_shard_count_reaches_the_packager_when_this_job_runs_the_tests(tmp_p
     """
     recorder = _Recorder()
     job_build_in(tmp_path, recorder, version="1.2.3",
-                 body='library_name = "xmscore"\n[ci]\ntest_shards = 4\n')
+                 body='library_name = "xmscore"\n'
+                      '[ci]\n'
+                      'python_versions = ["3.13"]\n'
+                      'windows_wheel_repair = true\n'
+                      'test_shards = 4\n')
 
     assert recorder.make_packager_args.test_shards == 4
 
@@ -854,7 +892,11 @@ def test_a_deferred_suite_leaves_the_shards_to_the_job_that_runs_them(tmp_path):
     recorder = _Recorder()
     job_build_in(tmp_path, recorder, version="1.2.3", defer_cxx_tests=True,
                  body='library_name = "xmscore"\n'
-                      '[ci]\ntest_shards = 4\nsplit_tests = true\n')
+                      '[ci]\n'
+                      'python_versions = ["3.13"]\n'
+                      'windows_wheel_repair = true\n'
+                      'test_shards = 4\n'
+                      'split_tests = true\n')
 
     assert recorder.make_packager_args.test_shards == 0
 

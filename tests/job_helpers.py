@@ -14,7 +14,9 @@ each shape.
 from xmsconan.build_toml import read_build_toml
 
 #: What a build.toml needs to parse at all. Every helper here starts from it.
-MINIMAL_BODY = 'library_name = "xmscore"\n'
+#: A test about one ``[ci]`` key appends its line to this, so the two required
+#: keys come first and a test's own ``[ci]`` line lands in the same table.
+MINIMAL_BODY = 'library_name = "xmscore"\n[ci]\npython_versions = ["3.13"]\nwindows_wheel_repair = true\n'
 
 
 def write_build_toml(tmp_path, body=MINIMAL_BODY):

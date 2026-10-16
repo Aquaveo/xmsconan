@@ -45,7 +45,12 @@ def test_publish_rejects_a_build_toml_without_library_name(mock_steps, tmp_path)
 def test_publish_rejects_an_unknown_top_level_key(mock_steps, tmp_path):
     """Publish validates the same way gen/ci/profiles do, so a typo fails here first."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         'has_test_files = true\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
         publish(version="7.0.0", toml_path=toml_file, steps=mock_steps)
 
@@ -53,7 +58,11 @@ def test_publish_rejects_an_unknown_top_level_key(mock_steps, tmp_path):
 def test_publish_full_pipeline(mock_steps, tmp_path):
     """Full publish runs all steps in order."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         version="7.0.0",
@@ -78,7 +87,11 @@ def test_publish_full_pipeline(mock_steps, tmp_path):
 def test_publish_no_deploy(mock_steps, tmp_path):
     """deploy_wheel=False and deploy_conan=False skips uploads."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         version="7.0.0",
@@ -95,13 +108,16 @@ def test_publish_no_deploy(mock_steps, tmp_path):
 
 
 def _write_publish_toml(tmp_path, **ci_keys):
-    """Write a minimal build.toml, with any given keys under ``[ci]``."""
-    lines = ['library_name = "xmscore"']
-    if ci_keys:
-        lines.append("[ci]")
-        lines += [
-            f"{key} = {'true' if value else 'false'}" for key, value in ci_keys.items()
-        ]
+    """Write a minimal build.toml, with any given boolean keys under ``[ci]``.
+
+    ``windows_wheel_repair`` is on unless the caller says otherwise, which is
+    what a file with no ``ci_type`` used to resolve to.
+    """
+    ci_keys = {"windows_wheel_repair": True, **ci_keys}
+    lines = ['library_name = "xmscore"', "[ci]", 'python_versions = ["3.13"]']
+    lines += [
+        f"{key} = {'true' if value else 'false'}" for key, value in ci_keys.items()
+    ]
     toml_file = tmp_path / "build.toml"
     toml_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return toml_file
@@ -147,9 +163,9 @@ def test_publish_still_repairs_on_linux_when_windows_repair_is_off(mock_steps, t
 
 
 @patch("xmsconan.ci_tools.publish.sys.platform", "win32")
-def test_publish_repairs_on_windows_by_default(mock_steps, tmp_path):
-    """Omitting the key keeps the historical behavior, staging included."""
-    toml_file = _write_publish_toml(tmp_path)
+def test_publish_repairs_on_windows_when_the_toml_says_so(mock_steps, tmp_path):
+    """``windows_wheel_repair = true`` repairs, staging included."""
+    toml_file = _write_publish_toml(tmp_path, windows_wheel_repair=True)
 
     publish(version="7.0.0", toml_path=str(toml_file), steps=mock_steps)
 
@@ -160,7 +176,11 @@ def test_publish_repairs_on_windows_by_default(mock_steps, tmp_path):
 def test_publish_no_wheel(mock_steps, tmp_path):
     """deploy_wheel=False skips wheel upload but keeps conan."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         version="7.0.0",
@@ -176,7 +196,11 @@ def test_publish_no_wheel(mock_steps, tmp_path):
 def test_publish_no_conan(mock_steps, tmp_path):
     """deploy_conan=False skips conan upload but keeps wheel."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         version="7.0.0",
@@ -195,7 +219,11 @@ def test_publish_no_conan(mock_steps, tmp_path):
 def test_publish_with_filter(mock_steps, tmp_path):
     """build_filter is passed through to build.py."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         version="7.0.0",
@@ -281,7 +309,11 @@ def test_publish_reports_a_generator_exception_in_one_line(error, verbose, mock_
 def test_publish_version_from_scm(mock_resolve, mock_steps, tmp_path):
     """Version resolved from setuptools-scm when --version omitted."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         toml_path=str(toml_file),
@@ -299,7 +331,11 @@ def test_publish_version_from_scm(mock_resolve, mock_steps, tmp_path):
 def test_publish_rejects_fallback_version(tmp_path):
     """Publish refuses to proceed when version resolves to fallback."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     with patch(
         "xmsconan.ci_tools.publish.resolve_version",
@@ -312,7 +348,11 @@ def test_publish_rejects_fallback_version(tmp_path):
 def test_publish_calls_conan_setup_with_login(mock_steps, tmp_path):
     """Publish calls conan_setup with login=True."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     publish(
         version="7.0.0",

@@ -136,9 +136,6 @@ def _unsupported_python_versions(versions) -> list:
     return [str(v) for v in versions if str(v) not in SUPPORTED_PYTHON_VERSIONS]
 
 
-_DEFAULT_COVERAGE_PYTHON_VERSION = "3.13"
-
-
 def _mark_export_jobs(build_jobs: list) -> list:
     """Mark the Linux build jobs that save a Conan cache tarball, and list them.
 
@@ -168,7 +165,8 @@ def _resolve_coverage_python_version(config: BuildToml) -> str:
     """Pick the single python_version the coverage build should pin to.
 
     Precedence: ``[coverage].python_version`` (explicit opt-in) > highest
-    entry in the resolved Linux list > the global default (``"3.13"``).
+    entry in the resolved Linux list. There is no third step: the reader
+    refuses a ``build.toml`` whose ``[ci].python_versions`` is missing or empty.
     Coverage runs a single instrumented build, so we must commit to one ABI up
     front rather than let ``_find_coverage_package`` return whichever pybind
     config happened to finish last (see issue #65).
@@ -197,10 +195,7 @@ def _resolve_coverage_python_version(config: BuildToml) -> str:
                 "much later as a conan configure error inside the build."
             )
         return explicit
-    linux_versions = _platform_python_versions(
-        config.ci, "linux",
-        list(config.ci.python_versions or [_DEFAULT_COVERAGE_PYTHON_VERSION]),
-    )
+    linux_versions = _platform_python_versions(config.ci, "linux", list(config.ci.python_versions))
     # str() because the fallback returns an element of the TOML list verbatim,
     # and an unquoted `linux_python_versions = [3.14]` puts a float there.
     # version_sort_key stringifies only for comparison, so the float would

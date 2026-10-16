@@ -24,7 +24,11 @@ def test_resolve_image_explicit_override(tmp_path):
     """Explicit --docker-image takes precedence."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nxvfb = true\n',
+        'library_name = "xmscore"\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
+        'xvfb = true\n',
         encoding="utf-8",
     )
     assert resolve_docker_image("my-image", str(toml_file)) == "my-image"
@@ -34,7 +38,11 @@ def test_resolve_image_xvfb_true(tmp_path):
     """ci.xvfb=true selects the X11/GDAL image."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\n[ci]\nxvfb = true\n',
+        'library_name = "xmscore"\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
+        'xvfb = true\n',
         encoding="utf-8",
     )
     expected = f"{DOCKER_REGISTRY}/{DOCKER_IMAGE_XVFB}"
@@ -44,7 +52,11 @@ def test_resolve_image_xvfb_true(tmp_path):
 def test_resolve_image_xvfb_false(tmp_path):
     """ci.xvfb=false (or missing) selects the base image."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     expected = f"{DOCKER_REGISTRY}/{DOCKER_IMAGE_BASE}"
     assert resolve_docker_image(toml_path=str(toml_file)) == expected
 
@@ -176,7 +188,11 @@ def test_docker_publish_builds_correct_command(
 ):
     """Verify the docker run command is constructed correctly."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     mock_run.return_value = argparse.Namespace(returncode=0)
 
@@ -218,7 +234,11 @@ def test_docker_publish_quotes_the_filter(mock_which, mock_config, mock_run, tmp
     `xmsconan publish --docker --filter '{...}'` fail every time.
     """
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     mock_run.return_value = argparse.Namespace(returncode=0)
 
@@ -260,7 +280,11 @@ def test_docker_publish_mounts_xmsconan_dir(
 ):
     """--xmsconan-dir mounts local source and installs from it."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     mock_run.return_value = argparse.Namespace(returncode=0)
 
@@ -295,7 +319,11 @@ def test_docker_publish_propagates_exit_code(
 ):
     """Non-zero exit from docker run propagates."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
 
     mock_run.return_value = argparse.Namespace(returncode=42)
 
@@ -322,6 +350,11 @@ def test_docker_publish_propagates_exit_code(
 def test_resolve_image_rejects_an_unknown_top_level_key(tmp_path):
     """--docker reads build.toml before the container starts; a typo should fail here."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\n'
+                         'has_test_files = true\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
         resolve_docker_image(toml_path=toml_file)

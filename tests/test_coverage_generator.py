@@ -442,11 +442,6 @@ class TestFindCoveragePackage:
 class TestResolveCoveragePythonVersion:
     """Picks the single python_version the coverage build pins to (issue #65)."""
 
-    def test_defaults_to_3_13_when_no_ci_python_versions(self):
-        """An empty toml falls back to the global default ABI."""
-        config = BuildToml(library_name="xmscore")
-        assert _resolve_coverage_python_version(config) == "3.13"
-
     def test_uses_highest_ci_python_versions(self):
         """Highest entry in [ci].python_versions wins by (major, minor)."""
         config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.10", "3.13"]))
@@ -465,11 +460,6 @@ class TestResolveCoveragePythonVersion:
             coverage=CoverageTable(python_version="3.10"),
         )
         assert _resolve_coverage_python_version(config) == "3.10"
-
-    def test_empty_ci_python_versions_falls_back(self):
-        """An empty list in [ci] is treated like the key was missing."""
-        config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=[]))
-        assert _resolve_coverage_python_version(config) == "3.13"
 
     def test_rejects_a_coverage_python_version_the_recipe_does_not_allow(self):
         """[coverage].python_version is checked against the supported set.
@@ -1039,19 +1029,19 @@ class TestRunCoverageEndToEnd:
         ``python_versions``, ``linux_python_versions`` and
         ``coverage_python_version`` feed the three inputs
         ``_resolve_coverage_python_version`` reads, lowest precedence first.
-        All default to omitting their key entirely, so a caller that passes
-        none gets the same build.toml this helper has always written.
+        The two optional ones default to omitting their key entirely.
+        ``python_versions`` is required in the file, so it defaults to the
+        ``["3.13"]`` the key itself used to default to.
         """
         toml_file = tmp_path / "build.toml"
-        ci_entries = []
-        if python_versions is not None:
-            entries = ", ".join(f'"{v}"' for v in python_versions)
-            ci_entries.append(f"python_versions = [{entries}]")
+        if python_versions is None:
+            python_versions = ["3.13"]
+        entries = ", ".join(f'"{v}"' for v in python_versions)
+        ci_entries = [f"python_versions = [{entries}]", "windows_wheel_repair = true"]
         if linux_python_versions is not None:
             entries = ", ".join(f'"{v}"' for v in linux_python_versions)
             ci_entries.append(f"linux_python_versions = [{entries}]")
         ci_body = "\n".join(ci_entries)
-        ci_section = f"\n[ci]\n{ci_body}\n" if ci_entries else ""
         coverage_pin = ""
         if coverage_python_version is not None:
             coverage_pin = f'python_version = "{coverage_python_version}"\n'
@@ -1059,7 +1049,9 @@ class TestRunCoverageEndToEnd:
             'library_name = "xmscore"\n'
             'description = "desc"\n'
             'python_namespaced_dir = "core"\n'
-            f'{ci_section}'
+            '\n'
+            '[ci]\n'
+            f'{ci_body}\n'
             '\n'
             '[coverage]\n'
             'cpp_threshold = 70\n'
@@ -1894,7 +1886,11 @@ class TestRunCoverageEndToEnd:
             '\n'
             '[coverage]\n'
             'cpp_threshold = 0\n'
-            'python_threshold = 70\n',
+            'python_threshold = 70\n'
+            '\n'
+            '[ci]\n'
+            'python_versions = ["3.13"]\n'
+            'windows_wheel_repair = true\n',
             encoding="utf-8",
         )
         cpp_build_folder = tmp_path / "fake-cpp-build"
@@ -2017,7 +2013,11 @@ class TestMainErrorHandling:
 def test_run_coverage_rejects_an_unknown_top_level_key(tmp_path):
     """The coverage run validates build.toml before shelling out to anything."""
     toml_file = tmp_path / "build.toml"
-    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8")
+    toml_file.write_text('library_name = "xmscore"\nhas_test_files = true\n'
+                         '\n'
+                         '[ci]\n'
+                         'python_versions = ["3.13"]\n'
+                         'windows_wheel_repair = true\n', encoding="utf-8")
     shelled_out = AssertionError("run_coverage shelled out before rejecting build.toml")
     with patch("xmsconan.coverage_tools.coverage_generator._run", side_effect=shelled_out):
         with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
@@ -2213,7 +2213,11 @@ def _report_workspace(tmp_path, *, cpp=80.0, py=90.0, cpp_threshold=70.0,
         'description = "desc"\n'
         "\n[coverage]\n"
         f"cpp_threshold = {cpp_threshold}\n"
-        f"python_threshold = {py_threshold}\n",
+        f"python_threshold = {py_threshold}\n"
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     files = {
@@ -2419,7 +2423,11 @@ class TestMeasurePhase:
             '\n'
             '[coverage]\n'
             'cpp_threshold = 70\n'
-            'python_threshold = 70\n',
+            'python_threshold = 70\n'
+            '\n'
+            '[ci]\n'
+            'python_versions = ["3.13"]\n'
+            'windows_wheel_repair = true\n',
             encoding="utf-8",
         )
         cpp_build_folder = tmp_path / "fake-cpp-build"

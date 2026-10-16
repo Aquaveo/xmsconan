@@ -45,7 +45,13 @@ def library_root(tmp_path):
     """Create <tmp>/xmscore/build.toml and return the root directory."""
     library_dir = tmp_path / "xmscore"
     library_dir.mkdir()
-    (library_dir / "build.toml").write_text('library_name = "xmscore"\n', encoding="utf-8")
+    (library_dir / "build.toml").write_text(
+        'library_name = "xmscore"\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
+        encoding="utf-8",
+    )
     return tmp_path
 
 
@@ -594,7 +600,11 @@ def test_preview_honors_the_library_matrix_table(tmp_path, capsys):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         '[matrix]\n'
-        'compiler_runtime = ["dynamic"]\n',
+        'compiler_runtime = ["dynamic"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -619,7 +629,11 @@ def test_library_matrix_reads_the_table(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         '[matrix]\n'
-        'pybind_build_types = ["Release", "Debug"]\n',
+        'pybind_build_types = ["Release", "Debug"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     assert vs._library_matrix(str(tmp_path)) == {"pybind_build_types": ["Release", "Debug"]}
@@ -1376,12 +1390,20 @@ def test_library_repairs_wheel_follows_the_libraries_own_build_toml(tmp_path):
     here would hand them back exactly the vendored CRT it exists to avoid.
     """
     (tmp_path / "build.toml").write_text(
-        'library_name = "xmssnap"\nci_type = "gitlab"\n', encoding="utf-8"
+        'library_name = "xmssnap"\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
+        encoding="utf-8",
     )
     assert vs._library_repairs_wheel(str(tmp_path)) is False
 
     (tmp_path / "build.toml").write_text(
-        'library_name = "xmscore"\nci_type = "github"\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
+        encoding="utf-8",
     )
     assert vs._library_repairs_wheel(str(tmp_path)) is True
 
@@ -1418,7 +1440,11 @@ def test_build_library_passes_the_librarys_own_matrix(mock_generate, mock_packag
     (library_dir / "build.toml").write_text(
         'library_name = "xmscore"\n'
         '[matrix]\n'
-        'compiler_runtime = ["dynamic"]\n',
+        'compiler_runtime = ["dynamic"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     mock_packager_cls.return_value = fake_packager(configurations=[{}] * 7)
@@ -1433,7 +1459,12 @@ def test_build_library_passes_the_librarys_own_matrix(mock_generate, mock_packag
 def test_library_matrix_rejects_an_unknown_top_level_key(tmp_path):
     """The VS2019 driver validates each library's build.toml like every other reader."""
     (tmp_path / "build.toml").write_text(
-        'library_name = "xmscore"\nhas_test_files = true\n', encoding="utf-8"
+        'library_name = "xmscore"\n'
+        'has_test_files = true\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"unknown top-level key\(s\) has_test_files"):
         vs._library_matrix(tmp_path)

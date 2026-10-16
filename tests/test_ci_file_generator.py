@@ -18,6 +18,7 @@ from xmsconan.job_tools import build as job_build, common as job_common
 from .ci_helpers import (
     dispatched_commands,
     NON_JOB_SHAPE_KEYS,
+    required_ci_keys,
     requirement_names,
     runtime_dependencies,
     steps_running,
@@ -52,7 +53,12 @@ def test_missing_ci_type_raises_value_error(tmp_path):
     """Raises ValueError when build.toml lacks ci_type."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="ci_type"):
@@ -63,7 +69,13 @@ def test_invalid_ci_type_raises_value_error(tmp_path):
     """Raises ValueError when ci_type is not 'github' or 'gitlab'."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "jenkins"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "jenkins"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="jenkins"):
@@ -74,7 +86,13 @@ def test_missing_ci_template_raises_file_not_found(tmp_path):
     """Raises FileNotFoundError when ci_type is valid but template is missing."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "github"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
 
@@ -101,7 +119,13 @@ def test_generate_gitlab_ci_writes_correct_path(tmp_path):
     """Writes GitLab CI to .gitlab-ci.yml."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -143,6 +167,8 @@ def test_ci_config_options_passed_to_template(tmp_path):
         'ci_type = "github"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
         'windows = true\n'
         'deploy = true\n'
         'coverage = true\n'
@@ -297,20 +323,6 @@ def test_github_rejects_a_python_version_the_recipe_does_not_allow(tmp_path):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
 
 
-def test_gitlab_default_python_version_is_3_13_only(tmp_path):
-    """Without [ci].python_versions GitLab references only 3.13."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\nci_type = "gitlab"\n',
-        encoding="utf-8",
-    )
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert "PYTHON_TARGET_VERSION: '3.13'" in content
-    assert "PYTHON_TARGET_VERSION: '3.10'" not in content
-
-
 def test_gitlab_python_versions_opt_in_only_fans_out_windows(tmp_path):
     """[ci].python_versions = ["3.10", "3.13"] only expands the Windows matrix in GitLab."""
     toml_file = tmp_path / "build.toml"
@@ -320,6 +332,7 @@ def test_gitlab_python_versions_opt_in_only_fans_out_windows(tmp_path):
         'ci_type = "gitlab"\n'
         '\n'
         '[ci]\n'
+        'windows_wheel_repair = false\n'
         'python_versions = ["3.10", "3.13"]\n',
         encoding="utf-8",
     )
@@ -548,7 +561,11 @@ def test_gitlab_ci_uses_cli_commands(tmp_path):
     toml_file.write_text(
         'library_name = "xmscore"\n'
         'description = "desc"\n'
-        'ci_type = "gitlab"\n',
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -583,7 +600,11 @@ def test_gitlab_ci_deploy_jobs_leave_the_version_to_the_tool(tmp_path):
     toml_file.write_text(
         'library_name = "xmscore"\n'
         'description = "desc"\n'
-        'ci_type = "gitlab"\n',
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -613,6 +634,8 @@ def test_gitlab_ci_deploy_false_suppresses_deploy(tmp_path):
         'ci_type = "gitlab"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n'
         'deploy = false\n'
         'windows = false\n',
         encoding="utf-8",
@@ -691,7 +714,11 @@ def test_generate_ci_rejects_an_unknown_top_level_key(tmp_path):
         'library_name = "xmscore"\n'
         'description = "desc"\n'
         'ci_type = "gitlab"\n'
-        'has_test_files = true\n',
+        'has_test_files = true\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
 
@@ -755,7 +782,13 @@ def test_gitlab_ci_collects_the_directories_the_job_command_writes(tmp_path):
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -771,7 +804,13 @@ def test_gitlab_ci_uses_when_always(tmp_path):
     """Rendered GitLab CI Conan Build job uses when: always for artifacts."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -792,7 +831,13 @@ def test_gitlab_ci_leaves_the_ctest_level_to_the_job_command(tmp_path):
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -873,7 +918,13 @@ def test_gitlab_ci_no_split_tests_by_default(tmp_path):
     """Without split_tests, no separate test job is generated."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "desc"\nci_type = "gitlab"\n',
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -1044,6 +1095,8 @@ def test_github_coverage_yaml_generated_when_coverage_true(tmp_path):
         'ci_type = "github"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
         'coverage = true\n',
         encoding="utf-8",
     )
@@ -1092,6 +1145,8 @@ def test_github_coverage_apt_installs_xvfb_when_requested(tmp_path):
         'ci_type = "github"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
         'coverage = true\n'
         'xvfb = true\n',
         encoding="utf-8",
@@ -1113,6 +1168,8 @@ def test_gitlab_coverage_stage_delegates_to_xmsconan_coverage(tmp_path):
         'ci_type = "gitlab"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n'
         'coverage = true\n',
         encoding="utf-8",
     )
@@ -1141,6 +1198,8 @@ def test_gitlab_coverage_jobs_pass_no_version(tmp_path):
         'ci_type = "gitlab"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n'
         'coverage = true\n',
         encoding="utf-8",
     )
@@ -1283,6 +1342,8 @@ def test_gitlab_pages_builds_the_site_with_the_tool_and_no_inline_markup(tmp_pat
         'ci_type = "gitlab"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n'
         'coverage = true\n',
         encoding="utf-8",
     )
@@ -1366,7 +1427,11 @@ def test_python_namespaced_dir_defaults_to_suffix(tmp_path):
     toml_file.write_text(
         'library_name = "xmsgrid"\n'
         'description = "desc"\n'
-        'ci_type = "github"\n',
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -1384,7 +1449,13 @@ def test_gitlab_linux_defaults_on(tmp_path):
     """Without [ci].linux the Linux jobs are emitted, exactly as before."""
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\nci_type = "gitlab"\n',
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "gitlab"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -1451,8 +1522,14 @@ def test_github_is_unaffected_by_linux_flag(tmp_path):
     """
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        'library_name = "xmscore"\ndescription = "Core"\nci_type = "github"\n'
-        '\n[ci]\nlinux = false\n',
+        'library_name = "xmscore"\n'
+        'description = "Core"\n'
+        'ci_type = "github"\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
+        'linux = false\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -2082,7 +2159,7 @@ def test_gitlab_windows_build_keeps_its_wheel_as_an_artifact(tmp_path):
     assert f"{job_common.WHEEL_DIR}/" not in job["artifacts"]["paths"]
 
 
-@pytest.mark.parametrize("repair", [True, False, None])
+@pytest.mark.parametrize("repair", [True, False])
 def test_gitlab_windows_wheel_repair_is_not_a_rendered_step(tmp_path, repair):
     """No Windows job renders a repair step, at any setting of the opt-in.
 
@@ -2097,11 +2174,10 @@ def test_gitlab_windows_wheel_repair_is_not_a_rendered_step(tmp_path, repair):
 
     Parametrized over the settings rather than looped in the body, because a
     step rendered unconditionally and a step rendered under the flag fail
-    differently, and a loop reports one result for all three.
+    differently, and a loop reports one result for both.
     ``tests/test_job_build.py`` holds the tool's end of both.
     """
-    flags = {} if repair is None else {"windows_wheel_repair": repair}
-    job = _gitlab_jobs(tmp_path, windows=True, **flags)["Conan Build - Windows"]
+    job = _gitlab_jobs(tmp_path, windows=True, windows_wheel_repair=repair)["Conan Build - Windows"]
 
     # Anchored on the command that owns the decision now: without it both
     # absences below would hold just as well for a job with no script at all,
@@ -2641,7 +2717,11 @@ def test_github_pybind_build_types_without_release_is_rejected(tmp_path):
         'description = "desc"\n'
         'ci_type = "github"\n'
         '[matrix]\n'
-        'pybind_build_types = ["Debug"]\n',
+        'pybind_build_types = ["Debug"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="pybind_build_types"):
@@ -2656,7 +2736,11 @@ def test_github_pybind_build_types_with_release_is_allowed(tmp_path):
         'description = "desc"\n'
         'ci_type = "github"\n'
         '[matrix]\n'
-        'pybind_build_types = ["Release", "Debug"]\n',
+        'pybind_build_types = ["Release", "Debug"]\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
         encoding="utf-8",
     )
     output_dir = tmp_path / "output"
@@ -2795,6 +2879,8 @@ library_name = "xmscore"
 description = "Core library"
 python_namespaced_dir = "core"
 ci_type = "{ci_type}"
+
+[ci]
 {ci_table}{filter_table}"""
 
 _RELEASE_ONLY_FILTER = """
@@ -2807,22 +2893,24 @@ _NO_PYBIND_FILTER = """
 pybind = false
 """
 
-_LINUX_ARM_CI_TABLE = """
-[ci]
-linux_arm = true
-"""
+_LINUX_ARM_CI_TABLE = {"linux_arm": True}
 
-_COVERAGE_CI_TABLE = """
-[ci]
-coverage = true
-"""
+_COVERAGE_CI_TABLE = {"coverage": True}
 
 
-def _write_filtered_toml(tmp_path, ci_type="github", ci_table="", filter_table=_RELEASE_ONLY_FILTER):
-    """Write a build.toml carrying a [filter] table."""
+def _write_filtered_toml(tmp_path, ci_type="github", ci_table=None, filter_table=_RELEASE_ONLY_FILTER):
+    """Write a build.toml carrying a [filter] table.
+
+    ``ci_table`` is a dict of ``[ci]`` keys. The two required keys are filled
+    in at the values their old defaults gave unless the dict names them.
+    ``filter_table`` is raw text appended after the ``[ci]`` table, so it can
+    also carry a ``[coverage]`` table.
+    """
+    ci = {**required_ci_keys(ci_type), **(ci_table or {})}
+    ci_lines = "".join(f"{key} = {json.dumps(value)}\n" for key, value in ci.items())
     toml_file = tmp_path / "build.toml"
     toml_file.write_text(
-        _FILTERED_TOML.format(ci_type=ci_type, ci_table=ci_table, filter_table=filter_table),
+        _FILTERED_TOML.format(ci_type=ci_type, ci_table=ci_lines, filter_table=filter_table),
         encoding="utf-8",
     )
     return toml_file
@@ -2912,10 +3000,7 @@ def test_gitlab_drops_wheel_jobs_when_pybind_filtered_off(tmp_path):
     assert "Conan Build" in parsed, "the rest of the pipeline survives"
 
 
-_SPLIT_TESTS_CI_TABLE = """
-[ci]
-split_tests = true
-"""
+_SPLIT_TESTS_CI_TABLE = {"split_tests": True}
 
 
 def test_gitlab_test_jobs_follow_a_build_type_pin(tmp_path):
@@ -2963,7 +3048,7 @@ def test_gitlab_drops_windows_wheel_work_when_pybind_filtered_off(tmp_path):
     """
     toml_file = _write_filtered_toml(
         tmp_path, ci_type="gitlab",
-        ci_table="\n[ci]\ndeploy = true\nwindows_wheel_repair = true\n",
+        ci_table={"deploy": True, "windows_wheel_repair": True},
         filter_table=_NO_PYBIND_FILTER,
     )
     generate_ci(str(toml_file), "1.0.0", str(tmp_path))
@@ -2985,7 +3070,7 @@ def test_gitlab_keeps_windows_wheel_work_by_default(tmp_path):
     """Unfiltered, the Windows wheel chain is intact -- the gate is opt-in only."""
     toml_file = _write_filtered_toml(
         tmp_path, ci_type="gitlab",
-        ci_table="\n[ci]\ndeploy = true\nwindows_wheel_repair = true\n",
+        ci_table={"deploy": True, "windows_wheel_repair": True},
         filter_table="",
     )
     generate_ci(str(toml_file), "1.0.0", str(tmp_path))
@@ -3033,7 +3118,7 @@ def test_no_empty_job_warning_for_a_job_ci_turned_off(tmp_path, caplog):
     at a job that is not in the pipeline.
     """
     toml_file = _write_filtered_toml(
-        tmp_path, ci_type="gitlab", ci_table="\n[ci]\nlinux = false\n",
+        tmp_path, ci_type="gitlab", ci_table={"linux": False},
         filter_table='\n[filter]\nos = "Windows"\n',
     )
 
@@ -3086,9 +3171,9 @@ def test_coverage_warning_uses_the_resolved_coverage_python_version(tmp_path, ca
     toml_file = _write_filtered_toml(
         tmp_path,
         # 3.10 has to be a version CI builds, or the filter is rejected outright.
-        ci_table=_COVERAGE_CI_TABLE + 'python_versions = ["3.10", "3.13"]\n'
-        '\n[coverage]\npython_version = "3.13"\n',
-        filter_table='\n[filter.options]\npython_version = "3.10"\n',
+        ci_table={**_COVERAGE_CI_TABLE, "python_versions": ["3.10", "3.13"]},
+        filter_table='\n[coverage]\npython_version = "3.13"\n'
+        '\n[filter.options]\npython_version = "3.10"\n',
     )
 
     with caplog.at_level(logging.WARNING):
@@ -3110,7 +3195,7 @@ def test_no_coverage_warning_without_coverage_job(tmp_path, caplog):
 
 
 #: A [ci] table switching Windows off, and a filter only the Linux job matches.
-CI_WINDOWS_FALSE = "\n[ci]\nwindows = false\n"
+CI_WINDOWS_FALSE = {"windows": False}
 FILTER_COMPILER_GCC = '\n[filter]\ncompiler = "gcc"\n'
 
 
@@ -3142,7 +3227,7 @@ def test_github_still_warns_about_windows_when_ci_windows_is_false(tmp_path, cap
 def test_gitlab_warns_only_about_jobs_the_ci_toggles_emit(tmp_path, caplog):
     """The same job accounting applies to the GitLab job names."""
     toml_file = _write_filtered_toml(
-        tmp_path, ci_type="gitlab", ci_table="\n[ci]\nwindows = false\n",
+        tmp_path, ci_type="gitlab", ci_table={"windows": False},
         filter_table='\n[filter]\ncompiler = "msvc"\n',
     )
 
@@ -3173,6 +3258,8 @@ def test_github_ci_renders_no_shard_flag_at_any_setting(tmp_path, shards):
         'ci_type = "github"\n'
         '\n'
         '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n'
         f'test_shards = {shards}\n',
         encoding="utf-8",
     )
