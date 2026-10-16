@@ -133,7 +133,7 @@ How a failure is *reported* is one contract for `gen`, `ci`, `profiles`, and `bu
 |---|---|---|
 | `library_name` | string | Conan / CMake project name. e.g. `"xmscore"`. |
 | `description` | string | One-line summary; flows into `conanfile.py` and the wheel metadata. |
-| `[ci].python_versions` | array[string] | Python versions to build Windows wheels for, e.g. `["3.13"]`. Required because its old default of `["3.13"]` quietly left out the 3.10 wheel the desktop products need. See §5.6 and §8. |
+| `[ci].python_versions` | array[string] | Python versions to build Windows wheels for, e.g. `["3.14"]`. Required because a fixed default goes stale: the desktop products embed one Python version and need a wheel for exactly that one. See §5.6 and §8. |
 | `[ci].windows_wheel_repair` | boolean | Whether the Windows wheel is repaired with `delvewheel`. Required because the right answer depends on who loads the wheel, and either default is wrong for one kind of library. See §5.6 and §12.1. |
 
 Every `xmsconan` command that reads `build.toml` rejects a file missing one of these, naming each missing key and what it decides.
@@ -248,9 +248,9 @@ These drive the CI templates. All optional except `[ci].python_versions` and `[c
 | `[ci].split_tests` | `false` | Split build and C++ test into two stages so testing artifacts can be reused. The `Test` stage gets one `Run C++ Tests - <label>` job per testing configuration the build stages — `Release-testing` and `Debug-testing` on the default matrix — each naming its own artifact directory with `--label` (§10.2). Those jobs are `except: - tags`, so a tag pipeline never runs the Linux suite: it is left to the branch pipeline of the commit being tagged. |
 | `[ci].test_shards` | `0` | When >1, run the C++ tests as N gtest shards **inside a single container**. The recipe skips `cmake.test()` in this mode, so the shards are the only thing that runs the C++ tests — a missing runner binary fails the build rather than being skipped. Every `xmsconan job build` reads the count and shards in place, with one exception: under `split_tests = true`, GitLab's Linux build skips the C++ tests at any count, and each `Run C++ Tests - <label>` job runs `xmsconan job test`, which reads the count from `build.toml`, forks N runner processes (one when `test_shards` is 0 or 1) and merges their JUnit XML into one `TEST-cxxtest.xml` (§10.2). The shard count is per test job, so a two-configuration matrix runs `2 × N` processes across two containers. GitLab's Windows builds have no test job, so they shard in place under `split_tests` too. The count is rendered into neither pipeline, so raising it is a `build.toml` edit on either host, with no CI regeneration. This was previously GitLab's `parallel: N`, which bought its concurrency by starting N containers — each one repeating the container start, the `pip install` and the artifact download to run one Nth of the suite. |
 | `[ci].docker_image` | `""` | Override the build container image (skips the default Aquaveo images). |
-| `[ci].python_versions` | **required** | Python versions to build **on Windows**, as quoted `"X.Y"` strings; at least one. macOS and Linux take the highest entry unless they are given their own list below. `["3.10", "3.13"]` builds a Windows 3.10 wheel + Conan binary in addition to 3.13, which the desktop products need. See §8. |
-| `[ci].mac_python_versions` | highest of `[ci].python_versions` | Python versions the macOS matrix fans out across. Separate from `python_versions` so a Windows-only ABI (3.10 ships in Windows wheels for the desktop products) does not silently multiply the mac matrix. See §8. |
-| `[ci].linux_python_versions` | highest of `[ci].python_versions` | Python versions the Linux and Linux-ARM matrices fan out across. Every entry needs a matching `conan-gcc13-py<version>` container to exist, which is why this tracks the published images rather than `python_versions`. See §8. |
+| `[ci].python_versions` | **required** | Python versions to build **on Windows**, as quoted `"X.Y"` strings; at least one. macOS and Linux take the highest entry unless they are given their own list below. Each entry builds a Windows wheel + Conan binary for that version; a library the desktop products consume must include the version they embed. See §8. |
+| `[ci].mac_python_versions` | highest of `[ci].python_versions` | Python versions the macOS matrix fans out across. Separate from `python_versions` so a Windows-only ABI (one the desktop products need in a Windows wheel and nothing else uses) does not silently multiply the mac matrix. Leave it out for the default; when written it must name at least one version, since an empty list is rejected. See §8. |
+| `[ci].linux_python_versions` | highest of `[ci].python_versions` | Python versions the Linux and Linux-ARM matrices fan out across. Every entry needs a matching `conan-gcc13-py<version>` container to exist, which is why this tracks the published images rather than `python_versions`. Leave it out for the default; when written it must name at least one version, since an empty list is rejected. See §8. |
 
 All three lists are checked against the conanfile's `python_version` option at generation time. A version the recipe does not allow fails `xmsconan ci` with a message naming the supported set, rather than generating a matrix leg that dies later at `conan` configure time in CI.
 
@@ -486,9 +486,10 @@ A library whose dependencies are all static needs none of this and is unaffected
 ## 8. Python version support (3.10, 3.13, 3.14)
 
 Every `build.toml` names the Windows versions in `[ci].python_versions`; there is
-no default. It used to default to `["3.13"]`, and that default was stale for every
-library: the desktop products need a 3.10 Windows wheel that it never built, and
-nothing said so until the wheel was missing at install time. Each platform opts in
+no default. It used to default to `["3.13"]`, and a fixed default goes stale for
+every library: the desktop products embed one Python version and need a Windows
+wheel for exactly that one, and nothing said the default had stopped building it
+until the wheel was missing at install time. Each platform opts in
 to more versions through its own list, because what limits the fan-out differs per
 platform:
 
@@ -508,10 +509,10 @@ Why three lists instead of one:
 
 - **Windows** interpreters all come from `actions/setup-python` (GitHub) or
   `uv venv --python` on the `GLR-UV` runner (GitLab), so a version costs only
-  runner minutes. 3.10 lives here because the desktop products (GMS/SMS/WMS)
-  consume a 3.10 Windows wheel; nothing else needs it.
+  runner minutes. The version the desktop products (GMS/SMS/WMS) embed lives
+  here because they consume a Windows wheel for it; nothing else needs it.
 - **macOS** is cheap to fan out too, but inherits nothing from the Windows list —
-  adding 3.10 for the desktop products should not triple the mac matrix.
+  adding a version for the desktop products should not multiply the mac matrix.
 - **Linux** runs in a container, and each version needs a published
   `conan-gcc13-py<version>` image. Only **3.13 and 3.14** images exist; there is
   no `conan-gcc13-py3.10/3.11/3.12`. Naming a version with no image yields a job

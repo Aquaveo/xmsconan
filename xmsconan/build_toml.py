@@ -54,7 +54,9 @@ class CiTable:
     from disk therefore always carries both. The field defaults below exist
     for constructing one in code, where ``windows_wheel_repair = None`` still
     means "not set" and :func:`xmsconan.ci_options.repairs_windows_wheel`
-    refuses to guess.
+    refuses to guess. ``python_versions`` would ideally be ``None`` too, but it
+    keeps its old ``["3.13"]`` default because many tests build a table in
+    code without naming it, and nothing outside the tests does.
 
     Two more fields keep ``None`` for "not set" rather than a default, because
     a reader needs to tell the two apart:
@@ -230,16 +232,18 @@ _CI_KEY_TYPES = {
 
 #: ``[ci]`` keys every build.toml must set, each with the reason a default
 #: would be wrong. Both used to default, and both defaults fit only one of the
-#: two kinds of library this tool builds: the desktop products need a 3.14
-#: Windows wheel that a ``["3.13"]`` default doesn't build, and they load wheels
+#: two kinds of library this tool builds: the desktop products embed one
+#: Python version and need a Windows wheel for exactly that one, which a
+#: fixed default stops building as soon as they move on; and they load wheels
 #: from a host that supplies its own C++ runtime, which a repaired wheel
 #: overrides with a vendored copy. A library that leaves either unset gets
 #: the wrong one for its consumers, and nothing says so until the wheel is
 #: installed -- which is why the file reader insists instead.
 _REQUIRED_CI_KEYS = {
     "python_versions": (
-        'the Python versions to build Windows wheels for, e.g. ["3.13"]; '
-        'add "3.14" for a library the desktop products (GMS/SMS/WMS) consume'
+        'the Python versions to build Windows wheels for, as quoted strings '
+        'like ["3.14"]; a library the desktop products (GMS/SMS/WMS) consume '
+        'must include the version they embed'
     ),
     "windows_wheel_repair": (
         "true to bundle the DLLs a wheel needs (installed into plain Python "

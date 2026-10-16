@@ -323,26 +323,6 @@ def test_github_rejects_a_python_version_the_recipe_does_not_allow(tmp_path):
         generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
 
 
-def test_gitlab_default_python_version_is_3_13_only(tmp_path):
-    """Without [ci].python_versions GitLab references only 3.13."""
-    toml_file = tmp_path / "build.toml"
-    toml_file.write_text(
-        'library_name = "xmscore"\n'
-        'description = "Core"\n'
-        'ci_type = "gitlab"\n'
-        '\n'
-        '[ci]\n'
-        'python_versions = ["3.13"]\n'
-        'windows_wheel_repair = false\n',
-        encoding="utf-8",
-    )
-    output_dir = tmp_path / "output"
-    generate_ci(str(toml_file), "1.0.0", str(output_dir))
-    content = (output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert "PYTHON_TARGET_VERSION: '3.13'" in content
-    assert "PYTHON_TARGET_VERSION: '3.10'" not in content
-
-
 def test_gitlab_python_versions_opt_in_only_fans_out_windows(tmp_path):
     """[ci].python_versions = ["3.10", "3.13"] only expands the Windows matrix in GitLab."""
     toml_file = tmp_path / "build.toml"

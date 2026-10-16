@@ -442,11 +442,6 @@ class TestFindCoveragePackage:
 class TestResolveCoveragePythonVersion:
     """Picks the single python_version the coverage build pins to (issue #65)."""
 
-    def test_defaults_to_3_13_when_no_ci_python_versions(self):
-        """An empty toml falls back to the global default ABI."""
-        config = BuildToml(library_name="xmscore")
-        assert _resolve_coverage_python_version(config) == "3.13"
-
     def test_uses_highest_ci_python_versions(self):
         """Highest entry in [ci].python_versions wins by (major, minor)."""
         config = BuildToml(library_name="xmscore", ci=CiTable(python_versions=["3.10", "3.13"]))

@@ -51,7 +51,6 @@ def required_ci_keys(ci_type=None):
 
 #: ``required_ci_keys`` as TOML lines, for fixtures that write a raw body.
 REQUIRED_CI_LINES = '[ci]\npython_versions = ["3.13"]\nwindows_wheel_repair = true\n'
-REQUIRED_GITLAB_CI_LINES = '[ci]\npython_versions = ["3.13"]\nwindows_wheel_repair = false\n'
 
 
 def write_build_toml(tmp_path, ci_type, library_name="xmssnap", description="Snap",

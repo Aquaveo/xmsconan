@@ -59,7 +59,7 @@ The `build.toml` file defines the structure and dependencies of your XMS library
 |-------|------|-------------|----------|
 | `library_name` | string | Name of the library | `"xmscore"` |
 | `description` | string | Brief description | `"Support library for XMS products"` |
-| `[ci].python_versions` | array[string] | Python versions to build Windows wheels for. Add `"3.10"` for a library the desktop products consume. | `["3.10", "3.13"]` |
+| `[ci].python_versions` | array[string] | Python versions to build Windows wheels for. A library the desktop products consume must include the version they embed. | `["3.13", "3.14"]` |
 | `[ci].windows_wheel_repair` | boolean | Repair the Windows wheel. `true` when it is installed into plain Python environments, `false` when the desktop products load it (see the Wheel Repair section). | `true` |
 
 The two `[ci]` keys used to have defaults, and each default was right for only one kind of library. Every `xmsconan` command rejects a `build.toml` that leaves either out.
