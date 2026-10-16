@@ -38,7 +38,7 @@ def test_build_toml_defaults_match_the_generator():
     assert config.extra_cmake_text == ""
     assert config.xms_dependencies == []
     assert config.xms_dependency_options == {}
-    assert config.matrix == {}
+    assert config.matrix == MatrixTable()
     assert config.filter == {}
     assert config.conan_profile_conf is None
     assert config.conan_profile_variants is None
@@ -110,16 +110,26 @@ def test_toml_to_dataclass_converts_sub_tables():
     assert config.xms_dependencies == [XmsDependency("xmsgrid", "7.0.0", no_python=True)]
 
 
-def test_toml_to_dataclass_leaves_matrix_and_filter_as_dicts():
-    """The packager owns those vocabularies and the templates write them verbatim."""
+def test_toml_to_dataclass_types_the_matrix_and_leaves_the_filter_a_dict():
+    """[matrix] is read like [ci]; [filter] keeps the shape the generated build.py writes verbatim."""
     config = _toml_to_dataclass({
         "library_name": "xmscore",
         "ci": dict(_REQUIRED_CI),
         "matrix": {"compiler_runtime": ["dynamic"]},
         "filter": {"build_type": "Release"},
     }, "build.toml")
-    assert config.matrix == {"compiler_runtime": ["dynamic"]}
+    assert config.matrix == MatrixTable(compiler_runtime=("dynamic",))
     assert config.filter == {"build_type": "Release"}
+
+
+def test_toml_to_dataclass_rejects_a_bad_matrix_naming_the_file():
+    """A [matrix] typo is reported the way a [ci] typo is, from the reader."""
+    with pytest.raises(ValueError, match=r"build\.toml: \[matrix\] has unknown key\(s\) compiler_runtimes"):
+        _toml_to_dataclass({
+            "library_name": "xmscore",
+            "ci": dict(_REQUIRED_CI),
+            "matrix": {"compiler_runtimes": ["dynamic"]},
+        }, "build.toml")
 
 
 def test_ci_key_types_name_every_ci_table_field():

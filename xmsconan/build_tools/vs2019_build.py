@@ -112,7 +112,7 @@ from typing import NamedTuple, Optional
 from tabulate import tabulate
 
 from xmsconan._cli import add_verbosity_args, configure_logging, failure_message, tracebacks_wanted
-from xmsconan.build_toml import read_optional_build_toml
+from xmsconan.build_toml import MatrixTable, read_optional_build_toml
 from xmsconan.ci_options import repairs_windows_wheel
 from xmsconan.ci_tools.conan_setup import conan_setup
 from xmsconan.ci_tools.credentials import load_conan_credentials, read_password_file
@@ -684,7 +684,7 @@ def _library_repairs_wheel(library_dir: str | Path) -> bool:
     return repairs_windows_wheel(config)
 
 
-def _library_matrix(library_dir: str | Path) -> dict:
+def _library_matrix(library_dir: str | Path) -> MatrixTable:
     """Read the ``[matrix]`` table out of a library's ``build.toml``.
 
     The VS2019 driver builds each library from its own checkout rather than
@@ -697,14 +697,14 @@ def _library_matrix(library_dir: str | Path) -> dict:
         library_dir: Directory holding the library's ``build.toml``.
 
     Returns:
-        The ``[matrix]`` table, or an empty dict when the file or the table is
-        absent.
+        The ``[matrix]`` table, with every key unset when the file or the
+        table is absent.
 
     Raises:
         ValueError: When the file exists but does not parse.
     """
     config = _library_build_toml(library_dir)
-    return config.matrix if config is not None else {}
+    return config.matrix if config is not None else MatrixTable()
 
 
 def _new_packager(library, conanfile_path, python_versions, matrix=None):
@@ -725,7 +725,8 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         configurations generated yet.
 
     Raises:
-        ValueError: When ``matrix`` is malformed, from ``resolve_matrix``.
+        ValueError: When ``matrix`` is a malformed dict, from the reader's
+            ``matrix_table``.
     """
     return XmsConanPackager(
         library,
@@ -734,7 +735,7 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         apply_boost_defaults=False,
         python_versions=python_versions,
         # Passed through rather than `matrix or None`: a falsey non-dict
-        # (matrix = []) has to reach resolve_matrix and be rejected, the way it
+        # (matrix = []) has to reach matrix_table and be rejected, the way it
         # is on every other entry point, instead of being read as "no
         # restriction" and quietly restoring the full fan-out.
         matrix=matrix,

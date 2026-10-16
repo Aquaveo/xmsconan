@@ -397,7 +397,7 @@ def plan_ci(
         # --wheel-dir; it reads the configurations now, which is why this check
         # is about the consuming steps rather than about the build. Same class
         # of check as the two above.
-        pybind_build_types = config.matrix.get("pybind_build_types")
+        pybind_build_types = config.matrix.pybind_build_types
         if pybind_build_types and "Release" not in pybind_build_types:
             raise ValueError(
                 f"build.toml sets [matrix].pybind_build_types = "
@@ -499,7 +499,7 @@ def plan_ci(
     # testing build alone, and a release drops that too. The axis would then
     # name no build type on the one pipeline that publishes -- fail
     # generation rather than the first release.
-    if ci_type == "github" and config.matrix.get("wheel_only") and not filter_effects["release_build_types"]:
+    if ci_type == "github" and config.matrix.wheel_only and not filter_effects["release_build_types"]:
         raise ValueError(
             "build.toml sets [matrix].wheel_only with ci_type = \"github\", and its "
             "[filter] leaves no configuration a release builds: a tag drops the "
@@ -539,7 +539,7 @@ def plan_ci(
         # same small set. A repository that publishes library packages keeps
         # the single looping "Conan Build" and its separate "Coverage Build"
         # until the concurrent stage has been proven against that shape too.
-        "ci_wheel_only": bool(config.matrix.get("wheel_only")),
+        "ci_wheel_only": config.matrix.wheel_only,
         "ci_deploy": config.ci.deploy,
         "ci_coverage": config.ci.coverage,
         "ci_xvfb": config.ci.xvfb,
