@@ -739,7 +739,13 @@ Repair Wheel:
    stores its source paths relative to its own build folder's copy of the
    exported tree -- and the repository checkout this job already has is that
    same tree, so it serves as gcovr's --root. That is what keeps a 245 MiB
-   build folder from having to travel between jobs to be read. #>
+   build folder from having to travel between jobs to be read.
+
+   This job's gcovr reads what the build jobs' gcovr wrote, on another image,
+   and gcovr's tracefile reader accepts only the format version it writes
+   itself. Both jobs get gcovr from the extra, which pins it exactly so they
+   agree whatever an image ships; naming gcovr on an install line here would
+   undo that. #>
 Coverage:
   stage: Coverage
 <# Same null-key guard as `dependencies:` and `artifacts: paths:` above. An

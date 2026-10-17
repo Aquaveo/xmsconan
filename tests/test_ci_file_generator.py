@@ -1389,7 +1389,7 @@ def test_gitlab_pages_takes_the_html_from_the_job_that_rendered_it(tmp_path):
 def test_github_coverage_installs_nothing_but_the_extra(tmp_path):
     """Coverage.yaml has one install line, and it asks for ``xmsconan[ci]``.
 
-    gcovr's major bound and conan's patch series live in the extra now, so a
+    gcovr's exact pin and conan's patch series live in the extra now, so a
     bare ``pip install conan wheel gcovr`` here would make this the one job
     measuring with a toolchain the build workflow did not resolve.
     """

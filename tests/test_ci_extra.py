@@ -29,12 +29,23 @@ def test_ci_extra_pins_conan_to_a_patch_series():
     assert re.fullmatch(r"conan~=\d+\.\d+\.\d+", conan[0]), conan[0]
 
 
-def test_ci_extra_bounds_gcovr_below_the_next_major():
-    """The gcovr bound stops below the next major: its report format is what ``xmsconan_coverage`` parses."""
+def test_ci_extra_pins_gcovr_exactly():
+    """The gcovr pin is ``==``, so every job in a pipeline runs the same gcovr.
+
+    The coverage measure jobs and the report job run on different images, and
+    gcovr's tracefile reader accepts only the format version it writes itself:
+    a report job that installed 8.7 refused the tracefiles the measure jobs'
+    image-shipped 8.6 wrote, "Wrong format version, got 0.14 expected 0.15".
+    That format changed at a minor release, so the ``>=7,<9`` range this
+    replaced could not keep the two images in agreement: ``--upgrade`` leaves
+    an image's gcovr alone while it satisfies the range, and the bare python
+    image takes the newest. Only an exact pin makes pip replace the image's
+    copy.
+    """
     gcovr = [requirement for requirement in ci_extra() if requirement_names(requirement) == {"gcovr"}]
 
     assert len(gcovr) == 1, gcovr
-    assert re.fullmatch(r"gcovr>=\d+,<\d+", gcovr[0]), gcovr[0]
+    assert re.fullmatch(r"gcovr==\d+(\.\d+)+", gcovr[0]), gcovr[0]
 
 
 @pytest.mark.parametrize("option, plugin", [

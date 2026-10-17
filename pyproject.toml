@@ -91,7 +91,16 @@ ci = [
     # took this wheel; it now goes to every job, and on the Linux images and
     # the GitHub runners it sits ahead of the system cmake on PATH.
     "cmake>=3.21",
-    "gcovr>=7,<9",
+    # Pinned exactly on purpose. The GitLab coverage jobs write gcovr JSON
+    # tracefiles in one image and merge them in another, and gcovr's reader
+    # accepts only the format version it writes itself: 8.7 refuses 8.6's
+    # tracefiles ("Wrong format version, got 0.14 expected 0.15"). That
+    # format changed at a minor release, so no range keeps two images in
+    # agreement -- under `pip install --upgrade` an image that already
+    # carries a gcovr in range keeps it, while the bare python image takes
+    # the newest. An exact pin is the one spec pip has to replace an image's
+    # copy to satisfy. Bump this deliberately.
+    "gcovr==8.7",
     # The plugins the generated .flake8 relies on. flake8-tidy-imports
     # registers `banned-modules`, which that file sets: flake8 ignores a
     # config option no installed plugin claims, so without the plugin the
