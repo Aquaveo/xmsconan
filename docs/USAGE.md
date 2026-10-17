@@ -898,7 +898,7 @@ The split lands where it does because `_run_gcovr` passes `--root <build folder>
 
 `[ci].xvfb` applies to `collect` only: the re-exec under `xvfb-run` happens where the tests run, so the report phase needs no display and no `xvfb-run` on `PATH`.
 
-Beyond the CI scheduling this buys testability. The gate used to be reachable only by driving two real Conan builds, which made the logic deciding pass-vs-fail the least-tested part of the coverage tool; the report phase needs no toolchain, no Conan cache, and no build folder. After a `collect` run it is genuinely JSON in, exit code out. After `measure` legs it also shells out to gcovr once, to merge the per-leg tracefiles — still no compiler, but gcovr has to be on `PATH` in the report job too, and it has to be the version that wrote the tracefiles. The `ci` extra pins it exactly for that reason (§10.3).
+Beyond the CI scheduling this buys testability. The gate used to be reachable only by driving two real Conan builds, which made the logic deciding pass-vs-fail the least-tested part of the coverage tool; the report phase needs no toolchain, no Conan cache, and no build folder. After a `collect` run it is genuinely JSON in, exit code out. After `measure` legs it also shells out to gcovr once, to merge the per-leg tracefiles — still no compiler, but gcovr has to be on `PATH` in the report job too, and it has to be the version that wrote the tracefiles. The `ci` extra pins it exactly for that reason (§10.3). The pin keeps a pipeline's jobs in step only while they install the same xmsconan release: if a release that moves it lands between a pipeline's measure jobs and its `Coverage` job, or before a `Coverage` job retried on its own, re-run the measure jobs as well.
 
 ### 11.5 GitLab vs GitHub
 
