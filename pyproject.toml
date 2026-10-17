@@ -77,9 +77,10 @@ test = ["pytest", "pyyaml"]
 # extra-index-url), so every entry, and everything it pulls in, has to
 # resolve from the public Aquaveo index alone, on every platform a job runs
 # on -- see the `uv` note above for what checking that means.
-# Checked 2026-09-05 with `uv pip install --dry-run` against that index
-# alone, for manylinux x86_64 and aarch64, win_amd64 and macOS arm64 on
-# 3.10, 3.13 and 3.14: every combination resolves. cmake is the one entry
+# Checked 2026-10-17, with gcovr pinned to 8.7, by `uv pip compile` of the
+# runtime dependencies plus this extra against that index alone, for
+# manylinux_2_17 x86_64 and aarch64, win_amd64 and macOS arm64 on 3.10,
+# 3.13 and 3.14: every combination resolves. cmake is the one entry
 # that ships per-platform wheels; +simple/cmake/ lists macosx universal2,
 # manylinux aarch64 and x86_64, and win_amd64. The rest are pure Python.
 ci = [
@@ -91,7 +92,19 @@ ci = [
     # took this wheel; it now goes to every job, and on the Linux images and
     # the GitHub runners it sits ahead of the system cmake on PATH.
     "cmake>=3.21",
-    "gcovr>=7,<9",
+    # Pinned exactly on purpose. The GitLab coverage jobs write gcovr JSON
+    # tracefiles in one image and merge them in another, and gcovr's reader
+    # accepts only the format version it writes itself: 8.7 refuses 8.6's
+    # tracefiles ("Wrong format version, got 0.14 expected 0.15"). That
+    # format changed at a minor release, so no range keeps two images in
+    # agreement -- under `pip install --upgrade` an image that already
+    # carries a gcovr in range keeps it, while the bare python image takes
+    # the newest. An exact pin is the one spec pip has to replace an image's
+    # copy to satisfy. Bump this deliberately: the pin keeps a pipeline's jobs
+    # in step only while they install the same xmsconan release, so a Coverage
+    # job that runs after a bump is released -- a retry included -- cannot
+    # read tracefiles its measure jobs wrote before it. Re-run those too.
+    "gcovr==8.7",
     # The plugins the generated .flake8 relies on. flake8-tidy-imports
     # registers `banned-modules`, which that file sets: flake8 ignores a
     # config option no installed plugin claims, so without the plugin the

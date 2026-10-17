@@ -7,6 +7,7 @@ import pytest
 from xmsconan import generator_tools
 from xmsconan.generator_tools.ci_file_generator import generate_ci
 from .ci_helpers import ci_extra, requirement_names, uncommented_lines, write_github_toml, write_gitlab_toml
+from .doc_helpers import slice_between, usage_text
 
 
 def _carried_names():
@@ -29,12 +30,44 @@ def test_ci_extra_pins_conan_to_a_patch_series():
     assert re.fullmatch(r"conan~=\d+\.\d+\.\d+", conan[0]), conan[0]
 
 
-def test_ci_extra_bounds_gcovr_below_the_next_major():
-    """The gcovr bound stops below the next major: its report format is what ``xmsconan_coverage`` parses."""
+def test_ci_extra_pins_gcovr_exactly():
+    """The gcovr pin is ``==``, so every job that installs one xmsconan release runs one gcovr.
+
+    The coverage measure jobs and the report job run on different images, and
+    gcovr's tracefile reader accepts only the format version it writes itself:
+    a report job that installed 8.7 refused the tracefiles the measure jobs'
+    image-shipped 8.6 wrote, "Wrong format version, got 0.14 expected 0.15".
+    That format changed at a minor release, so the ``>=7,<9`` range this
+    replaced could not keep the two images in agreement: ``--upgrade`` leaves
+    an image's gcovr alone while it satisfies the range, and the bare python
+    image takes the newest. Only an exact pin makes pip replace the image's
+    copy. It does not reach across xmsconan releases: a Coverage job that runs
+    after a release moving the pin reads tracefiles written under the old one,
+    which is why USAGE §11.4 says to re-run the measure jobs then.
+    """
     gcovr = [requirement for requirement in ci_extra() if requirement_names(requirement) == {"gcovr"}]
 
     assert len(gcovr) == 1, gcovr
-    assert re.fullmatch(r"gcovr>=\d+,<\d+", gcovr[0]), gcovr[0]
+    assert re.fullmatch(r"gcovr==\d+(\.\d+)+", gcovr[0]), gcovr[0]
+
+
+def test_usage_toolchain_table_states_each_version_the_extra_pins():
+    """USAGE section 10.3 opens each versioned entry's row with the extra's own specifier.
+
+    The conan and gcovr pins are bumped by hand, and the table is where a
+    consumer reads which toolchain the generated jobs install; a bump that
+    misses its row leaves the docs naming a version no job runs. The
+    unversioned flake8 entries share one "unpinned" row and are not checked.
+    """
+    section = slice_between(usage_text(), "### 10.3 Toolchain versions", "### 10.4 ", "docs/USAGE.md")
+    rows = []
+    for requirement in ci_extra():
+        name, spec = re.fullmatch(r"([A-Za-z0-9._-]+)\s*(.*)", requirement.split(";", 1)[0].strip()).groups()
+        if spec:
+            rows.append(f"| `{name}` | `{spec}`")
+
+    assert rows
+    assert [row for row in rows if row not in section] == []
 
 
 @pytest.mark.parametrize("option, plugin", [
