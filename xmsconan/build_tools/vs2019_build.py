@@ -707,7 +707,7 @@ def _library_matrix(library_dir: str | Path) -> MatrixTable:
     return config.matrix if config is not None else MatrixTable()
 
 
-def _new_packager(library, conanfile_path, python_versions, matrix=None):
+def _new_packager(library, conanfile_path, python_versions, matrix):
     """Build a packager wired for the VS2019 matrix.
 
     ``apply_boost_defaults=False`` is not implied by the platform key -- see
@@ -717,16 +717,12 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         library: Library / Conan package name.
         conanfile_path: Path passed to ``conan create``.
         python_versions: Python versions the pybind variants fan out across.
-        matrix: The library's ``[matrix]`` table, restricting which
-            configurations are produced. None or empty means the full fan-out.
+        matrix: The library's ``[matrix]`` table, as :func:`_library_matrix`
+            reads it.
 
     Returns:
         An :class:`~xmsconan.package_tools.packager.XmsConanPackager` with no
         configurations generated yet.
-
-    Raises:
-        ValueError: When ``matrix`` is a malformed dict, from the reader's
-            ``matrix_table``.
     """
     return XmsConanPackager(
         library,
@@ -734,10 +730,6 @@ def _new_packager(library, conanfile_path, python_versions, matrix=None):
         build_missing=True,
         apply_boost_defaults=False,
         python_versions=python_versions,
-        # Passed through rather than `matrix or None`: a falsey non-dict
-        # (matrix = []) has to reach matrix_table and be rejected, the way it
-        # is on every other entry point, instead of being read as "no
-        # restriction" and quietly restoring the full fan-out.
         matrix=matrix,
     )
 

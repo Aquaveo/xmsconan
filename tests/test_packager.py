@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from xmsconan.build_toml import matrix_table, MatrixTable
+from xmsconan.build_toml import MatrixTable
 from xmsconan.constants import (
     build_folder_for_generator,
     DEFAULT_REMOTE_NAME,
@@ -355,35 +355,16 @@ def test_matrix_wheel_only_defaults_off():
 
 
 @patch_env(clear=True)
-@pytest.mark.parametrize("matrix,expected", [
-    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),
-    ({"compiler_runtime": ["MD"]}, "MD"),
-    ({"compiler_runtime": "dynamic"}, "must be a list"),
-    ({"pybind_build_types": ["RelWithDebInfo"]}, "RelWithDebInfo"),
-    ({"wheel_only": "true"}, "must be a boolean"),
-    ({"wheel_onley": True}, "wheel_onley"),
-    (["dynamic"], "[matrix] must be a table"),
-], ids=[
-    "misspelled-key",
-    "conan-1-runtime-spelling",
-    "runtime-string-not-list",
-    "unsupported-build-type",
-    "wheel-only-string-not-bool",
-    "misspelled-wheel-only",
-    "matrix-is-a-list-not-a-table",
-])
-def test_matrix_rejects_bad_input(matrix, expected):
-    """A misspelled key or value in a CONAN_MATRIX dict fails when the packager is built.
+def test_packager_runs_the_readers_matrix_checks_naming_the_conanfile():
+    """A CONAN_MATRIX dict gets the reader's [matrix] checks, and their errors name the conanfile.
 
     The generated build.py hands the table over as a dict literal rather than
     as the table the reader produced, so the constructor is the one place the
-    reader's shape checks run outside the reader. An ignored key would
-    otherwise produce the full 13-configuration fan-out the library was trying
-    to trim.
+    reader's shape checks run outside the reader. What those checks reject is
+    the reader's business and is tested with it.
     """
-    with pytest.raises(ValueError) as exc_info:
-        XmsConanPackager("xmscore", matrix=matrix)
-    assert expected in str(exc_info.value)
+    with pytest.raises(ValueError, match=r"^sub/conanfile\.py CONAN_MATRIX has unknown key\(s\) compiler_runtimes"):
+        XmsConanPackager("xmscore", conanfile_path="sub/conanfile.py", matrix={"compiler_runtimes": ["dynamic"]})
 
 
 @pytest.mark.parametrize("key", ["compiler_runtime", "pybind_build_types"])
@@ -438,20 +419,23 @@ def test_generate_configurations_rejects_unknown_platform():
 
 @patch_env(clear=True)
 def test_module_generate_configurations_takes_the_table_the_reader_hands_out():
-    """A caller without a packager passes the reader's MatrixTable; the packager's dict route agrees.
-
-    None stands for an absent table and means the same as a table with every
-    key unset.
-    """
-    table = matrix_table({"wheel_only": True}, "[matrix]")
-
-    from_table = build_matrix.generate_configurations("linux", matrix=table, python_versions=["3.12"])
+    """A caller without a packager passes the reader's MatrixTable; the packager's dict route agrees."""
+    from_table = build_matrix.generate_configurations(
+        "linux", matrix=MatrixTable(wheel_only=True), python_versions=["3.12"])
     from_dict = XmsConanPackager("xmscore", matrix={"wheel_only": True}, python_versions=["3.12"]) \
         .generate_configurations(system_platform="linux")
+
+    assert from_table
     assert from_table == from_dict
 
+
+@patch_env(clear=True)
+def test_module_generate_configurations_treats_no_table_as_an_unset_one():
+    """None stands for an absent table and means the same as a table with every key unset."""
     absent = build_matrix.generate_configurations("linux", matrix=None, python_versions=["3.12"])
     unset = build_matrix.generate_configurations("linux", matrix=MatrixTable(), python_versions=["3.12"])
+
+    assert absent
     assert absent == unset
 
 

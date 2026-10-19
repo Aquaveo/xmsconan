@@ -137,7 +137,9 @@ class CoverageTable:
 class MatrixTable:
     """The ``[matrix]`` table as the file wrote it.
 
-    `None` indicates the file didn't have that key.
+    For the two lists, `None` indicates the file didn't have that key, which
+    selects a default no list value spells. ``wheel_only`` has no such
+    default: absent and ``false`` mean the same thing everywhere it is read.
     """
 
     compiler_runtime: Optional[tuple[str, ...]] = None

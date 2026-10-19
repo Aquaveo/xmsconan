@@ -1535,6 +1535,42 @@ def test_generation_rejects_a_malformed_matrix_table(tmp_path):
         )
 
 
+@pytest.mark.parametrize("key", ["compiler_runtime", "pybind_build_types"])
+def test_generation_rejects_an_empty_matrix_list_before_writing(key, tmp_path):
+    """An empty [matrix] list fails before anything is written.
+
+    The reader lets the list through, and the configuration fan-out is the
+    only other place that refuses it. With ``--no-profiles`` nothing fans out,
+    so the conanfile carrying ``CONAN_MATRIX = {'compiler_runtime': []}`` would
+    be the only artifact, and every later build.py would refuse it.
+    """
+    toml_file = tmp_path / "build.toml"
+    toml_file.write_text(
+        'library_name = "xmscore"\n'
+        'description = "desc"\n'
+        '[matrix]\n'
+        f'{key} = []\n'
+        '\n'
+        '[ci]\n'
+        'python_versions = ["3.13"]\n'
+        'windows_wheel_repair = true\n',
+        encoding="utf-8",
+    )
+    tpl_dir = tmp_path / "tpl"
+    tpl_dir.mkdir()
+    _copy_template("conanfile.py.jinja", tpl_dir)
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(ValueError, match="would build nothing"):
+        render_template_with_toml(
+            toml_file_path=str(toml_file),
+            version="1.0.0",
+            template_dir=str(tpl_dir),
+            output_dir=str(output_dir),
+        )
+    assert not output_dir.exists()
+
+
 # --- [filter] table -> build.py BUILD_FILTER ---
 
 

@@ -629,8 +629,9 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
         The configurations.
 
     Raises:
-        ValueError: When ``python_versions`` or ``matrix`` fails its
-            resolver, or when ``system_platform`` is not a key of
+        ValueError: When ``python_versions`` fails its resolver, when a
+            ``matrix`` list is empty (see :func:`reject_empty_matrix_lists`),
+            or when ``system_platform`` is not a key of
             ``configurations``. The platform is user-facing input (a CLI
             flag), so that message names the unknown key and lists the
             valid ones instead of failing with a bare ``AttributeError`` on

@@ -4,7 +4,7 @@ from dataclasses import fields, FrozenInstanceError
 import pytest
 
 from xmsconan.build_toml import (
-    _CI_KEY_TYPES, _load_toml, _matrix_table, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, matrix_table,
+    _CI_KEY_TYPES, _load_toml, _toml_to_dataclass, BuildToml, CiTable, CoverageTable, matrix_table,
     MatrixTable, read_build_toml, read_optional_build_toml, XmsDependency
 )
 
@@ -413,12 +413,6 @@ def test_matrix_table_prefixes_messages_with_where():
     """The generated conanfile hands the packager the same table, and its errors should name that file."""
     with pytest.raises(ValueError, match=r"^conanfile\.py CONAN_MATRIX\.wheel_only must be a boolean"):
         matrix_table({"wheel_only": "yes"}, "conanfile.py CONAN_MATRIX")
-
-
-def test_private_matrix_table_names_the_toml_path():
-    """The reader's wrapper supplies the ``<path>: [matrix]`` prefix the other tables use."""
-    with pytest.raises(ValueError, match=r"^sub/build\.toml: \[matrix\] has unknown key"):
-        _matrix_table({"bogus": 1}, "sub/build.toml")
 
 
 @pytest.mark.parametrize("table,expected", [

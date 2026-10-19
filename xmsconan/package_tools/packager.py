@@ -239,7 +239,7 @@ class XmsConanPackager(object):
         # The generated build.py hands the table over as the CONAN_MATRIX dict
         # literal, so this is the one place the reader's checks run outside
         # the reader. Every other caller passes the MatrixTable it read.
-        self._matrix = matrix_table(matrix, where='[matrix]')
+        self._matrix = matrix_table(matrix, where=f'{conanfile_path} CONAN_MATRIX')
         self._coverage = (
             coverage if coverage is not None
             else os.environ.get('XMS_COVERAGE') == '1'

@@ -25,6 +25,7 @@ from xmsconan.generator_tools.output_plan import (
     describe_plan,
     write_text_lf,
 )
+from xmsconan.package_tools.matrix import reject_empty_matrix_lists
 
 LOGGER = logging.getLogger(__name__)
 
@@ -215,6 +216,10 @@ def plan_template_render(
 
     config = read_build_toml(toml_file)
     _validate_vocabularies(config, toml_file)
+    # The conanfile carries the table verbatim as CONAN_MATRIX. A caller that
+    # renders without generating profiles (--no-profiles) would otherwise
+    # write one that every later build.py refuses.
+    reject_empty_matrix_lists(config.matrix)
     context = _render_context(config, version)
 
     # Get all template files in the specified template directory
