@@ -27,6 +27,7 @@ import platform
 import re
 from typing import Optional
 
+from xmsconan.build_toml import MatrixTable
 from xmsconan.constants import MSVC_VS2019_VERSION, version_sort_key
 
 
@@ -524,101 +525,27 @@ def summarize_filter_matches(filter_dict, python_versions=None, matrix=None):
 #: caller nor ``PYTHON_TARGET_VERSION`` names any.
 DEFAULT_PYTHON_VERSIONS = ["3.13"]
 
-#: Accepted values per ``[matrix]`` key. The keys double as the vocabulary
-#: check: anything else in the table is a misspelling, and a misspelling that
-#: is skipped rather than rejected produces the very fan-out the library was
-#: trying to trim.
-_MATRIX_VALUES = {
-    'compiler_runtime': ('dynamic', 'static'),
-    'pybind_build_types': ('Release', 'Debug'),
-}
-
-#: Boolean ``[matrix]`` keys, mapped to their default. Separate from
-#: :data:`_MATRIX_VALUES` because those validate membership in a vocabulary
-#: and a flag has none, only a type. Both feed the unknown-key check below,
-#: so a misspelled flag is rejected rather than quietly left at its default
-#: -- which for a switch that *removes* builds means the builds keep
-#: happening and the only symptom is a pipeline that is no faster.
-_MATRIX_FLAGS = {
-    'wheel_only': False,
-}
-
 #: Build types that get a pybind variant when ``[matrix]`` does not say.
 DEFAULT_PYBIND_BUILD_TYPES = ('Release',)
 
 
-def resolve_matrix(matrix: Optional[dict]) -> dict:
-    """Validate the ``[matrix]`` table and fill in its defaults.
+def reject_empty_matrix_lists(matrix: MatrixTable) -> None:
+    """Raise when a ``[matrix]`` list is present but empty.
 
-    Both failure modes are silent otherwise. A misspelled key
-    (``compiler_runtimes``) is simply never read, so the library keeps
-    producing configurations it asked to stop producing, and an empty list
-    yields no configurations at all -- a build that succeeds having packaged
-    nothing.
-
-    Args:
-        matrix: The ``[matrix]`` table, or None for the full fan-out.
-
-    Returns:
-        The table with every accepted key present: ``compiler_runtime`` is
-        None when unrestricted, ``pybind_build_types`` always a tuple, and
-        ``wheel_only`` always a bool.
+    The reader lets an empty list through: it is well-typed, and what it
+    would do is the fan-out's business. What it would do is build nothing,
+    which looks exactly like a build that succeeded.
 
     Raises:
-        ValueError: When ``matrix`` is not a mapping, carries an unknown key,
-            or names a value outside the accepted vocabulary -- including an
-            empty list, which would build nothing.
+        ValueError: ``compiler_runtime`` or ``pybind_build_types`` is set to
+            an empty list.
     """
-    if matrix is None:
-        matrix = {}
-    if not isinstance(matrix, dict):
-        raise ValueError(f'matrix must be a table, got {type(matrix).__name__}')
-
-    accepted_keys = set(_MATRIX_VALUES) | set(_MATRIX_FLAGS)
-    unknown = sorted(set(matrix) - accepted_keys)
-    if unknown:
-        raise ValueError(
-            f'matrix has unknown key(s) {", ".join(unknown)}. '
-            f'Accepted keys: {", ".join(sorted(accepted_keys))}.'
-        )
-
-    resolved = {}
-    for key, default in _MATRIX_FLAGS.items():
-        value = matrix.get(key, default)
-        if not isinstance(value, bool):
-            # A string "true" is the likely typo, and it is truthy, so an
-            # unchecked value would turn the flag on for a repo that wrote
-            # it wrong -- silently dropping the library configurations.
-            raise ValueError(
-                f'matrix.{key} must be a boolean, got '
-                f'{type(value).__name__} ({value!r}).'
-            )
-        resolved[key] = value
-    for key, accepted in _MATRIX_VALUES.items():
-        values = matrix.get(key)
-        if values is None:
-            resolved[key] = None
-            continue
-        if not isinstance(values, (list, tuple)):
-            raise ValueError(
-                f'matrix.{key} must be a list, got {type(values).__name__}'
-            )
-        if not values:
+    for key in ('compiler_runtime', 'pybind_build_types'):
+        if getattr(matrix, key) == ():
             raise ValueError(
                 f'matrix.{key} is empty, which would build nothing. '
-                f'Omit the key for every value, or name a subset of: {", ".join(accepted)}.'
+                f'Omit the key for every value, or name at least one.'
             )
-        invalid = sorted(str(value) for value in values if value not in accepted)
-        if invalid:
-            raise ValueError(
-                f'matrix.{key} names unknown value(s) {", ".join(invalid)}. '
-                f'Accepted values: {", ".join(accepted)}.'
-            )
-        resolved[key] = tuple(values)
-
-    if resolved['pybind_build_types'] is None:
-        resolved['pybind_build_types'] = DEFAULT_PYBIND_BUILD_TYPES
-    return resolved
 
 
 def resolve_python_versions(python_versions: Optional[list[str]]):
@@ -684,8 +611,9 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
             Required, so a caller never reaches the environment by leaving it
             out: None or an empty list falls back to
             ``PYTHON_TARGET_VERSION``, then to :data:`DEFAULT_PYTHON_VERSIONS`.
-        matrix: The ``[matrix]`` table, raw or as :func:`resolve_matrix`
-            returns it; None is the full fan-out.
+        matrix: The ``[matrix]`` table as the reader hands it out, a
+            :class:`~xmsconan.build_toml.MatrixTable`; None is the full
+            fan-out.
         coverage: Whether to set the recipe's ``coverage`` option on the
             configurations :func:`is_instrumented_configuration` selects.
             Never read from ``XMS_COVERAGE`` here; the packager's
@@ -701,20 +629,21 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
         The configurations.
 
     Raises:
-        ValueError: When ``python_versions`` or ``matrix`` fails its
-            resolver, or when ``system_platform`` is not a key of
+        ValueError: When ``python_versions`` fails its resolver, when a
+            ``matrix`` list is empty (see :func:`reject_empty_matrix_lists`),
+            or when ``system_platform`` is not a key of
             ``configurations``. The platform is user-facing input (a CLI
             flag), so that message names the unknown key and lists the
             valid ones instead of failing with a bare ``AttributeError`` on
             None.
     """
-    # Both resolvers return resolved input unchanged, so a caller that has
+    # The resolver returns resolved input unchanged, so a caller that has
     # already resolved (the packager's constructor) pays only a re-check.
-    # Python versions first, then the matrix: the order the constructor
-    # validates them in, so a build.toml wrong in both reports the same
-    # error whichever path reads it.
     python_versions = resolve_python_versions(python_versions)
-    matrix = resolve_matrix(matrix)
+    matrix = MatrixTable() if matrix is None else matrix
+    # Checked on every platform, before compiler_runtime is found to be
+    # inert here.
+    reject_empty_matrix_lists(matrix)
     artifacts_dir = os.path.abspath(artifacts_dir) if artifacts_dir else None
 
     # Get system_platform name
@@ -735,8 +664,8 @@ def generate_configurations(system_platform=None, *, python_versions, matrix=Non
     # (linux, darwin) ignore the restriction rather than failing: one
     # build.toml drives every platform, so a Windows-only statement has to
     # be inert elsewhere.
-    runtimes = matrix['compiler_runtime']
-    wheel_only = matrix['wheel_only']
+    runtimes = matrix.compiler_runtime
+    wheel_only = matrix.wheel_only
     if wheel_only and runtimes is None:
         # The wheel comes from the pybind configuration, and msvc only gets
         # one on the dynamic runtime (see _pybind_variants). Keeping the
@@ -921,12 +850,14 @@ def _pybind_build_types(matrix) -> set:
     CMake's ``-O3`` and a Release build is therefore unoptimized anyway.
 
     Args:
-        matrix: The ``[matrix]`` table as :func:`resolve_matrix` returns it.
+        matrix: The ``[matrix]`` table as the reader hands it out.
 
     Returns:
         The build-type names, as a set.
     """
-    return set(matrix['pybind_build_types'])
+    if matrix.pybind_build_types is None:
+        return set(DEFAULT_PYBIND_BUILD_TYPES)
+    return set(matrix.pybind_build_types)
 
 
 def _pybind_variants(combinations, matrix, python_versions):
@@ -939,7 +870,7 @@ def _pybind_variants(combinations, matrix, python_versions):
 
     Args:
         combinations: The base configurations to derive from.
-        matrix: The ``[matrix]`` table as :func:`resolve_matrix` returns it.
+        matrix: The ``[matrix]`` table as the reader hands it out.
         python_versions: The versions to fan out across.
 
     Returns:

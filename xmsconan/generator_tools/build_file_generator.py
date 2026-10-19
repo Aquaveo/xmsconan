@@ -25,7 +25,7 @@ from xmsconan.generator_tools.output_plan import (
     describe_plan,
     write_text_lf,
 )
-from xmsconan.package_tools.matrix import resolve_matrix
+from xmsconan.package_tools.matrix import reject_empty_matrix_lists
 
 LOGGER = logging.getLogger(__name__)
 
@@ -157,6 +157,9 @@ def _render_context(config: BuildToml, version: str) -> dict:
     ``description`` the way it always has.
     """
     context = {key: value for key, value in asdict(config).items() if value is not None}
+    # asdict recurses into the table and would render every field, None and
+    # False included. The conanfile carries the table as the file spelled it.
+    context["matrix"] = config.matrix.to_dict()
     context["version"] = version
     # The [filter] table is a baseline matrix restriction; the generated
     # build.py applies it before its own --filter. Validate it here so a typo
@@ -212,12 +215,11 @@ def plan_template_render(
         raise FileNotFoundError(f"The specified template directory does not exist: {template_dir}")
 
     config = read_build_toml(toml_file)
-    # Validated here rather than only where it is consumed: this function writes
-    # [matrix] verbatim into the generated conanfile.py, so a caller that renders
-    # templates without going on to generate profiles would otherwise produce an
-    # artifact from unvalidated input. The matrix module owns the vocabulary.
-    resolve_matrix(config.matrix)
     _validate_vocabularies(config, toml_file)
+    # The conanfile carries the table verbatim as CONAN_MATRIX. A caller that
+    # renders without generating profiles (--no-profiles) would otherwise
+    # write one that every later build.py refuses.
+    reject_empty_matrix_lists(config.matrix)
     context = _render_context(config, version)
 
     # Get all template files in the specified template directory

@@ -11,6 +11,7 @@ import tempfile
 import time
 from typing import Any, NamedTuple, Optional
 
+from xmsconan.build_toml import matrix_table
 from xmsconan.constants import (
     build_folder_for_generator,
     DEFAULT_REMOTE_NAME,
@@ -235,7 +236,10 @@ class XmsConanPackager(object):
         self._profile_conf = dict(DEFAULT_PROFILE_CONF) if profile_conf is None else dict(profile_conf)
         self._profile_variants = self._resolve_profile_variants(profile_variants)
         self._python_versions = build_matrix.resolve_python_versions(python_versions)
-        self._matrix = build_matrix.resolve_matrix(matrix)
+        # The generated build.py hands the table over as the CONAN_MATRIX dict
+        # literal, so this is the one place the reader's checks run outside
+        # the reader. Every other caller passes the MatrixTable it read.
+        self._matrix = matrix_table(matrix, where=f'{conanfile_path} CONAN_MATRIX')
         self._coverage = (
             coverage if coverage is not None
             else os.environ.get('XMS_COVERAGE') == '1'
@@ -281,15 +285,36 @@ class XmsConanPackager(object):
     _VARIANT_KINDS = frozenset({'library', 'python', 'testing'})
 
     @classmethod
-    def resolve_matrix(cls, matrix: Optional[dict]) -> dict:
-        """Validate the ``[matrix]`` table and fill in its defaults.
+    def resolve_matrix(cls, matrix) -> dict:
+        """Validate a ``[matrix]`` table and return it as a dict with its defaults filled in.
 
-        A delegate to :func:`xmsconan.package_tools.matrix.resolve_matrix`,
-        which documents the table and its failure modes. Kept for callers
-        outside this repository that validated ``[matrix]`` through the
-        class; code inside it calls the module function.
+        Kept for callers outside this repository that validated the table
+        through the class before it became a
+        :class:`~xmsconan.build_toml.MatrixTable`. Code inside the repository
+        reads the table the reader hands out and never needs this shape.
+
+        Args:
+            matrix: The table as ``build.toml`` spells it, None for an absent
+                table, or a :class:`~xmsconan.build_toml.MatrixTable`.
+
+        Returns:
+            ``wheel_only`` as a bool, ``compiler_runtime`` as a tuple or None
+            when unrestricted, and ``pybind_build_types`` as a tuple with the
+            ``Release`` default applied.
+
+        Raises:
+            ValueError: The table is malformed, or a list is empty.
         """
-        return build_matrix.resolve_matrix(matrix)
+        table = matrix_table(matrix, where='[matrix]')
+        build_matrix.reject_empty_matrix_lists(table)
+        pybind_build_types = table.pybind_build_types
+        if pybind_build_types is None:
+            pybind_build_types = build_matrix.DEFAULT_PYBIND_BUILD_TYPES
+        return {
+            'wheel_only': table.wheel_only,
+            'compiler_runtime': table.compiler_runtime,
+            'pybind_build_types': pybind_build_types,
+        }
 
     @classmethod
     def _resolve_profile_variants(cls, profile_variants):

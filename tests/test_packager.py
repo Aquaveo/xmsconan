@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from xmsconan.build_toml import MatrixTable
 from xmsconan.constants import (
     build_folder_for_generator,
     DEFAULT_REMOTE_NAME,
@@ -69,13 +70,33 @@ def test_packager_class_keeps_the_matrix_defaults(name):
     assert getattr(XmsConanPackager, name) is getattr(build_matrix, name)
 
 
-def test_packager_resolve_matrix_delegates_to_the_matrix():
-    """``XmsConanPackager.resolve_matrix`` answers as the module function does, rejections included."""
-    table = {"wheel_only": True}
+@pytest.mark.parametrize("table,expected", [
+    (None, {"wheel_only": False, "compiler_runtime": None, "pybind_build_types": ("Release",)}),
+    ({}, {"wheel_only": False, "compiler_runtime": None, "pybind_build_types": ("Release",)}),
+    ({"compiler_runtime": ["dynamic"], "pybind_build_types": ["Release", "Debug"], "wheel_only": True},
+     {"wheel_only": True, "compiler_runtime": ("dynamic",), "pybind_build_types": ("Release", "Debug")}),
+    (MatrixTable(compiler_runtime=("static",)),
+     {"wheel_only": False, "compiler_runtime": ("static",), "pybind_build_types": ("Release",)}),
+], ids=["absent", "empty", "full", "already-a-table"])
+def test_packager_resolve_matrix_keeps_the_resolved_dict_shape(table, expected):
+    """The classmethod still answers as it did before the table became a MatrixTable.
 
-    assert XmsConanPackager.resolve_matrix(table) == build_matrix.resolve_matrix(table)
-    with pytest.raises(ValueError, match="compiler_runtimes"):
-        XmsConanPackager.resolve_matrix({"compiler_runtimes": ["dynamic"]})
+    Kept for callers outside this repository: every key present, the Release
+    default filled in, and the table accepted in any of the forms a caller
+    might hold.
+    """
+    assert XmsConanPackager.resolve_matrix(table) == expected
+
+
+@pytest.mark.parametrize("table,expected", [
+    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),
+    ({"compiler_runtime": []}, "would build nothing"),
+    ({"pybind_build_types": []}, "would build nothing"),
+], ids=["misspelled-key", "empty-runtime-list", "empty-build-type-list"])
+def test_packager_resolve_matrix_still_rejects_what_it_rejected(table, expected):
+    """The shape checks come from the reader and the empty-list refusal from the fan-out; both still fire here."""
+    with pytest.raises(ValueError, match=expected):
+        XmsConanPackager.resolve_matrix(table)
 
 
 # --- get_current_arch ---
@@ -334,38 +355,31 @@ def test_matrix_wheel_only_defaults_off():
 
 
 @patch_env(clear=True)
-@pytest.mark.parametrize("matrix,expected", [
-    ({"compiler_runtimes": ["dynamic"]}, "compiler_runtimes"),
-    ({"compiler_runtime": ["MD"]}, "MD"),
-    ({"compiler_runtime": []}, "would build nothing"),
-    ({"compiler_runtime": "dynamic"}, "must be a list"),
-    ({"pybind_build_types": ["RelWithDebInfo"]}, "RelWithDebInfo"),
-    ({"pybind_build_types": []}, "would build nothing"),
-    ({"wheel_only": "true"}, "must be a boolean"),
-    ({"wheel_onley": True}, "wheel_onley"),
-    (["dynamic"], "matrix"),
-], ids=[
-    "misspelled-key",
-    "conan-1-runtime-spelling",
-    "empty-runtime-list-builds-nothing",
-    "runtime-string-not-list",
-    "unsupported-build-type",
-    "empty-build-type-list",
-    "wheel-only-string-not-bool",
-    "misspelled-wheel-only",
-    "matrix-is-a-list-not-a-table",
-])
-def test_matrix_rejects_bad_input(matrix, expected):
-    """A misspelled key or value fails loudly instead of silently building nothing.
+def test_packager_runs_the_readers_matrix_checks_naming_the_conanfile():
+    """A CONAN_MATRIX dict gets the reader's [matrix] checks, and their errors name the conanfile.
 
-    Every failure mode here is otherwise invisible: an ignored key produces the
-    full 13-configuration fan-out the library was trying to trim, and an empty
-    list produces no configurations at all -- which looks like a successful
-    build that packaged nothing.
+    The generated build.py hands the table over as a dict literal rather than
+    as the table the reader produced, so the constructor is the one place the
+    reader's shape checks run outside the reader. What those checks reject is
+    the reader's business and is tested with it.
     """
-    with pytest.raises(ValueError) as exc_info:
-        XmsConanPackager("xmscore", matrix=matrix)
-    assert expected in str(exc_info.value)
+    with pytest.raises(ValueError, match=r"^sub/conanfile\.py CONAN_MATRIX has unknown key\(s\) compiler_runtimes"):
+        XmsConanPackager("xmscore", conanfile_path="sub/conanfile.py", matrix={"compiler_runtimes": ["dynamic"]})
+
+
+@pytest.mark.parametrize("key", ["compiler_runtime", "pybind_build_types"])
+@pytest.mark.parametrize("system_platform", ["linux", "windows"])
+@patch_env(clear=True)
+def test_matrix_empty_list_is_refused_when_configurations_are_generated(key, system_platform):
+    """An empty list builds nothing, which looks exactly like a build that packaged nothing.
+
+    The reader lets it through, because an empty list is well-typed and what
+    it would do is the fan-out's business. The fan-out refuses it on every
+    platform -- including the ones where compiler_runtime is otherwise inert.
+    """
+    p = XmsConanPackager("xmscore", matrix={key: []})
+    with pytest.raises(ValueError, match="would build nothing"):
+        p.generate_configurations(system_platform=system_platform)
 
 
 @patch_env(clear=True)
@@ -404,33 +418,25 @@ def test_generate_configurations_rejects_unknown_platform():
 
 
 @patch_env(clear=True)
-def test_module_generate_configurations_resolves_raw_input():
-    """The module function takes the tables as build.toml spells them, not only pre-resolved.
+def test_module_generate_configurations_takes_the_table_the_reader_hands_out():
+    """A caller without a packager passes the reader's MatrixTable; the packager's dict route agrees."""
+    from_table = build_matrix.generate_configurations(
+        "linux", matrix=MatrixTable(wheel_only=True), python_versions=["3.12"])
+    from_dict = XmsConanPackager("xmscore", matrix={"wheel_only": True}, python_versions=["3.12"]) \
+        .generate_configurations(system_platform="linux")
 
-    The packager hands it values its constructor already resolved; a caller
-    without a packager hands it the raw ``[matrix]`` table and version list.
-    Both have to describe the same builds.
-    """
-    raw_matrix = {"wheel_only": True}
-    raw_versions = ["3.12"]
-
-    from_raw = build_matrix.generate_configurations(
-        "linux", matrix=raw_matrix, python_versions=raw_versions)
-    from_resolved = build_matrix.generate_configurations(
-        "linux",
-        matrix=build_matrix.resolve_matrix(raw_matrix),
-        python_versions=build_matrix.resolve_python_versions(raw_versions),
-    )
-
-    assert from_raw == from_resolved
+    assert from_table
+    assert from_table == from_dict
 
 
 @patch_env(clear=True)
-def test_module_generate_configurations_rejects_unknown_matrix_key():
-    """A misspelled ``[matrix]`` key fails here too, rather than leaving the full fan-out in place."""
-    with pytest.raises(ValueError, match="compiler_runtimes"):
-        build_matrix.generate_configurations(
-            "linux", python_versions=["3.13"], matrix={"compiler_runtimes": ["dynamic"]})
+def test_module_generate_configurations_treats_no_table_as_an_unset_one():
+    """None stands for an absent table and means the same as a table with every key unset."""
+    absent = build_matrix.generate_configurations("linux", matrix=None, python_versions=["3.12"])
+    unset = build_matrix.generate_configurations("linux", matrix=MatrixTable(), python_versions=["3.12"])
+
+    assert absent
+    assert absent == unset
 
 
 @patch_env(clear=True)
