@@ -299,6 +299,27 @@ def test_cmakelists_has_no_emscripten_branch(build_toml, tmp_path):
     assert "condabuildinfo.cmake" in content
 
 
+def test_coverage_build_updates_gcov_counters_atomically(build_toml, tmp_path):
+    """The instrumented build keeps gcov's counters consistent across threads.
+
+    GCC updates the counters non-atomically unless -pthread is on the compile
+    line, and the template never puts it there. A library whose tests run its
+    code on several threads then loses counter updates, gcov derives negative
+    counts from what is left, and gcovr fails the whole report with a
+    NegativeHitsError -- which xmsvtk's threaded raster fill hit.
+    """
+    content = _render_cmakelists(build_toml, tmp_path)
+    # Column-0 anchors, so the block's nested `if (MSVC) ... endif ()` doesn't end it early.
+    coverage_block = re.search(r"^if \(XMS_COVERAGE\)$(.*?)^endif \(\)$", content, re.MULTILINE | re.DOTALL)
+    assert coverage_block, "the rendered CMakeLists.txt has no top-level if (XMS_COVERAGE) block"
+    compile_call = re.search(r"add_compile_options\(([^)]*)\)", coverage_block.group(1))
+    assert compile_call, "the XMS_COVERAGE block has no add_compile_options call"
+    compile_options = compile_call.group(1).split()
+
+    assert "--coverage" in compile_options
+    assert "-fprofile-update=atomic" in compile_options
+
+
 def _render_cmakelists(build_toml, tmp_path):
     """Render the real CMakeLists template for a build.toml and return its text."""
     tpl_dir = tmp_path / "tpl"

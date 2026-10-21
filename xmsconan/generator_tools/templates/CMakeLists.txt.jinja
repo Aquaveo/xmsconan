@@ -42,11 +42,18 @@ endif ()
 
 # Set by the conan recipe when its `coverage` option is True — the option is
 # the only driver, so instrumentation always travels with the package_id.
+#
+# -fprofile-update=atomic keeps the gcov counters consistent when the code under
+# test runs on several threads. GCC only updates them atomically on its own when
+# -pthread is on the compile line, and nothing here puts it there (Threads is
+# linked through CMAKE_THREAD_LIBS_INIT, a link-time library at most). Counter
+# updates racing on two threads get lost, gcov derives negative counts from what
+# is left, and gcovr refuses the whole report with a NegativeHitsError.
 if (XMS_COVERAGE)
     if (MSVC)
         message(FATAL_ERROR "XMS_COVERAGE is GCC/Clang only")
     endif ()
-    add_compile_options(--coverage -O0 -g)
+    add_compile_options(--coverage -O0 -g -fprofile-update=atomic)
     add_link_options(--coverage)
 endif ()
 
