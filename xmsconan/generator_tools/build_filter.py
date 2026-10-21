@@ -74,6 +74,12 @@ CI_JOB_SETTINGS = {
 #: absent because no generated pipeline builds it.
 CI_WHEEL_PLATFORMS = {"mac": "darwin", "linux": "linux", "windows": "windows"}
 
+#: What :func:`ci_build_jobs` appends to each job name, per platform it plans.
+#: Linux keeps the bare names its pipelines already have -- every ``needs:``
+#: line written against them stays valid -- and macOS's jobs, which share the
+#: pipeline with Linux's, take a suffix so the two sets never share a name.
+_JOB_NAME_SUFFIXES = {"linux": "", "mac": " - macOS"}
+
 #: GitHub job block -> the :data:`CI_WHEEL_PLATFORMS` entry that answers for it.
 #: ``linux-arm`` reads Linux's: the two blocks differ by arch alone, and the
 #: runner produces Linux's configurations at its own arch. The packager's
@@ -394,8 +400,10 @@ def ci_filter_effects(build_filter: dict, config: BuildToml) -> dict:
 
 def ci_build_jobs(build_filter: dict, config: BuildToml,
                   python_versions: list, coverage: bool = False,
-                  coverage_python_version: Optional[str] = None) -> list[dict]:
-    """One GitLab build job per surviving Linux configuration.
+                  coverage_python_version: Optional[str] = None,
+                  platform: str = "linux",
+                  build_types: Optional[tuple] = None) -> list[dict]:
+    """One GitLab build job per surviving configuration of one platform.
 
     The generated pipeline used to run a single ``Conan Build`` that looped
     every configuration in sequence, and a ``Coverage Build`` that recompiled
@@ -413,25 +421,38 @@ def ci_build_jobs(build_filter: dict, config: BuildToml,
     and a job instrumented without a consumer would pay the compile for data
     nobody reads.
 
+    The macOS jobs are planned here too, one per configuration for a reason
+    of their own: a Tart VM starts each job with about 7 GiB free, and the
+    whole darwin matrix in one job fills more Conan cache than that.
+
     Args:
         build_filter: The validated ``[filter]`` table.
         config: The parsed build.toml, for its [matrix] table.
-        python_versions: The Linux Python versions this pipeline builds --
-            ``[ci].linux_python_versions``, already resolved by the caller.
-            Deliberately not ``ci_python_versions``, which unions every
-            platform's list: that is the right input for a yes/no "does any
-            platform build a wheel" question, but here it would emit a build
-            job per ABI that only macOS builds, each one compiling a Python
-            version the Linux image does not have.
+        python_versions: The Python versions this platform builds --
+            ``[ci].linux_python_versions`` or ``[ci].mac_python_versions``,
+            already resolved by the caller. Deliberately not
+            ``ci_python_versions``, which unions every platform's list: that
+            is the right input for a yes/no "does any platform build a wheel"
+            question, but here it would emit a build job per ABI that only
+            another platform builds -- on Linux, one compiling a Python
+            version the image does not have.
         coverage: Whether this repository generates a coverage pipeline. False
             leaves every job uninstrumented, which is also the shape a tag
-            pipeline wants.
+            pipeline wants, and the only one macOS gets: coverage runs under
+            gcc.
         coverage_python_version: The single ABI the coverage run pins to. Only
             that pybind job is instrumented; a repository building three
             wheels would otherwise emit three instrumented pybind jobs to feed
             a reader that commits to one ABI up front, paying two extra
             instrumented compiles for data nothing opens. None instruments
             whichever pybind jobs the predicate accepts.
+        platform: The :data:`CI_WHEEL_PLATFORMS` key to plan, ``"linux"`` or
+            ``"mac"`` -- a key of :data:`_JOB_NAME_SUFFIXES`. The macOS job
+            names end in ``" - macOS"``, so they cannot collide with Linux's
+            in one pipeline.
+        build_types: Restrict the jobs to these build types, or None for
+            :data:`DEFAULT_CI_BUILD_TYPES`. Applied after a ``[filter]``
+            ``build_type`` pin, so the two can leave nothing between them.
 
     Returns:
         A list of job dicts, in matrix order, each with:
@@ -464,18 +485,22 @@ def ci_build_jobs(build_filter: dict, config: BuildToml,
             restore. Assigned by the caller, not here, because it depends on
             the whole set of jobs.
 
-        Empty when the filter leaves Linux with nothing to build, which the
-        caller reads as "emit no Linux build jobs" rather than emitting one
-        that would exit 1 looking for a configuration that was filtered away.
+        Empty when the filter leaves the platform with nothing to build, which
+        the caller reads as "emit no build jobs for it" rather than emitting
+        one that would exit 1 looking for a configuration that was filtered
+        away.
     """
     pinned = build_filter.get("build_type")
     candidates = [pinned] if pinned is not None else list(DEFAULT_CI_BUILD_TYPES)
-    linux = CI_WHEEL_PLATFORMS["linux"]
+    if build_types is not None:
+        candidates = [build_type for build_type in candidates if build_type in build_types]
+    suffix = _JOB_NAME_SUFFIXES[platform]
+    platform_name = CI_WHEEL_PLATFORMS[platform]
 
     jobs = []
     for build_type in candidates:
         probe = dict(build_filter, build_type=build_type)
-        for combination in filter_matches(linux, probe, python_versions,
+        for combination in filter_matches(platform_name, probe, python_versions,
                                           config.matrix):
             options = combination["options"]
             instrumented = coverage and is_instrumented_configuration(combination)
@@ -575,11 +600,11 @@ def ci_build_jobs(build_filter: dict, config: BuildToml,
                     coverage_leg=None,
                 ))
 
-    _name_build_jobs(jobs)
+    _name_build_jobs(jobs, suffix)
     return jobs
 
 
-def _name_build_jobs(jobs: list[dict]) -> None:
+def _name_build_jobs(jobs: list[dict], suffix: str = "") -> None:
     """Give each build job a name, in place.
 
     Names are read by humans scanning a pipeline and by ``needs:`` in the
@@ -599,6 +624,9 @@ def _name_build_jobs(jobs: list[dict]) -> None:
       more than one -- ``"Debug Python Build"`` -- matching how the library
       jobs are named.
     * The **Python ABI** is suffixed when more than one pybind job exists.
+
+    ``suffix`` then ends every name -- the platform, for a platform other than
+    Linux (``"Release Build - macOS"``).
 
     Whether the two axes are enough is not left to inspection: the caller
     checks the finished names for duplicates and raises, because a duplicate
@@ -628,7 +656,7 @@ def _name_build_jobs(jobs: list[dict]) -> None:
         name = f"{base}{middle} Build"
         if job["kind"] == "pybind" and len(pybind_jobs) > 1:
             name = f"{name} - py{job['python_version']}"
-        job["name"] = name
+        job["name"] = f"{name}{suffix}"
 
     # A GitLab job name is a YAML mapping key, so two jobs sharing one is not
     # an error the pipeline reports -- the later block silently replaces the

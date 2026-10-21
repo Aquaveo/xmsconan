@@ -11,6 +11,12 @@
 # it from the environment itself, and every build needs the remote -- not just
 # the tag-time deploy. See docs/USAGE.md §10.2.
 #
+<% if ci_mac_build_jobs %>
+# The macOS jobs need a GitLab runner tagged `MacOS` that runs Tart VMs: they
+# build in the VM image, one configuration per job, and publish from Linux.
+# See docs/USAGE.md §10.2.
+#
+<% endif %>
 # Every job installs `xmsconan[ci]` from the public Aquaveo index -- the
 # extra pins conan, cmake, gcovr and the flake8 plugins in xmsconan's own
 # pyproject.toml -- and the tools read the package version from
@@ -21,10 +27,10 @@
 
 stages:
 <# Build exists only when tests are split out of the build job, and it holds
-   both "Conan Build" (Linux) and "Conan Build - Windows". Gate on either
-   platform: dropping it when only Linux is off leaves the Windows job
-   declaring a stage that stages: omits, which GitLab rejects outright. #>
-<% if ci_split_tests and (ci_linux or ci_windows) %>
+   the Linux, Windows and macOS build jobs. Gate on any of the three: dropping
+   it when only Linux is off leaves the other jobs declaring a stage that
+   stages: omits, which GitLab rejects outright. #>
+<% if ci_split_tests and (ci_linux or ci_windows or ci_mac_build_jobs) %>
   - Build
 <% endif %>
   - Test
@@ -488,6 +494,87 @@ Conan Build:
 
 <% endif %>
 <% endif %>
+<% if ci_mac_build_jobs %>
+<# One job per surviving darwin configuration, on the Mac mini's Tart runner
+   ([ci].mac). Planned by the same ci_build_jobs as the Linux jobs, but split
+   for the VM's sake rather than for concurrency: every job gets a fresh VM
+   with about 7 GiB free, and the whole darwin matrix in one job fills more
+   Conan cache than that. A wheel_only repository builds Release only -- Debug
+   testing is what ran xmsvtk's VM out of disk -- so it gets Release testing on
+   branches and the Python build on every pipeline. Any other repository builds
+   its whole darwin matrix, and on a tag the library and Python builds, the
+   ones a release publishes.
+
+   The script runs in zsh over the executor's SSH session. zsh does not split
+   an unquoted variable into words, so every argument is written out rather
+   than carried in a variable. The image has neither uv nor ninja: uv's
+   installer writes to ~/.local/bin, which that non-login shell does not have
+   on PATH, and ninja is what the packager's Ninja Multi-Config generator runs.
+
+   The test suite runs inside the build even with [ci].split_tests: there is
+   no separate macOS test job to hand a runner to, and a second VM to run it
+   would wait for one of the host's two slots. #>
+<% for job in ci_mac_build_jobs %>
+"<< job.name >>":
+<% if ci_split_tests %>
+  stage: Build
+<% else %>
+  stage: Test
+<% endif %>
+  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  needs: []
+<% if job.tag_policy == "except" %>
+  except:
+    - tags
+<% elif job.tag_policy == "only" %>
+  only:
+    - tags
+<% endif %>
+  variables:
+    PYTHON_TARGET_VERSION: '<< job.python_version or gitlab_mac_single_py >>'
+    BUILD_TYPE: '<< job.build_type >>'
+    UV_VERSION: '0.9.17'
+<# Decided before the block is opened, for the reason the Linux jobs give: an
+   `artifacts: paths:` with nothing under it is rejected. #>
+<% set job_exports = ci_deploy and job.exports %>
+<% set job_wheels = ci_wheel_enabled_mac and job in ci_mac_wheel_jobs %>
+<% if job_exports or job_wheels or job.kind == "testing" %>
+  artifacts:
+    expire_in: '1d'
+    when: always
+    paths:
+<% if job_exports %>
+      - .export
+<% endif %>
+<# The wheels only, as on Windows: with `when: always` a failed repair would
+   otherwise upload the dylibs staged in wheelhouse/libs. #>
+<% if job_wheels %>
+      - wheelhouse/*.whl
+<% endif %>
+<% if job.kind == "testing" %>
+      - test_artifacts/<< job.label >>/
+<% endif %>
+<% endif %>
+  script:
+    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uv --version
+    - uv venv --python ${PYTHON_TARGET_VERSION} .venv
+    - source .venv/bin/activate
+    - uv pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" ninja --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan job build --leg << job.kind >><< " --export" if job_exports else "" >>
+<% if job_wheels %>
+<# delocate, on the Mac: it rewrites the module's dylib references and needs
+   the host it is fixing up, so this is the one place it can run. On every
+   pipeline rather than on tags alone, so a wheel that cannot be repaired
+   fails the branch that broke it instead of the release. #>
+    - xmsconan job package
+<% endif %>
+  tags:
+    - MacOS
+
+<% endfor %>
+<% endif %>
 Lint:
   stage: Test
   image: python:3.13
@@ -715,7 +802,50 @@ Repair Wheel:
     - tags
   tags:
     - WinVM
+
 <% endif %>
+<% endif %>
+<% if ci_wheel_enabled_mac and ci_mac_wheel_jobs %>
+"Wheel Deploy - macOS":
+  stage: Deploy
+<# A Linux image, not a Mac VM: the build job already repaired the wheel, so
+   all that is left is a devpi upload, and the Mac mini's two VM slots stay
+   with the builds. `dependencies:` rather than `needs:`, as on the Linux
+   deploys, so nothing is published until every earlier job has passed. #>
+  image: python:3.13
+  dependencies:
+<% for job in ci_mac_wheel_jobs %>
+    - "<< job.name >>"
+<% endfor %>
+  script:
+    - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan job deploy --wheels-only
+  only:
+    - tags
+
+<% endif %>
+<% if ci_mac_export_jobs %>
+<# Linux as well. Restoring a Conan cache tarball and uploading it does not
+   need the platform that built it: off Windows `job deploy` uploads to the
+   default remote with no package query, and `conan upload <ref>` publishes
+   every package id the restored cache holds -- the darwin ones here. #>
+"Conan Deploy - macOS":
+  stage: Deploy
+  image: ubuntu:latest
+  dependencies:
+<% for job in ci_mac_export_jobs %>
+    - "<< job.name >>"
+<% endfor %>
+  script:
+    - apt-get update
+    - apt-get install -y python3-pip python3-venv
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
+    - xmsconan job deploy --conan-only
+  only:
+    - tags
+
 <% endif %>
 <% endif %>
 

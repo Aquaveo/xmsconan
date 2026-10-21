@@ -137,7 +137,7 @@ def _unsupported_python_versions(versions) -> list:
 
 
 def _mark_export_jobs(build_jobs: list) -> list:
-    """Mark the Linux build jobs that save a Conan cache tarball, and list them.
+    """Mark one platform's build jobs that save a Conan cache tarball, and list them.
 
     Every job that runs on a tag, because with one build job per configuration
     each one has its own container and its own Conan cache: ``conan cache save``
@@ -152,13 +152,45 @@ def _mark_export_jobs(build_jobs: list) -> list:
     on every branch pipeline for nothing.
 
     Sets ``exports`` on each job in place and returns the marked ones, in build
-    order. Empty when there is no Linux build job at all, which the template
-    reads as "emit no export step".
+    order. Empty when the platform has no build job that runs on a tag, which
+    the template reads as "emit no export step".
     """
     exporters = [job for job in build_jobs if job["tag_policy"] != "except"]
     for job in exporters:
         job["exports"] = True
     return exporters
+
+
+def _plan_mac_build_jobs(build_filter: dict, config: BuildToml, python_versions: list) -> list:
+    """The GitLab macOS build jobs, one per configuration, warning when there are none.
+
+    One job per configuration on the Mac mini's Tart runner, as the Linux
+    fan-out plans them, but for the VM's disk rather than for concurrency:
+    each job starts with about 7 GiB free, and xmsvtk's whole darwin matrix
+    filled a 7.6 GB Conan cache. A wheel_only repository builds Release only,
+    because its Debug testing build is the one that ran the VM out of disk,
+    and Linux still builds and tests Debug -- which leaves it Release testing
+    on branches and the Python build on every pipeline. Any other repository
+    builds its whole darwin matrix. Coverage stays off: it runs under gcc.
+
+    The warning is measured on the planned jobs rather than on the job block's
+    fixed settings, as the Linux fan-out's is: an os or compiler pin is not the
+    only way to empty these, and the wheel_only Release restriction combined
+    with a ``build_type = "Debug"`` pin is the other.
+    """
+    jobs = ci_build_jobs(
+        build_filter, config, python_versions, platform="mac",
+        build_types=("Release",) if config.matrix.wheel_only else None,
+    )
+    if not jobs:
+        LOGGER.warning(
+            "build.toml sets [ci].mac, but no macOS configuration survives "
+            "its [filter]%s, so the pipeline gets no macOS jobs. Widen the "
+            "filter, or drop [ci].mac.",
+            " once [matrix].wheel_only narrows macOS to Release"
+            if config.matrix.wheel_only else "",
+        )
+    return jobs
 
 
 def _resolve_coverage_python_version(config: BuildToml) -> str:
@@ -356,17 +388,18 @@ def plan_ci(
     library_name = config.library_name
     display = _display_name(library_name)
 
-    # A GitLab pipeline with neither platform builds nothing, and coverage runs
+    # A GitLab pipeline with no platform builds nothing, and coverage runs
     # only under gcc.  Reject the impossible combinations here rather than
     # emitting a pipeline that fails opaquely in CI.  Each platform now stages
     # and deploys its own wheel -- Linux through the Package-stage Repair Wheel
     # job, Windows in place inside its build job -- so a Windows-only pipeline
     # publishes wheels and only the coverage rule below still needs Linux.
     if ci_type == "gitlab":
-        if not config.ci.linux_enabled and not config.ci.windows_enabled:
+        if not config.ci.linux_enabled and not config.ci.windows_enabled and not config.ci.mac:
             raise ValueError(
-                "build.toml sets both [ci].linux and [ci].windows to false, "
-                "which would generate a pipeline with nothing to build."
+                "build.toml sets both [ci].linux and [ci].windows to false and "
+                "leaves [ci].mac off, which would generate a pipeline with "
+                "nothing to build."
             )
         if config.ci.coverage and not config.ci.linux_enabled:
             raise ValueError(
@@ -432,6 +465,15 @@ def plan_ci(
                 "jobs are GitLab-only; the generated GitHub workflow emits none "
                 "and publishes nothing to the aquaveo-vs2019 remote."
             )
+        # The opposite case: the GitHub workflow has always had its mac job, on
+        # GitHub's own runners, so the GitLab opt-in neither adds nor removes
+        # anything here.
+        if config.ci.mac:
+            LOGGER.warning(
+                "build.toml sets [ci].mac, but it is GitLab-only; the generated "
+                "GitHub workflow always has its mac job, so the setting changes "
+                "nothing."
+            )
 
     ci_python_versions = list(config.ci.python_versions)
     ci_mac_python_versions = _platform_python_versions(config.ci, "mac", ci_python_versions)
@@ -478,6 +520,10 @@ def plan_ci(
         coverage=config.ci.coverage,
         coverage_python_version=_resolve_coverage_python_version(config),
     )
+
+    mac_build_jobs = []
+    if ci_type == "gitlab" and config.ci.mac:
+        mac_build_jobs = _plan_mac_build_jobs(build_filter, config, ci_mac_python_versions)
 
     # split_tests moves test execution out of the build job -- the build exports
     # XMS_SKIP_CXX_TESTS=1 and the Test stage runs the staged runners instead. A
@@ -610,6 +656,20 @@ def plan_ci(
         # Per platform: a filter can leave one platform building wheels and
         # another not (see ci_filter_effects). linux-arm reads the Linux flag.
         "ci_wheel_enabled_mac": filter_effects["wheel_enabled"]["mac"],
+        # The GitLab macOS jobs; empty unless [ci].mac is set. The export list
+        # marks the jobs' `exports` in place, as ci_linux_export_jobs does.
+        "ci_mac_build_jobs": mac_build_jobs,
+        "ci_mac_export_jobs": _mark_export_jobs(mac_build_jobs),
+        # The macOS jobs that delocate and publish a wheel: Release pybind only.
+        # The recipe builds a Debug wheel too off Windows, but a wheel's
+        # filename carries no build type, so a Debug one would land on the
+        # same devpi name as the Release one -- the rule GitHub's wheel steps
+        # follow. A Debug pybind job still exports its Conan package.
+        "ci_mac_wheel_jobs": [job for job in mac_build_jobs
+                              if job["kind"] == "pybind" and job["build_type"] == "Release"],
+        # The interpreter a macOS job without an ABI of its own builds its venv
+        # on, as gitlab_linux_single_py picks the Linux image.
+        "gitlab_mac_single_py": max(ci_mac_python_versions, key=version_sort_key),
         "ci_wheel_enabled_linux": filter_effects["wheel_enabled"]["linux"],
         "ci_wheel_enabled_windows": filter_effects["wheel_enabled"]["windows"],
     }

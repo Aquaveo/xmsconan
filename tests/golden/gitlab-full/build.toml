@@ -6,6 +6,7 @@ ci_type = "gitlab"
 python_versions = ["3.13"]
 windows_wheel_repair = false
 windows_vs2019 = true
+mac = true
 coverage = true
 split_tests = true
 test_shards = 4

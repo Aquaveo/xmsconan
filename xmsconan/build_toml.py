@@ -84,6 +84,16 @@ class CiTable:
     #: ``python_versions`` and is emitted beside the msvc 194 jobs, not
     #: instead of them. See ``docs/USAGE.md`` §10.2.
     windows_vs2019: bool = False
+    #: Emit the GitLab macOS jobs, on the Mac mini Tart runner (tag ``MacOS``):
+    #: one job per darwin configuration, plus a tag-time wheel and Conan
+    #: deploy.
+    #:
+    #: Opt-in, and a plain ``bool`` like ``windows_vs2019``: there is one Mac
+    #: mini and it runs two VMs at a time, so a repository should not start
+    #: queueing jobs on it because it was regenerated. GitLab only -- the
+    #: GitHub workflow always has its ``mac`` job. See ``docs/USAGE.md``
+    #: §10.2.
+    mac: bool = False
     linux_arm: bool = False
     deploy: bool = True
     coverage: bool = False
@@ -245,6 +255,7 @@ _XMS_DEPENDENCY_KEYS = frozenset(f.name for f in fields(XmsDependency))
 _CI_KEY_TYPES = {
     "windows": bool,
     "windows_vs2019": bool,
+    "mac": bool,
     "linux": bool,
     "linux_arm": bool,
     "deploy": bool,

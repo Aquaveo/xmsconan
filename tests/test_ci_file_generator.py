@@ -1498,7 +1498,8 @@ def test_gitlab_linux_false_drops_every_linux_job(tmp_path):
 
 
 @pytest.mark.parametrize("ci_flags,expected_message", [
-    ({"linux": False, "windows": False}, r"\[ci\]\.linux and \[ci\]\.windows to false"),
+    ({"linux": False, "windows": False},
+     r"\[ci\]\.linux and \[ci\]\.windows to false and leaves \[ci\]\.mac off"),
     ({"linux": False, "coverage": True}, r"\[ci\]\.coverage = true with \[ci\]\.linux = false"),
 ], ids=["no-platform", "coverage-without-linux"])
 def test_gitlab_rejects_impossible_flag_combinations(tmp_path, ci_flags, expected_message):
@@ -4293,3 +4294,244 @@ def test_usage_documents_step_scoped_github_secrets():
 
     for needle in {"AQUAPI_URL_DEV", "AQUAVEO_GITHUB_TOKEN"} | set(SECRET_BEARING_STEPS):
         assert needle in section, needle
+
+
+# --- [ci].mac: GitLab's macOS jobs ---
+
+
+#: The Tart image every macOS build job runs in -- the one the runner probes
+#: ran their builds on.
+MAC_IMAGE = "ghcr.io/cirruslabs/macos-golden-gate-base:latest"
+
+
+def _mac_builds(parsed):
+    """The jobs a GitLab pipeline sends to the Mac runner, by name."""
+    return {name: job for name, job in parsed.items()
+            if isinstance(job, dict) and job.get("tags") == ["MacOS"]}
+
+
+def _mac_deploys(parsed):
+    """The jobs that publish what the macOS builds made, by name."""
+    return {name: job for name, job in parsed.items()
+            if isinstance(job, dict) and name.endswith("Deploy - macOS")}
+
+
+def _variable(job, key):
+    return str(job["variables"][key])
+
+
+def _leg(job):
+    """The ``--leg`` a job's ``xmsconan job build`` call builds."""
+    tokens = _job_build_tokens(job)
+    return tokens[tokens.index("--leg") + 1]
+
+
+class TestMacCi:
+    """The [ci].mac opt-in: one job per macOS configuration, and its publishing.
+
+    Grouped because every assertion here leans on what the runner probes
+    measured: a Mac VM has about 7 GiB of disk and the host runs two at a
+    time, so a configuration gets a VM to itself, and anything that does not
+    need macOS -- publishing -- runs somewhere else.
+    """
+
+    @pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY], ids=["full", "wheel_only"])
+    def test_macos_is_off_by_default(self, tmp_path, matrix_table):
+        """No macOS job without the opt-in, with or without deploy jobs."""
+        flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+        parsed = _gitlab_jobs(tmp_path, deploy=True, **flags)
+
+        assert _mac_builds(parsed) == {}
+        assert [name for name in parsed if "macOS" in name] == []
+
+    def test_wheel_only_builds_release_tests_and_the_release_wheel_apart(self, tmp_path):
+        """wheel_only macOS: two Release jobs, one testing and one Python.
+
+        Debug is left out on purpose: a Debug testing build of a VTK-sized
+        library ran the probe VM out of disk, and a wheel_only library ships
+        no Debug binaries for it to verify.
+        """
+        builds = _mac_builds(_gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, mac=True))
+
+        assert {name: (_variable(job, "BUILD_TYPE"), _leg(job), _gate(job))
+                for name, job in builds.items()} == {
+            "Release Build - macOS": ("Release", "testing", "except:tags"),
+            "Python Build - macOS": ("Release", "pybind", "always"),
+        }
+
+    def test_wheel_only_tag_pipeline_builds_delocates_and_publishes_the_wheel(self, tmp_path):
+        """A tag reaches the Python build and the two deploys that read it, nothing else.
+
+        Asserted through what GitLab would run on a tag rather than through
+        each gate, so a testing job that lost its ``except: tags`` fails here
+        as well as in the test above.
+        """
+        parsed = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, mac=True, deploy=True)
+        on_tag = _jobs_reaching(parsed, tags=True)
+
+        assert sorted(name for name in on_tag if "macOS" in name) == [
+            "Conan Deploy - macOS", "Python Build - macOS", "Wheel Deploy - macOS",
+        ]
+        python_build = parsed["Python Build - macOS"]
+        assert python_build["script"][-2:] == [
+            "xmsconan job build --leg pybind --export", "xmsconan job package",
+        ]
+        assert _builds_a_wheel(python_build)
+        for name in ("Wheel Deploy - macOS", "Conan Deploy - macOS"):
+            assert list(_upstreams(parsed[name])) == ["Python Build - macOS"], name
+
+    def test_full_matrix_builds_each_configuration_in_its_own_job(self, tmp_path):
+        """Without wheel_only: Release and Debug Library, Python, and both test builds.
+
+        The Library builds run on a tag too, because they are what a Conan
+        consumer on a Mac resolves -- so the Conan deploy reads them as well
+        as the Python build, and the wheel deploy reads the Python build only.
+        """
+        parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True)
+        builds = _mac_builds(parsed)
+
+        assert {name: (_variable(job, "BUILD_TYPE"), _leg(job), _gate(job))
+                for name, job in builds.items()} == {
+            "Release Library Build - macOS": ("Release", "library", "always"),
+            "Debug Library Build - macOS": ("Debug", "library", "always"),
+            "Python Build - macOS": ("Release", "pybind", "always"),
+            "Release Build - macOS": ("Release", "testing", "except:tags"),
+            "Debug Build - macOS": ("Debug", "testing", "except:tags"),
+        }
+        assert sorted(_upstreams(parsed["Conan Deploy - macOS"])) == [
+            "Debug Library Build - macOS", "Python Build - macOS",
+            "Release Library Build - macOS",
+        ]
+        assert list(_upstreams(parsed["Wheel Deploy - macOS"])) == ["Python Build - macOS"]
+
+    def test_a_debug_python_build_exports_its_package_and_no_wheel(self, tmp_path):
+        """With Debug in pybind_build_types, only the Release Python build makes a wheel.
+
+        Off Windows the recipe builds a Debug wheel as well, and a wheel's
+        filename carries no build type: delocating and publishing both would
+        put whichever extracted last on the index under the Release name. The
+        Debug job still runs on a tag and exports, because its Conan package
+        is what a Debug consumer links.
+        """
+        parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True,
+                              matrix_table={"pybind_build_types": ["Release", "Debug"]})
+        # Two build types put both the build type and the ABI in the name.
+        release_name, debug_name = (f"{build_type} Python Build - py3.13 - macOS"
+                                    for build_type in ("Release", "Debug"))
+        release, debug = parsed[release_name], parsed[debug_name]
+
+        assert "xmsconan job package" in _script(release) and _builds_a_wheel(release)
+        assert "xmsconan job package" not in _script(debug)
+        assert not _builds_a_wheel(debug)
+        assert _gate(debug) == "always" and "--export" in _job_build_tokens(debug)
+        assert list(_upstreams(parsed["Wheel Deploy - macOS"])) == [release_name]
+        assert debug_name in _upstreams(parsed["Conan Deploy - macOS"])
+
+    def test_only_the_builds_take_a_mac_runner(self, tmp_path):
+        """Builds run in the Tart image on the MacOS runner; the deploys do not.
+
+        The deploys need no macOS -- a restored Conan package and a finished
+        wheel publish from Linux -- and a deploy holding one of the host's two
+        VM slots would hold it for an upload.
+        """
+        parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True)
+
+        assert {job["image"] for job in _mac_builds(parsed).values()} == {MAC_IMAGE}
+        deploys = _mac_deploys(parsed)
+        assert sorted(deploys) == ["Conan Deploy - macOS", "Wheel Deploy - macOS"]
+        assert all("tags" not in job for job in deploys.values()), deploys
+        assert all(job["image"] != MAC_IMAGE for job in deploys.values()), deploys
+
+    @pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY], ids=["full", "wheel_only"])
+    def test_macos_tests_run_inline_under_split_tests(self, tmp_path, matrix_table):
+        """split_tests defers nothing on macOS, and the results leave the VM.
+
+        A deferred test job would be a third VM per configuration, and the
+        runner fits two; so the testing build runs its own tests, and its
+        artifacts carry them out instead of a test stage.
+        """
+        flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+        builds = _mac_builds(_gitlab_jobs(tmp_path, mac=True, split_tests=True, **flags))
+
+        assert builds, "no macOS job rendered; the rest of this asserts nothing"
+        assert all("--defer-cxx-tests" not in _script(job) for job in builds.values())
+        testing = [job for job in builds.values() if _leg(job) == "testing"]
+        assert testing
+        for job in testing:
+            assert any(path.startswith("test_artifacts/")
+                       for path in job["artifacts"]["paths"]), job["artifacts"]
+
+    def test_without_deploy_macos_exports_and_publishes_nothing(self, tmp_path):
+        """No deploy, no Conan tarball to hand one, and no deploy jobs.
+
+        The wheel is still delocated: a dylib the wheel cannot find is a
+        failure a branch pipeline should show, not the first tag.
+        """
+        parsed = _gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, mac=True, deploy=False)
+        builds = _mac_builds(parsed)
+
+        assert builds
+        assert all("--export" not in _script(job) for job in builds.values())
+        assert all(".export" not in job["artifacts"]["paths"] for job in builds.values())
+        assert _mac_deploys(parsed) == {}
+        assert "xmsconan job package" in _script(builds["Python Build - macOS"])
+
+    def test_a_macos_only_pipeline_generates(self, tmp_path):
+        """[ci].mac alone is a platform: Linux and Windows off is no longer empty."""
+        parsed = _gitlab_jobs(tmp_path, linux=False, windows=False, mac=True)
+
+        assert sorted(_mac_builds(parsed)) == [
+            "Debug Build - macOS", "Debug Library Build - macOS", "Python Build - macOS",
+            "Release Build - macOS", "Release Library Build - macOS",
+        ]
+        builds = [name for name, job in parsed.items()
+                  if isinstance(job, dict) and job.get("needs") == []]
+        assert builds and all(name.endswith(" - macOS") for name in builds), builds
+
+    @pytest.mark.parametrize("mac", [True, False], ids=["mac", "no-mac"])
+    def test_github_says_mac_is_gitlab_only(self, tmp_path, caplog, mac):
+        """The GitHub workflow always has its mac job, so the key is a no-op there."""
+        toml_file = write_github_toml(tmp_path, mac=mac)
+
+        with caplog.at_level(logging.WARNING):
+            generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+
+        assert any("[ci].mac" in message and "GitLab-only" in message
+                   for message in caplog.messages) is mac
+
+    def test_a_filter_that_empties_macos_says_so(self, tmp_path, caplog):
+        """A Debug pin and wheel_only's Release-only macOS cancel out, out loud.
+
+        The rest of the pipeline still renders: a filter that leaves one
+        platform nothing is a choice the generator can name, not refuse.
+        """
+        with caplog.at_level(logging.WARNING):
+            parsed = _wheel_only_with_filter(tmp_path, '\n[filter]\nbuild_type = "Debug"\n',
+                                             mac=True, deploy=True)
+
+        assert _mac_builds(parsed) == {}
+        assert _mac_deploys(parsed) == {}
+        warnings = [message for message in caplog.messages
+                    if "no macOS configuration survives" in message]
+        assert warnings and all("[matrix].wheel_only" in message for message in warnings), warnings
+
+    def test_macos_exporters_save_distinct_tarballs(self, tmp_path):
+        """Each macOS exporting job writes its own tarball into the one artifact space.
+
+        The macOS deploy restores every tarball its builds hand it, so two
+        that shared a name would leave one configuration unpublished.
+        """
+        toml_file = write_gitlab_toml(tmp_path, mac=True, deploy=True)
+        generate_ci(str(toml_file), "1.0.0", str(tmp_path / "output"))
+        parsed = yaml.safe_load((tmp_path / "output" / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+        exporters = {name: job for name, job in _mac_builds(parsed).items()
+                     if "--export" in _script(job)}
+
+        saved = {name: _tool_export_name(toml_file, job, platform="darwin")
+                 for name, job in exporters.items()}
+
+        assert sorted(saved) == [
+            "Debug Library Build - macOS", "Python Build - macOS", "Release Library Build - macOS",
+        ]
+        assert len(set(saved.values())) == len(saved), saved
+        assert all("-macos-" in name for name in saved.values()), saved

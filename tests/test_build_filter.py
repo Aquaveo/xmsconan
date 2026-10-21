@@ -757,3 +757,61 @@ def test_the_instrumented_pybind_job_is_the_one_the_python_leg_builds():
                 if job["kind"] == "pybind" and job["instrumented"]]
     assert [job["build_type"] for job in measured] == [COVERAGE_PYBIND_BUILD_TYPE]
     assert [job["coverage_leg"] for job in measured] == ["python"]
+
+
+# --- ci_build_jobs: platforms ---
+
+
+def _mac_jobs(build_filter=None, build_types=None, **matrix):
+    """The macOS build jobs ``generate_ci`` would plan for this matrix."""
+    config = BuildToml(library_name="xmscore", matrix=_matrix(**matrix))
+    return ci_build_jobs(build_filter or {}, config, ["3.13"], platform="mac",
+                         build_types=build_types)
+
+
+@pytest.mark.parametrize("matrix", [{}, {"wheel_only": True}])
+def test_mac_job_names_are_the_linux_names_with_a_platform_suffix(matrix):
+    """The macOS jobs reuse Linux's naming and only append the platform.
+
+    The two sets share one pipeline, and a GitLab job name is a mapping key,
+    so a macOS job named like its Linux twin would replace it silently.
+    """
+    config = BuildToml(library_name="xmscore", matrix=_matrix(**matrix))
+    linux = [job["name"] for job in ci_build_jobs({}, config, ["3.13"])]
+    mac = [job["name"] for job in ci_build_jobs({}, config, ["3.13"], platform="mac")]
+    assert mac == [f"{name} - macOS" for name in linux]
+
+
+def test_mac_jobs_span_the_whole_matrix_by_default():
+    """Without wheel_only, macOS builds both Library builds, Python and both test builds.
+
+    The Library builds stay because a Conan consumer on a Mac resolves them
+    and nothing else publishes them; one job each keeps every VM's disk to one
+    configuration.
+    """
+    assert {(job["kind"], job["build_type"]) for job in _mac_jobs()} == {
+        ("library", "Release"), ("library", "Debug"), ("pybind", "Release"),
+        ("testing", "Release"), ("testing", "Debug"),
+    }
+
+
+def test_a_release_restriction_leaves_wheel_only_macos_its_two_release_jobs():
+    """wheel_only macOS: Release tests on branches, the Release wheel always.
+
+    The tag policy is the half that matters on a tag: only the Python build
+    may run there, since it is the job whose wheel is delocated and published.
+    """
+    jobs = _mac_jobs(build_types=("Release",), wheel_only=True)
+    assert {(job["name"], job["build_type"], job["tag_policy"]) for job in jobs} == {
+        ("Release Build - macOS", "Release", "except"),
+        ("Python Build - macOS", "Release", "always"),
+    }
+
+
+def test_a_debug_pin_under_a_release_restriction_leaves_no_macos_job():
+    """A filter and the Release restriction that cancel out plan nothing.
+
+    Empty rather than an error: generate_ci warns about it and renders the
+    rest of the pipeline.
+    """
+    assert _mac_jobs({"build_type": "Debug"}, build_types=("Release",), wheel_only=True) == []
