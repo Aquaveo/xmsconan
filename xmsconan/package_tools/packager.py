@@ -176,19 +176,19 @@ class XmsConanPackager(object):
                 duplicated per version with the matching ``python_version``
                 Conan option and ``PYTHON_TARGET_VERSION`` buildenv set.
             coverage: If True, sets the recipe's ``coverage=True`` option on
-                every configuration, so CMake adds ``--coverage -O0 -g`` and
-                the instrumented builds carry their own package_id. It does
-                not change which configurations are produced: the testing-only
-                Debug variant that drives C++ coverage is always emitted, and
-                the Python half of coverage uses whatever pybind configuration
-                ``[matrix]`` already names. Pybind profiles are instrumented
-                too, so the binding layer -- C++ reachable only from Python --
-                produces its own ``.gcda``. Because the CMake block forces
-                ``-O0`` after CMake's own ``-O3``, a Release pybind build is
-                unoptimized and its line data is as usable as a Debug build's,
-                while still resolving against Release dependencies. When None,
-                defaults to ``True`` iff ``XMS_COVERAGE=1`` is set in the
-                environment.
+                every configuration, so CMake adds ``--coverage -O0 -g
+                -fprofile-update=atomic`` and the instrumented builds carry
+                their own package_id. It does not change which configurations
+                are produced: the testing-only Debug variant that drives C++
+                coverage is always emitted, and the Python half of coverage
+                uses whatever pybind configuration ``[matrix]`` already names.
+                Pybind profiles are instrumented too, so the binding layer --
+                C++ reachable only from Python -- produces its own ``.gcda``.
+                Because the CMake block forces ``-O0`` after CMake's own
+                ``-O3``, a Release pybind build is unoptimized and its line
+                data is as usable as a Debug build's, while still resolving
+                against Release dependencies. When None, defaults to ``True``
+                iff ``XMS_COVERAGE=1`` is set in the environment.
             matrix: Which configurations the fan-out should produce, from the
                 ``[matrix]`` table of ``build.toml``. ``compiler_runtime``
                 restricts the platform's ``compiler.runtime`` values (a subset of

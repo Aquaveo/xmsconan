@@ -596,7 +596,7 @@ def _assert_gcovr_collected_data(summary_path: Path, collections) -> None:
 
       1. The binary was compiled without ``--coverage``. The recipe's
          ``coverage=True`` option drives ``-DXMS_COVERAGE`` into CMake;
-         if the ``add_compile_options(--coverage -O0 -g)`` block was
+         if the ``add_compile_options(--coverage ...)`` block was
          skipped, no ``.gcno`` files exist for gcovr to read.
       2. ``[coverage].filters`` / ``[coverage].excludes`` filtered out
          every source file. The defaults are conservative, but a custom
