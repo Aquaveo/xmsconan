@@ -66,6 +66,10 @@ def upload_target(platform_key=None, platform=None):
     else in it to exclude -- the same asymmetry
     :func:`~xmsconan.job_tools.build.export_package_query` states for the save.
 
+    GitLab's ``Conan Deploy - macOS`` leans on that unqueried Linux answer: it
+    runs on a Linux image and restores darwin packages, so a toolchain query
+    added for Linux would match none of them and publish nothing.
+
     The msvc version is read from the packager matrix rather than written here,
     because the failure of a stale literal is silent: ``-p
     compiler.version=194`` after a bump to 195 matches nothing and the upload

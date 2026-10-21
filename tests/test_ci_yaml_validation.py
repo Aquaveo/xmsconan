@@ -39,6 +39,7 @@ CI_OPTIONS = {
     "xvfb": [False, True],
     "linux_arm": [False, True],
     "windows_wheel_repair": [False, True],
+    "mac": [False, True],
 }
 
 #: Boolean [ci] keys the sweeps hold at their default, and why.
@@ -61,11 +62,13 @@ def _is_generatable_for_gitlab(options):
     """Whether generate_ci accepts this combination for a GitLab project.
 
     Two combinations are rejected by design (ci_file_generator): no platform at
-    all, and coverage without the gcc job that instruments it. They are excluded
-    here rather than expected to generate -- the dedicated rejection tests in
-    test_ci_file_generator cover the raising itself.
+    all -- Linux and Windows off with macOS left off too -- and coverage without
+    the gcc job that instruments it. They are excluded here rather than expected
+    to generate -- the dedicated rejection tests in test_ci_file_generator cover
+    the raising itself.
     """
-    if not options.get("linux", True) and not options.get("windows", True):
+    if not any(options.get(key, default)
+               for key, default in (("linux", True), ("windows", True), ("mac", False))):
         return False
     if not options.get("linux", True) and options.get("coverage", False):
         return False
@@ -75,9 +78,10 @@ def _is_generatable_for_gitlab(options):
 #: GitLab-valid subset of :data:`_OPTION_COMBOS`.
 _GITLAB_COMBOS = [combo for combo in _OPTION_COMBOS if _is_generatable_for_gitlab(combo)]
 
-#: GitHub honours neither [ci].linux nor [ci].split_tests, so varying them here
-#: would double the parametrization without changing a single generated file.
-_GITHUB_KEYS = [key for key in CI_OPTIONS if key not in ("linux", "split_tests")]
+#: GitHub honours none of [ci].linux, [ci].split_tests and [ci].mac, so varying
+#: them here would multiply the parametrization without changing a single
+#: generated file.
+_GITHUB_KEYS = [key for key in CI_OPTIONS if key not in ("linux", "split_tests", "mac")]
 _GITHUB_COMBOS = [
     dict(zip(_GITHUB_KEYS, combo))
     for combo in itertools.product(*(CI_OPTIONS[key] for key in _GITHUB_KEYS))
@@ -250,7 +254,10 @@ def test_gitlab_every_declared_stage_is_entered(options, tmp_path):
 
 @pytest.mark.parametrize("options", _GITLAB_COMBOS, ids=_combo_id)
 def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
-    """Every 'needs' entry names a defined job and uses no unexpanded variables.
+    """Every 'needs' and 'dependencies' entry names a defined job; 'needs' expands no variables.
+
+    A 'dependencies' entry naming no job is the same config-time failure as a
+    dangling need: GitLab rejects the whole file, not the one job.
 
     GitLab does not expand variables inside needs:parallel:matrix.  A selector
     such as "PYTHON_TARGET_VERSION: $PYTHON_TARGET_VERSION" is compared as a
@@ -273,6 +280,10 @@ def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
     for key, value in parsed.items():
         if key in non_job_keys or not isinstance(value, dict):
             continue
+        for depended in value.get("dependencies", []):
+            assert depended in job_names, (
+                f"Job '{key}' depends on '{depended}', which is not a defined job"
+            )
         for entry in value.get("needs", []):
             needed = entry["job"] if isinstance(entry, dict) else entry
             assert needed in job_names, (
@@ -413,13 +424,14 @@ def test_no_flag_combination_calls_a_legacy_script_or_unknown_command(ci_type, o
 #: which resolves a single version even while the build fans out.
 _FANOUT_CASES = [
     pytest.param({"python_versions": ["3.10", "3.13", "3.14"]}, id="windows-only"),
-    pytest.param({"mac_python_versions": ["3.13", "3.14"]}, id="mac"),
+    pytest.param({"mac": True, "mac_python_versions": ["3.13", "3.14"]}, id="mac"),
     pytest.param({"linux_python_versions": ["3.13", "3.14"]}, id="linux"),
     pytest.param({"linux_arm": True, "linux_python_versions": ["3.13", "3.14"]}, id="linux-arm"),
     pytest.param({"xvfb": True, "linux_python_versions": ["3.13", "3.14"]}, id="xvfb-linux"),
     pytest.param(
         {
             "python_versions": ["3.10", "3.13", "3.14"],
+            "mac": True,
             "mac_python_versions": ["3.13", "3.14"],
             "linux_python_versions": ["3.13", "3.14"],
             "linux_arm": True,
