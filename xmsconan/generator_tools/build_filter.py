@@ -402,7 +402,7 @@ def ci_build_jobs(build_filter: dict, config: BuildToml,
                   python_versions: list, coverage: bool = False,
                   coverage_python_version: Optional[str] = None,
                   platform: str = "linux",
-                  build_types: Optional[tuple] = None) -> list[dict]:
+                  build_types: Optional[tuple[str, ...]] = None) -> list[dict]:
     """One GitLab build job per surviving configuration of one platform.
 
     The generated pipeline used to run a single ``Conan Build`` that looped

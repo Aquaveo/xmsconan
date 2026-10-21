@@ -4326,6 +4326,17 @@ def _leg(job):
     return tokens[tokens.index("--leg") + 1]
 
 
+def _mac_summary(builds):
+    """Each macOS build's build type, leg and tag gate, by name."""
+    return {name: (_variable(job, "BUILD_TYPE"), _leg(job), _gate(job))
+            for name, job in builds.items()}
+
+
+def _no_mac_wheel_warnings(messages):
+    """The logged warnings that say macOS publishes no wheel."""
+    return [message for message in messages if "no macOS wheel" in message]
+
+
 class TestMacCi:
     """The [ci].mac opt-in: one job per macOS configuration, and its publishing.
 
@@ -4353,8 +4364,7 @@ class TestMacCi:
         """
         builds = _mac_builds(_gitlab_jobs(tmp_path, matrix_table=WHEEL_ONLY, mac=True))
 
-        assert {name: (_variable(job, "BUILD_TYPE"), _leg(job), _gate(job))
-                for name, job in builds.items()} == {
+        assert _mac_summary(builds) == {
             "Release Build - macOS": ("Release", "testing", "except:tags"),
             "Python Build - macOS": ("Release", "pybind", "always"),
         }
@@ -4390,8 +4400,7 @@ class TestMacCi:
         parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True)
         builds = _mac_builds(parsed)
 
-        assert {name: (_variable(job, "BUILD_TYPE"), _leg(job), _gate(job))
-                for name, job in builds.items()} == {
+        assert _mac_summary(builds) == {
             "Release Library Build - macOS": ("Release", "library", "always"),
             "Debug Library Build - macOS": ("Debug", "library", "always"),
             "Python Build - macOS": ("Release", "pybind", "always"),
@@ -4404,28 +4413,33 @@ class TestMacCi:
         ]
         assert list(_upstreams(parsed["Wheel Deploy - macOS"])) == ["Python Build - macOS"]
 
-    def test_a_debug_python_build_exports_its_package_and_no_wheel(self, tmp_path):
+    def test_a_debug_python_build_exports_its_package_and_no_wheel(self, tmp_path, caplog):
         """With Debug in pybind_build_types, only the Release Python build makes a wheel.
 
         Off Windows the recipe builds a Debug wheel as well, and a wheel's
         filename carries no build type: delocating and publishing both would
         put whichever extracted last on the index under the Release name. The
         Debug job still runs on a tag and exports, because its Conan package
-        is what a Debug consumer links.
+        is what a Debug consumer links. The Release build still makes the
+        wheel, so nothing is missing to warn about.
         """
-        parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True,
-                              matrix_table={"pybind_build_types": ["Release", "Debug"]})
+        with caplog.at_level(logging.WARNING):
+            parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True,
+                                  matrix_table={"pybind_build_types": ["Release", "Debug"]})
         # Two build types put both the build type and the ABI in the name.
         release_name, debug_name = (f"{build_type} Python Build - py3.13 - macOS"
                                     for build_type in ("Release", "Debug"))
         release, debug = parsed[release_name], parsed[debug_name]
 
-        assert "xmsconan job package" in _script(release) and _builds_a_wheel(release)
+        assert "xmsconan job package" in _script(release)
+        assert _builds_a_wheel(release)
         assert "xmsconan job package" not in _script(debug)
         assert not _builds_a_wheel(debug)
-        assert _gate(debug) == "always" and "--export" in _job_build_tokens(debug)
+        assert _gate(debug) == "always"
+        assert "--export" in _job_build_tokens(debug)
         assert list(_upstreams(parsed["Wheel Deploy - macOS"])) == [release_name]
         assert debug_name in _upstreams(parsed["Conan Deploy - macOS"])
+        assert _no_mac_wheel_warnings(caplog.messages) == []
 
     def test_only_the_builds_take_a_mac_runner(self, tmp_path):
         """Builds run in the Tart image on the MacOS runner; the deploys do not.
@@ -4455,11 +4469,12 @@ class TestMacCi:
 
         assert builds, "no macOS job rendered; the rest of this asserts nothing"
         assert all("--defer-cxx-tests" not in _script(job) for job in builds.values())
-        testing = [job for job in builds.values() if _leg(job) == "testing"]
+        testing = {name: job for name, job in builds.items() if _leg(job) == "testing"}
         assert testing
-        for job in testing:
-            assert any(path.startswith("test_artifacts/")
-                       for path in job["artifacts"]["paths"]), job["artifacts"]
+        missing = [name for name, job in testing.items()
+                   if not any(path.startswith("test_artifacts/")
+                              for path in job["artifacts"]["paths"])]
+        assert missing == []
 
     def test_without_deploy_macos_exports_and_publishes_nothing(self, tmp_path):
         """No deploy, no Conan tarball to hand one, and no deploy jobs.
@@ -4514,6 +4529,60 @@ class TestMacCi:
         warnings = [message for message in caplog.messages
                     if "no macOS configuration survives" in message]
         assert warnings and all("[matrix].wheel_only" in message for message in warnings), warnings
+
+    def test_a_filter_without_pybind_leaves_macos_its_testing_build(self, tmp_path, caplog):
+        """`pybind = false` takes the macOS Python build out, and everything that reads it.
+
+        Under wheel_only the Python build is the macOS job a tag runs, so the
+        testing build is all that is left: no wheel deploy, and with nothing
+        exported, no Conan deploy. A filter that drops pybind on purpose is
+        not a Python build missing its Release, so it is not warned about as
+        one.
+        """
+        with caplog.at_level(logging.WARNING):
+            parsed = _wheel_only_with_filter(tmp_path, '\n[filter.options]\npybind = false\n',
+                                             mac=True, deploy=True)
+
+        assert sorted(_mac_builds(parsed)) == ["Release Build - macOS"]
+        assert _mac_deploys(parsed) == {}
+        assert _no_mac_wheel_warnings(caplog.messages) == []
+
+    def test_a_python_build_without_release_says_no_macos_wheel(self, tmp_path, caplog):
+        """Debug alone in pybind_build_types: the Python build exports, and the log says no wheel.
+
+        GitHub refuses this setting. On GitLab nothing fails -- the Conan
+        package still publishes -- so the generator says what is missing
+        rather than letting the wheel deploy drop out unremarked.
+        """
+        with caplog.at_level(logging.WARNING):
+            parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True,
+                                  matrix_table={"pybind_build_types": ["Debug"]})
+
+        python_build = parsed["Python Build - macOS"]
+        assert _variable(python_build, "BUILD_TYPE") == "Debug"
+        assert "--export" in _job_build_tokens(python_build)
+        assert not _builds_a_wheel(python_build)
+        assert sorted(_mac_deploys(parsed)) == ["Conan Deploy - macOS"]
+        assert "Python Build - macOS" in _upstreams(parsed["Conan Deploy - macOS"])
+        warnings = _no_mac_wheel_warnings(caplog.messages)
+        assert len(warnings) == 1, caplog.messages
+        assert "[matrix].pybind_build_types" in warnings[0]
+
+    def test_wheel_only_with_a_debug_only_python_build_says_no_macos_wheel(self, tmp_path, caplog):
+        """wheel_only narrows macOS to Release, so a Debug-only pybind leg leaves it no Python build.
+
+        The testing build that remains does not run on a tag, so a release
+        would publish nothing from macOS. The plan alone cannot see that a
+        Python build was asked for -- the Release restriction removed it before
+        planning -- so this is the case the warning reads the filter for.
+        """
+        with caplog.at_level(logging.WARNING):
+            parsed = _gitlab_jobs(tmp_path, mac=True, deploy=True,
+                                  matrix_table={**WHEEL_ONLY, "pybind_build_types": ["Debug"]})
+
+        assert sorted(_mac_builds(parsed)) == ["Release Build - macOS"]
+        assert _mac_deploys(parsed) == {}
+        assert len(_no_mac_wheel_warnings(caplog.messages)) == 1, caplog.messages
 
     def test_macos_exporters_save_distinct_tarballs(self, tmp_path):
         """Each macOS exporting job writes its own tarball into the one artifact space.

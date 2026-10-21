@@ -193,6 +193,40 @@ def _plan_mac_build_jobs(build_filter: dict, config: BuildToml, python_versions:
     return jobs
 
 
+def _mac_wheel_jobs(mac_build_jobs: list, wheel_enabled: bool) -> list:
+    """The macOS jobs that delocate and publish a wheel, warning when a Python build has none.
+
+    Release pybind only. The recipe builds a Debug wheel too off Windows, but
+    a wheel's filename carries no build type, so a Debug one would land on
+    the same devpi name as the Release one -- the rule GitHub's wheel steps
+    follow. A Debug pybind job still exports its Conan package.
+
+    GitHub refuses a ``[matrix].pybind_build_types`` without Release, because
+    its wheel steps would die on an empty wheelhouse. Nothing fails here --
+    the wheel deploy is simply not rendered -- so the same gap is a warning.
+    It is measured against ``wheel_enabled``, the filter's own answer to
+    whether macOS keeps a pybind configuration, rather than against the
+    planned jobs: under wheel_only the plan is Release only, so a Debug-only
+    pybind leg never reaches it and the jobs alone cannot tell that one was
+    asked for. A plan with no jobs at all has had its warning already.
+
+    Args:
+        mac_build_jobs: The planned macOS build jobs.
+        wheel_enabled: Whether any macOS pybind configuration survives the
+            ``[filter]``, of any build type.
+    """
+    wheel_jobs = [job for job in mac_build_jobs
+                  if job["kind"] == "pybind" and job["build_type"] == "Release"]
+    if mac_build_jobs and wheel_enabled and not wheel_jobs:
+        LOGGER.warning(
+            "build.toml sets [ci].mac, but no Release Python configuration "
+            "survives [matrix].pybind_build_types and its [filter], so no "
+            "macOS wheel is delocated or published. A macOS wheel needs a "
+            "Release Python build."
+        )
+    return wheel_jobs
+
+
 def _resolve_coverage_python_version(config: BuildToml) -> str:
     """Pick the single python_version the coverage build should pin to.
 
@@ -522,8 +556,10 @@ def plan_ci(
     )
 
     mac_build_jobs = []
+    mac_wheel_jobs = []
     if ci_type == "gitlab" and config.ci.mac:
         mac_build_jobs = _plan_mac_build_jobs(build_filter, config, ci_mac_python_versions)
+        mac_wheel_jobs = _mac_wheel_jobs(mac_build_jobs, filter_effects["wheel_enabled"]["mac"])
 
     # split_tests moves test execution out of the build job -- the build exports
     # XMS_SKIP_CXX_TESTS=1 and the Test stage runs the staged runners instead. A
@@ -660,13 +696,8 @@ def plan_ci(
         # marks the jobs' `exports` in place, as ci_linux_export_jobs does.
         "ci_mac_build_jobs": mac_build_jobs,
         "ci_mac_export_jobs": _mark_export_jobs(mac_build_jobs),
-        # The macOS jobs that delocate and publish a wheel: Release pybind only.
-        # The recipe builds a Debug wheel too off Windows, but a wheel's
-        # filename carries no build type, so a Debug one would land on the
-        # same devpi name as the Release one -- the rule GitHub's wheel steps
-        # follow. A Debug pybind job still exports its Conan package.
-        "ci_mac_wheel_jobs": [job for job in mac_build_jobs
-                              if job["kind"] == "pybind" and job["build_type"] == "Release"],
+        # The macOS jobs that delocate and publish a wheel (_mac_wheel_jobs).
+        "ci_mac_wheel_jobs": mac_wheel_jobs,
         # The interpreter a macOS job without an ABI of its own builds its venv
         # on, as gitlab_linux_single_py picks the Linux image.
         "gitlab_mac_single_py": max(ci_mac_python_versions, key=version_sort_key),
