@@ -74,8 +74,9 @@ Lint:
 Repair Wheel:
   stage: Package
   image: quay.io/pypa/manylinux_2_28_x86_64
-  dependencies:
-    - Conan Build
+  needs:
+    - job: "Conan Build"
+      artifacts: true
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - /opt/python/cp313-cp313/bin/xmsconan job package
@@ -87,8 +88,9 @@ Repair Wheel:
 "Wheel Deploy":
   stage: Deploy
   image: python:3.13
-  dependencies:
-    - Repair Wheel
+  needs:
+    - job: "Repair Wheel"
+      artifacts: true
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan job deploy --wheels-only
@@ -98,8 +100,11 @@ Repair Wheel:
 "Conan Deploy - Linux":
   stage: Deploy
   image: ubuntu:latest
-  dependencies:
-    - Conan Build
+  needs:
+    - job: "Conan Build"
+      artifacts: true
+    - job: "Repair Wheel"
+      artifacts: false
   script:
     - apt-get update
     - apt-get install -y python3-pip python3-venv

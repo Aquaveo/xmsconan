@@ -33,6 +33,26 @@ from xmsconan.generator_tools.output_plan import check_plan, describe_plan, writ
 
 LOGGER = logging.getLogger(__name__)
 
+#: The Tart image the GitLab macOS jobs run in ([ci].mac), pinned by digest.
+#:
+#: The repository publishes one tag, ``latest``, and the image is the whole
+#: toolchain: Xcode's command line tools, the SDK and apple-clang all come
+#: from it. The Conan profile pins ``compiler.version`` rather than detecting
+#: it, so a refreshed image keeps resolving the same prebuilt binaries while
+#: compiling against a different compiler and SDK -- and a tag pipeline re-run
+#: later would build with a toolchain the original never saw. The digest makes
+#: that change a reviewed edit here instead. Cirrus Labs keeps superseded
+#: versions pullable (``macos-tahoe-base`` still lists every one back to
+#: 2025-06), so a pin does not rot when ``latest`` moves.
+#:
+#: This one is ``latest`` as of 2026-10-03, which xmsvtk pipeline 67522
+#: passed on. To move it, list the versions with ``gh api
+#: /orgs/cirruslabs/packages/container/macos-golden-gate-base/versions``.
+MAC_IMAGE = (
+    "ghcr.io/cirruslabs/macos-golden-gate-base"
+    "@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70"
+)
+
 
 def xmsconan_requirement(version: str) -> str:
     """The specifier the generated jobs install ``xmsconan[ci]`` with: ``>=<version>,<<major + 1>``.
@@ -698,6 +718,7 @@ def plan_ci(
         "ci_mac_export_jobs": _mark_export_jobs(mac_build_jobs),
         # The macOS jobs that delocate and publish a wheel (_mac_wheel_jobs).
         "ci_mac_wheel_jobs": mac_wheel_jobs,
+        "mac_image": MAC_IMAGE,
         # The interpreter a macOS job without an ABI of its own builds its venv
         # on, as gitlab_linux_single_py picks the Linux image.
         "gitlab_mac_single_py": max(ci_mac_python_versions, key=version_sort_key),
