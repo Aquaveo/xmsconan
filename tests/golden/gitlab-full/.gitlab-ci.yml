@@ -11,7 +11,8 @@
 #
 # The macOS jobs need a GitLab runner tagged `MacOS` that runs Tart VMs: they
 # build in the VM image, one configuration per job, and publish from Linux.
-# See docs/USAGE.md §10.2.
+# The image is pinned by digest (`...@sha256:`), so a runner that restricts
+# images with `--allow-image` has to admit that form. See docs/USAGE.md §10.2.
 #
 # Every job installs `xmsconan[ci]` from the public Aquaveo index -- the
 # extra pins conan, cmake, gcovr and the flake8 plugins in xmsconan's own
@@ -132,7 +133,7 @@ Conan Build:
 
 "Release Library Build - macOS":
   stage: Build
-  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  image: ghcr.io/cirruslabs/macos-golden-gate-base@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70
   needs: []
   variables:
     PYTHON_TARGET_VERSION: '3.13'
@@ -144,8 +145,9 @@ Conan Build:
     paths:
       - .export
   script:
-    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -m venv "$HOME/uv-bootstrap"
+    - export PATH="$HOME/uv-bootstrap/bin:$PATH"
+    - pip install "uv==${UV_VERSION}" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/bin/activate
@@ -156,7 +158,7 @@ Conan Build:
 
 "Python Build - macOS":
   stage: Build
-  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  image: ghcr.io/cirruslabs/macos-golden-gate-base@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70
   needs: []
   variables:
     PYTHON_TARGET_VERSION: '3.13'
@@ -169,8 +171,9 @@ Conan Build:
       - .export
       - wheelhouse/*.whl
   script:
-    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -m venv "$HOME/uv-bootstrap"
+    - export PATH="$HOME/uv-bootstrap/bin:$PATH"
+    - pip install "uv==${UV_VERSION}" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/bin/activate
@@ -182,7 +185,7 @@ Conan Build:
 
 "Release Build - macOS":
   stage: Build
-  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  image: ghcr.io/cirruslabs/macos-golden-gate-base@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70
   needs: []
   except:
     - tags
@@ -196,8 +199,9 @@ Conan Build:
     paths:
       - test_artifacts/Release-testing/
   script:
-    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -m venv "$HOME/uv-bootstrap"
+    - export PATH="$HOME/uv-bootstrap/bin:$PATH"
+    - pip install "uv==${UV_VERSION}" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/bin/activate
@@ -208,7 +212,7 @@ Conan Build:
 
 "Debug Library Build - macOS":
   stage: Build
-  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  image: ghcr.io/cirruslabs/macos-golden-gate-base@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70
   needs: []
   variables:
     PYTHON_TARGET_VERSION: '3.13'
@@ -220,8 +224,9 @@ Conan Build:
     paths:
       - .export
   script:
-    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -m venv "$HOME/uv-bootstrap"
+    - export PATH="$HOME/uv-bootstrap/bin:$PATH"
+    - pip install "uv==${UV_VERSION}" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/bin/activate
@@ -232,7 +237,7 @@ Conan Build:
 
 "Debug Build - macOS":
   stage: Build
-  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  image: ghcr.io/cirruslabs/macos-golden-gate-base@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70
   needs: []
   except:
     - tags
@@ -246,8 +251,9 @@ Conan Build:
     paths:
       - test_artifacts/Debug-testing/
   script:
-    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -m venv "$HOME/uv-bootstrap"
+    - export PATH="$HOME/uv-bootstrap/bin:$PATH"
+    - pip install "uv==${UV_VERSION}" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/bin/activate
@@ -268,8 +274,9 @@ Lint:
 Repair Wheel:
   stage: Package
   image: docker.aquaveo.com/aquaveo/conan-docker/conan-gcc13-x11-gdal-py3.13
-  dependencies:
-    - Conan Build
+  needs:
+    - job: "Conan Build"
+      artifacts: true
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - /opt/python/cp313-cp313/bin/xmsconan job package
@@ -281,8 +288,9 @@ Repair Wheel:
 "Wheel Deploy":
   stage: Deploy
   image: python:3.13
-  dependencies:
-    - Repair Wheel
+  needs:
+    - job: "Repair Wheel"
+      artifacts: true
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan job deploy --wheels-only
@@ -292,8 +300,11 @@ Repair Wheel:
 "Conan Deploy - Linux":
   stage: Deploy
   image: ubuntu:latest
-  dependencies:
-    - Conan Build
+  needs:
+    - job: "Conan Build"
+      artifacts: true
+    - job: "Repair Wheel"
+      artifacts: false
   script:
     - apt-get update
     - apt-get install -y python3-pip python3-venv
@@ -378,8 +389,13 @@ Repair Wheel:
 "Wheel Deploy - macOS":
   stage: Deploy
   image: python:3.13
-  dependencies:
-    - "Python Build - macOS"
+  needs:
+    - job: "Python Build - macOS"
+      artifacts: true
+    - job: "Release Library Build - macOS"
+      artifacts: false
+    - job: "Debug Library Build - macOS"
+      artifacts: false
   script:
     - pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan job deploy --wheels-only
@@ -389,10 +405,13 @@ Repair Wheel:
 "Conan Deploy - macOS":
   stage: Deploy
   image: ubuntu:latest
-  dependencies:
-    - "Release Library Build - macOS"
-    - "Python Build - macOS"
-    - "Debug Library Build - macOS"
+  needs:
+    - job: "Release Library Build - macOS"
+      artifacts: true
+    - job: "Python Build - macOS"
+      artifacts: true
+    - job: "Debug Library Build - macOS"
+      artifacts: true
   script:
     - apt-get update
     - apt-get install -y python3-pip python3-venv

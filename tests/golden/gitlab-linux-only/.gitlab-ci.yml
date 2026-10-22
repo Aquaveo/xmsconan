@@ -45,8 +45,9 @@ Lint:
 Repair Wheel:
   stage: Package
   image: quay.io/pypa/manylinux_2_28_x86_64
-  dependencies:
-    - Conan Build
+  needs:
+    - job: "Conan Build"
+      artifacts: true
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan[ci]>=2.18.0,<3" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - /opt/python/cp313-cp313/bin/xmsconan job package

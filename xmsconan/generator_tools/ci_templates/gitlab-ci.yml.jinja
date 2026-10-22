@@ -14,7 +14,8 @@
 <% if ci_mac_build_jobs %>
 # The macOS jobs need a GitLab runner tagged `MacOS` that runs Tart VMs: they
 # build in the VM image, one configuration per job, and publish from Linux.
-# See docs/USAGE.md §10.2.
+# The image is pinned by digest (`...@sha256:`), so a runner that restricts
+# images with `--allow-image` has to admit that form. See docs/USAGE.md §10.2.
 #
 <% endif %>
 # Every job installs `xmsconan[ci]` from the public Aquaveo index -- the
@@ -505,11 +506,19 @@ Conan Build:
    its whole darwin matrix, and on a tag the library and Python builds, the
    ones a release publishes.
 
+   The image is pinned by digest (MAC_IMAGE in ci_file_generator.py): it
+   publishes only `latest`, and it carries the compiler and SDK, so a refresh
+   would change the toolchain under an unchanged Conan profile.
+
    The script runs in zsh over the executor's SSH session. zsh does not split
    an unquoted variable into words, so every argument is written out rather
-   than carried in a variable. The image has neither uv nor ninja: uv's
-   installer writes to ~/.local/bin, which that non-login shell does not have
-   on PATH, and ninja is what the packager's Ninja Multi-Config generator runs.
+   than carried in a variable. The image has neither uv nor ninja. uv comes
+   from the Aquaveo index, like every other package a job installs: a
+   throwaway venv on the image's python3 holds it, and its bin goes first on
+   PATH. That replaced uv's `curl | sh` installer, which checked no checksum
+   ("no checksums to verify") and made astral.sh a second source of code in a
+   job holding the Conan credentials. ninja is what the packager's Ninja
+   Multi-Config generator runs.
 
    The test suite runs inside the build even with [ci].split_tests: there is
    no separate macOS test job to hand a runner to, and a second VM to run it
@@ -521,7 +530,7 @@ Conan Build:
 <% else %>
   stage: Test
 <% endif %>
-  image: ghcr.io/cirruslabs/macos-golden-gate-base:latest
+  image: << mac_image >>
   needs: []
 <% if job.tag_policy == "except" %>
   except:
@@ -556,8 +565,9 @@ Conan Build:
 <% endif %>
 <% endif %>
   script:
-    - curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -m venv "$HOME/uv-bootstrap"
+    - export PATH="$HOME/uv-bootstrap/bin:$PATH"
+    - pip install "uv==${UV_VERSION}" --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - uv --version
     - uv venv --python ${PYTHON_TARGET_VERSION} .venv
     - source .venv/bin/activate
@@ -619,8 +629,13 @@ Repair Wheel:
       optional: true
 <% endfor %>
 <% else %>
-  dependencies:
-    - Conan Build
+<# `needs:` rather than `dependencies:`, so this does not wait on stage order:
+   the stages before Package hold the macOS builds too, and "Wheel Deploy"
+   needs this job, so a wait here would be the Linux wheel waiting on the
+   Mac. #>
+  needs:
+    - job: "Conan Build"
+      artifacts: true
 <% endif %>
   script:
     - /opt/python/cp313-cp313/bin/pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
@@ -632,13 +647,43 @@ Repair Wheel:
 <% endif %>
 
 <% if ci_deploy %>
+<# Every deploy waits through `needs:` on its own platform's jobs, never on
+   stage order. A job with no `needs:` waits for every job in every earlier
+   stage, and a tag pipeline has all three platforms' builds there: the Linux
+   and macOS deploys waited on each other's builds, so an outage of the
+   single Mac runner held back the Linux release, a failed Repair Wheel held
+   back the macOS one, and only Windows -- already on `needs:` -- published
+   regardless.
+   Now each platform publishes when its own builds pass, and retrying a failed
+   build publishes its platform when the retry does. A release can therefore
+   be partial until that retry.
+
+   What a Linux or macOS deploy drops is the other platforms, not its own:
+   it needs every job its platform runs on a tag, as stage order made it wait
+   on them, and takes artifacts only from the ones it publishes
+   (`artifacts: false` on the rest). The wheel deploy still waits on the
+   library builds, and the Conan deploy on Repair Wheel. Windows keeps the
+   `needs:` it already had. #>
 <% if ci_linux %>
 <% if ci_wheel_enabled_linux %>
 "Wheel Deploy":
   stage: Deploy
   image: python:3.13
-  dependencies:
-    - Repair Wheel
+  needs:
+    - job: "Repair Wheel"
+      artifacts: true
+<# Under wheel_only Repair Wheel needs only the pybind builds, so every Linux
+   tag build is named here for the wait -- the pybind ones too, so the wait
+   does not hang on what Repair Wheel happens to need. Without wheel_only
+   Repair Wheel needs "Conan Build", the only other one. None of their
+   artifacts come along: each pybind build's wheelhouse/ holds the unrepaired
+   wheel, which would land beside the repaired one this job uploads. #>
+<% if ci_wheel_only %>
+<% for job in ci_linux_export_jobs %>
+    - job: "<< job.name >>"
+      artifacts: false
+<% endfor %>
+<% endif %>
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
     - xmsconan job deploy --wheels-only
@@ -646,6 +691,16 @@ Repair Wheel:
     - tags
 <% endif %>
 
+<# Under wheel_only, rendered only when a Linux job runs on a tag, as "Conan
+   Deploy - macOS" is. `_mark_export_jobs` marks only the jobs whose
+   tag_policy is not "except", and a [filter] narrowing the matrix to testing
+   configurations -- or pinning another os -- leaves none, while [ci].deploy
+   alone still asks for this job. It cannot be kept with nothing to need: an
+   empty `needs:` is null to GitLab, which rejects the whole file, and with no
+   `needs:` at all the job falls back to stage order and restores every other
+   platform's `.export/` tarballs, to upload them a second time. Without
+   wheel_only the one "Conan Build" always exists. #>
+<% if not ci_wheel_only or ci_linux_export_jobs %>
 "Conan Deploy - Linux":
   stage: Deploy
   image: ubuntu:latest
@@ -656,30 +711,27 @@ Repair Wheel:
    all ABIs -- a library build has none -- so the legs no longer line up with
    the tarballs. One job restores the whole set and uploads once, which is also
    one fewer way for two legs to race on the same Conan reference. #>
-<# Guarded for the same reason as `artifacts: paths:` above: an empty list
-   leaves the key with nothing under it, GitLab parses that as null, and the
-   whole file is rejected. Reachable without a deploy misconfiguration --
-   `_mark_export_jobs` marks only the jobs whose tag_policy is not "except",
-   and a [filter] narrowing the matrix to testing configurations makes every
-   Linux job branch-only, while this job stays gated on [ci].deploy alone.
-   Dropping the key beats emitting an empty one: with no `dependencies:` GitLab
-   hands the job every earlier stage's artifacts, which is the behavior this
-   block narrows rather than one it depends on. #>
-<% if ci_linux_export_jobs %>
-  dependencies:
+  needs:
 <% for job in ci_linux_export_jobs %>
-    - "<< job.name >>"
+    - job: "<< job.name >>"
+      artifacts: true
 <% endfor %>
-<% endif %>
 <% else %>
 <# No `parallel: matrix` here either, for the reason the wheel_only branch
-   above gives. `dependencies: - Conan Build` hands every instance the whole
+   above gives. Needing "Conan Build" hands every instance the whole
    fan-out's artifacts, so N instances each restored all N tarballs and raced
    to upload the same Conan reference; the per-instance `--restore` name was
    the only thing keeping them apart, and it is gone now that `job deploy`
    globs `.export/` instead of reassembling names the build already composed. #>
-  dependencies:
-    - Conan Build
+  needs:
+    - job: "Conan Build"
+      artifacts: true
+<% endif %>
+<% if ci_wheel_enabled_linux %>
+<# For the wait alone: a release whose wheel fails to repair publishes no
+   Linux Conan package either, as when stage order held this job back. #>
+    - job: "Repair Wheel"
+      artifacts: false
 <% endif %>
   script:
     - apt-get update
@@ -695,6 +747,7 @@ Repair Wheel:
   only:
     - tags
 
+<% endif %>
 <% endif %>
 <% if ci_windows %>
 <% if ci_wheel_enabled_windows %>
@@ -810,12 +863,19 @@ Repair Wheel:
   stage: Deploy
 <# A Linux image, not a Mac VM: the build job already repaired the wheel, so
    all that is left is a devpi upload, and the Mac mini's two VM slots stay
-   with the builds. `dependencies:` rather than `needs:`, as on the Linux
-   deploys, so nothing is published until every earlier job has passed. #>
+   with the builds. `needs:` on the macOS builds alone, as every deploy waits
+   (see the note above "Wheel Deploy"): artifacts from the wheel builds, and
+   the wait alone on the rest, whose `.export/` tarballs are the Conan
+   deploy's to restore. #>
   image: python:3.13
-  dependencies:
+  needs:
 <% for job in ci_mac_wheel_jobs %>
-    - "<< job.name >>"
+    - job: "<< job.name >>"
+      artifacts: true
+<% endfor %>
+<% for job in ci_mac_export_jobs if job not in ci_mac_wheel_jobs %>
+    - job: "<< job.name >>"
+      artifacts: false
 <% endfor %>
   script:
     - pip install --upgrade "xmsconan[ci]<< xmsconan_requirement >>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple
@@ -832,9 +892,10 @@ Repair Wheel:
 "Conan Deploy - macOS":
   stage: Deploy
   image: ubuntu:latest
-  dependencies:
+  needs:
 <% for job in ci_mac_export_jobs %>
-    - "<< job.name >>"
+    - job: "<< job.name >>"
+      artifacts: true
 <% endfor %>
   script:
     - apt-get update
@@ -878,10 +939,11 @@ Repair Wheel:
    undo that. #>
 Coverage:
   stage: Coverage
-<# Same null-key guard as `dependencies:` and `artifacts: paths:` above. An
-   empty `ci_instrumented_build_jobs` is what a [filter] excluding both
-   coverage builds produces -- `build_type = "Release"` cancels the Debug C++
-   leg and `options.pybind = false` the Python one. coverage_conflicts() warns
+<# Same null-key guard as the build jobs' `artifacts: paths:` above (the
+   Conan deploys drop the whole job instead). An empty
+   `ci_instrumented_build_jobs` is what a [filter] excluding
+   both coverage builds produces -- `build_type = "Release"` cancels the Debug
+   C++ leg and `options.pybind = false` the Python one. coverage_conflicts() warns
    about exactly that and generation continues, so the file still has to
    render: a warning followed by a pipeline GitLab will not parse reads as a
    template bug rather than as the filter problem it is. #>
