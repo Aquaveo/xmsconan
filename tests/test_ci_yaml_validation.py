@@ -17,8 +17,10 @@ import yaml
 from xmsconan.build_toml import _CI_KEY_TYPES
 from xmsconan.generator_tools.ci_file_generator import generate_ci
 from .ci_helpers import (
+    deploy_wait_violations,
     dispatched_commands,
     LEGACY_SCRIPT,
+    need_violations,
     NON_JOB_SHAPE_KEYS,
     uncommented_lines,
     unknown_calls,
@@ -298,6 +300,50 @@ def test_gitlab_ci_needs_reference_defined_jobs(options, tmp_path):
                         f"variable in its matrix selector: {var}={selected}. "
                         f"GitLab compares these literally."
                     )
+
+
+#: Each GitLab combination, with and without [matrix].wheel_only. The flag
+#: replaces the one looping "Conan Build" with a job per configuration, each
+#: with a tag gate of its own, so it changes which jobs a need can reach in a
+#: branch pipeline and in a tag one.
+_GITLAB_PIPELINE_CASES = _GITLAB_COMBOS + [{**combo, "matrix_table": WHEEL_ONLY} for combo in _GITLAB_COMBOS]
+
+
+@pytest.mark.parametrize("options", _GITLAB_PIPELINE_CASES, ids=_combo_id)
+def test_gitlab_every_need_runs_in_the_same_pipeline(options, tmp_path):
+    """Both the branch and the tag pipeline can be created: no need names a job they skip.
+
+    test_gitlab_ci_needs_reference_defined_jobs asks whether a needed job is
+    in the file. Pipeline creation asks whether it is in *this* pipeline, and
+    most jobs carry a tag gate, so the two answers differ -- and a tag
+    pipeline that fails creation is a release with no jobs at all.
+    """
+    toml_file = write_build_toml(tmp_path, "gitlab", library_name="xmscore",
+                                 description="Core library", **options)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert need_violations(parsed) == []
+
+
+@pytest.mark.parametrize("options", [case for case in _GITLAB_PIPELINE_CASES if case["deploy"]],
+                         ids=_combo_id)
+def test_gitlab_each_deploy_waits_on_its_own_platform_in_every_combination(options, tmp_path):
+    """On a tag, each deploy waits on all of its own platform's jobs and no other's.
+
+    The combinations are where a deploy loses its last build or gains a job
+    to wait on: [ci].split_tests moves the builds to their own stage,
+    [ci].linux = false takes the Linux deploys out, and [ci].mac adds a third
+    platform's builds to the stages before Deploy.
+    """
+    toml_file = write_build_toml(tmp_path, "gitlab", library_name="xmscore",
+                                 description="Core library", **options)
+    output_dir = tmp_path / "output"
+    generate_ci(str(toml_file), "1.0.0", str(output_dir))
+
+    parsed = yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    assert deploy_wait_violations(parsed) == []
 
 
 # ---------------------------------------------------------------------------

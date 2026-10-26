@@ -33,6 +33,26 @@ from xmsconan.generator_tools.output_plan import check_plan, describe_plan, writ
 
 LOGGER = logging.getLogger(__name__)
 
+#: The Tart image the GitLab macOS jobs run in ([ci].mac), pinned by digest.
+#:
+#: The repository publishes one tag, ``latest``, and the image is the whole
+#: toolchain: Xcode's command line tools, the SDK and apple-clang all come
+#: from it. The Conan profile pins ``compiler.version`` rather than detecting
+#: it, so a refreshed image keeps resolving the same prebuilt binaries while
+#: compiling against a different compiler and SDK -- and a tag pipeline re-run
+#: later would build with a toolchain the original never saw. The digest makes
+#: that change a reviewed edit here instead. Cirrus Labs keeps superseded
+#: versions pullable (``macos-tahoe-base`` still lists every one back to
+#: 2025-06), so a pin does not rot when ``latest`` moves.
+#:
+#: This one is ``latest`` as of 2026-10-03, which xmsvtk pipeline 67522
+#: passed on. To move it, list the versions with ``gh api
+#: /orgs/cirruslabs/packages/container/macos-golden-gate-base/versions``.
+MAC_IMAGE = (
+    "ghcr.io/cirruslabs/macos-golden-gate-base"
+    "@sha256:5302a9ea6cd68c059d00fa253fe75c8ebdf4e0dc8c45d4e136ecc6e7a4c02b70"
+)
+
 
 def xmsconan_requirement(version: str) -> str:
     """The specifier the generated jobs install ``xmsconan[ci]`` with: ``>=<version>,<<major + 1>``.
@@ -331,6 +351,48 @@ def _emitted_ci_jobs(ci_type: str, context: dict) -> list:
     if context["ci_windows"]:
         jobs.append("Conan Build - Windows")
     return jobs
+
+
+def _platforms_without_a_tag_build(context: dict) -> list:
+    """The GitLab platforms that plan build jobs, none of which runs on a tag.
+
+    Only a job that runs on a tag exports a Conan cache tarball, and the
+    template renders a platform's Conan deploy only when one does: a `needs:`
+    naming nothing is a file GitLab rejects. Testing builds are branch-only,
+    so a platform left nothing else builds and tests on every branch and
+    publishes nothing on a release. Linux plans one job per configuration only
+    under wheel_only -- otherwise the one "Conan Build" runs on every
+    pipeline -- and a platform planned no jobs at all is not this case: the
+    empty-matrix warning, or [ci].mac's, names that one.
+    """
+    planned = [("macOS", context["ci_mac_build_jobs"], context["ci_mac_export_jobs"])]
+    if context["ci_linux"] and context["ci_wheel_only"]:
+        planned.insert(0, ("Linux", context["ci_linux_build_jobs"], context["ci_linux_export_jobs"]))
+    return [platform for platform, build_jobs, export_jobs in planned if build_jobs and not export_jobs]
+
+
+def _warn_platforms_without_a_tag_build(ci_type: str, context: dict) -> None:
+    """Warn about each GitLab platform a [ci].deploy pipeline would publish nothing from.
+
+    Its Conan deploy is dropped while every branch pipeline stays green, so
+    only a release would show it. Run whether or not there is a [filter]: a
+    testing-only filter is one way there, and [matrix] alone is another --
+    wheel_only's Release-only macOS plan with a Debug-only
+    ``pybind_build_types`` leaves macOS its testing build and nothing else.
+    So the message says what the plan holds rather than guessing a cause.
+    """
+    if ci_type != "gitlab" or not context["ci_deploy"]:
+        return
+    # wheel_only has no library configurations to keep.
+    keep = "Python" if context["ci_wheel_only"] else "library or Python"
+    for platform in _platforms_without_a_tag_build(context):
+        LOGGER.warning(
+            "build.toml sets [ci].deploy, but every %s build job its [matrix] "
+            "and [filter] leave is a testing configuration, and those never "
+            "run on a tag, so the pipeline gets no %r and a release publishes "
+            "nothing from %s. Keep a %s configuration for %s.",
+            platform, f"Conan Deploy - {platform}", platform, keep, platform,
+        )
 
 
 def _warn_filter_conflicts(build_filter: dict, config: BuildToml, ci_type: str, context: dict,
@@ -698,6 +760,7 @@ def plan_ci(
         "ci_mac_export_jobs": _mark_export_jobs(mac_build_jobs),
         # The macOS jobs that delocate and publish a wheel (_mac_wheel_jobs).
         "ci_mac_wheel_jobs": mac_wheel_jobs,
+        "mac_image": MAC_IMAGE,
         # The interpreter a macOS job without an ABI of its own builds its venv
         # on, as gitlab_linux_single_py picks the Linux image.
         "gitlab_mac_single_py": max(ci_mac_python_versions, key=version_sort_key),
@@ -707,6 +770,7 @@ def plan_ci(
 
     if build_filter:
         _warn_filter_conflicts(build_filter, config, ci_type, context, filter_effects)
+    _warn_platforms_without_a_tag_build(ci_type, context)
 
     # Select templates and output paths
     template_dir = Path(__file__).parent / "ci_templates"
