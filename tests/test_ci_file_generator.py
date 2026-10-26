@@ -1721,7 +1721,7 @@ def test_gitlab_linux_fanout_builds_each_abi_and_deploys_them_together(tmp_path)
     # wheel_only that is the clean pybind build of each ABI, and nothing else:
     # the testing configurations are branch-only and there are no library
     # configurations to publish.
-    assert set(_upstreams(deploy)) == {
+    assert set(_artifact_sources(deploy)) == {
         "Python Build - py3.13", "Python Build - py3.14",
     }
     # ...and one command restores the whole set and uploads once. Which
@@ -3534,7 +3534,7 @@ def test_gitlab_without_wheel_only_deploys_from_the_one_tarball(tmp_path):
     parsed = _gitlab_jobs(tmp_path, deploy=True)
 
     deploy = parsed["Conan Deploy - Linux"]
-    assert list(_upstreams(deploy)) == ["Conan Build"]
+    assert list(_artifact_sources(deploy)) == ["Conan Build"]
     assert deploy["script"][-1] == "xmsconan job deploy --conan-only", deploy["script"]
     assert "parallel" not in deploy, (
         "the deploy takes the whole build job's artifacts either way, so a "
@@ -3574,7 +3574,7 @@ def test_github_without_wheel_only_builds_the_same_on_a_tag(tmp_path):
 # job then failed every branch pipeline on an empty wheelhouse.
 
 
-def _upstreams(job):
+def _artifact_sources(job):
     """The jobs a job takes artifacts from, however it spells the dependency.
 
     A need with ``artifacts: false`` is a wait and nothing more, so it is left
@@ -3622,7 +3622,7 @@ def _supplies_a_wheel(name, reaching, seen=None):
     if _builds_a_wheel(reaching[name]):
         return True
     return any(_supplies_a_wheel(up, reaching, seen)
-               for up in _upstreams(reaching[name]))
+               for up in _artifact_sources(reaching[name]))
 
 
 @pytest.mark.parametrize("tags", [False, True], ids=["branch", "tag"])
@@ -3649,8 +3649,8 @@ def test_gitlab_wheel_consumers_have_a_producer_in_their_own_pipeline(
             continue
         assert _supplies_a_wheel(name, reaching), (
             f"{name!r} reads wheelhouse, but no job it depends on builds a "
-            f"wheel in this pipeline; its upstreams were "
-            f"{sorted(_upstreams(job))}"
+            f"wheel in this pipeline; it takes artifacts from "
+            f"{sorted(_artifact_sources(job))}"
         )
 
 
@@ -3708,6 +3708,22 @@ def test_gitlab_each_deploy_waits_on_its_own_platform_alone(tmp_path, matrix_tab
     assert deploy_wait_violations(parsed) == []
 
 
+@pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY], ids=["plain", "wheel_only"])
+def test_gitlab_linux_wheel_deploy_takes_artifacts_from_repair_wheel_alone(tmp_path, matrix_table):
+    """The Linux wheel deploy uploads the repaired wheel and nothing else.
+
+    Under wheel_only it also needs every Linux tag build for the wait, the
+    pybind ones among them, and each of those holds the unrepaired
+    `linux_x86_64` wheel in its wheelhouse. A need on one of them without
+    `artifacts: false` would put that wheel beside the repaired one, and the
+    deploy would upload both.
+    """
+    flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+    parsed = _gitlab_jobs(tmp_path, deploy=True, **flags)
+
+    assert list(_artifact_sources(parsed["Wheel Deploy"])) == ["Repair Wheel"]
+
+
 def test_gitlab_vs2019_deploys_wait_on_their_own_toolchain(tmp_path):
     """The VS2019 pair is a platform of its own, beside the Windows one.
 
@@ -3724,19 +3740,24 @@ def test_gitlab_vs2019_deploys_wait_on_their_own_toolchain(tmp_path):
 # --- wheel_only: filter warnings and the keys a narrowed matrix can empty ---
 
 
-def _wheel_only_with_filter(tmp_path, filter_table, **ci_flags):
-    """Render a wheel_only GitLab pipeline whose build.toml carries a [filter].
+def _gitlab_with_filter(tmp_path, filter_table, **ci_flags):
+    """Render a GitLab pipeline whose build.toml ends with *filter_table*, "" for none.
 
     ``write_gitlab_toml`` has no [filter] parameter -- the table is appended
     here rather than added to the shared helper, because these are the only
     tests that need one and the helper's callers all read better without it.
     """
-    toml_file = write_gitlab_toml(tmp_path, matrix_table=WHEEL_ONLY, **ci_flags)
+    toml_file = write_gitlab_toml(tmp_path, **ci_flags)
     toml_file.write_text(toml_file.read_text(encoding="utf-8") + filter_table,
                          encoding="utf-8")
     output_dir = tmp_path / "output"
     generate_ci(str(toml_file), "1.0.0", str(output_dir))
     return yaml.safe_load((output_dir / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+
+
+def _wheel_only_with_filter(tmp_path, filter_table, **ci_flags):
+    """Render a wheel_only GitLab pipeline whose build.toml carries a [filter]."""
+    return _gitlab_with_filter(tmp_path, filter_table, matrix_table=WHEEL_ONLY, **ci_flags)
 
 
 def test_wheel_only_empty_job_warning_does_not_name_a_job_it_never_emits(
@@ -3784,6 +3805,52 @@ def test_wheel_only_drops_the_linux_conan_deploy_when_no_linux_job_runs_on_a_tag
     assert "Conan Deploy - Windows" in parsed
     assert need_violations(parsed) == []
     assert deploy_wait_violations(parsed) == []
+
+
+_CONAN_DEPLOYS_WITHOUT_WINDOWS = ("Conan Deploy - Linux", "Conan Deploy - macOS")
+
+
+@pytest.mark.parametrize("matrix_table, filter_table, dropped, warned_about", [
+    (None, "\n[filter.options]\ntesting = true\n",
+     ["Conan Deploy - macOS"], ["Conan Deploy - macOS"]),
+    (WHEEL_ONLY, "\n[filter.options]\ntesting = true\n",
+     ["Conan Deploy - Linux", "Conan Deploy - macOS"],
+     ["Conan Deploy - Linux", "Conan Deploy - macOS"]),
+    ({**WHEEL_ONLY, "pybind_build_types": ["Debug"]}, "",
+     ["Conan Deploy - macOS"], ["Conan Deploy - macOS"]),
+    (WHEEL_ONLY, '\n[filter]\nos = "Windows"\n',
+     ["Conan Deploy - Linux", "Conan Deploy - macOS"], []),
+], ids=["plain-testing-only", "wheel_only-testing-only", "wheel_only-debug-pybind-no-filter",
+        "wheel_only-windows-only"])
+def test_gitlab_warns_about_each_conan_deploy_left_only_testing_builds(
+    tmp_path, caplog, matrix_table, filter_table, dropped, warned_about,
+):
+    """A platform whose builds all stay off a tag publishes nothing, and generation says so.
+
+    Testing builds never run on a tag, so they export no Conan package, and
+    the platform's Conan deploy is not rendered -- while its branch pipelines
+    build and test as before, so nothing short of a release would notice.
+    macOS plans one job per configuration in both matrices; Linux only under
+    wheel_only, and without it the one "Conan Build" still runs on a tag.
+
+    A testing-only filter is one way there; [matrix] alone is another, so the
+    check runs with no [filter] at all: wheel_only plans macOS Release only,
+    and a Debug-only ``pybind_build_types`` leaves it the testing build.
+
+    A platform left no jobs at all drops its deploy too but is not warned
+    about here: the empty-matrix and [ci].mac warnings name it already (see
+    test_wheel_only_empty_job_warning_does_not_name_a_job_it_never_emits and
+    TestMacCi.test_a_filter_that_empties_macos_says_so).
+    """
+    flags = {} if matrix_table is None else {"matrix_table": matrix_table}
+    with caplog.at_level(logging.WARNING):
+        parsed = _gitlab_with_filter(tmp_path, filter_table, mac=True, deploy=True, **flags)
+
+    warned = [message for message in caplog.messages if "a release publishes nothing from" in message]
+    assert [deploy for deploy in _CONAN_DEPLOYS_WITHOUT_WINDOWS if deploy not in parsed] == dropped
+    assert [deploy for deploy in _CONAN_DEPLOYS_WITHOUT_WINDOWS
+            if any(repr(deploy) in message for message in warned)] == warned_about, warned
+    assert len(warned) == len(warned_about), warned
 
 
 def test_coverage_omits_needs_when_the_filter_instruments_nothing(tmp_path):
@@ -4365,6 +4432,22 @@ def _no_mac_wheel_warnings(messages):
     return [message for message in messages if "no macOS wheel" in message]
 
 
+def _uv_bootstrap_steps(script):
+    """The uv bootstrap steps a macOS build script runs, by name, in the order it runs them.
+
+    One entry per matching line, so a step the script lacks is missing from
+    the list and one out of place shows where it landed: a comparison that
+    fails names the step, where a lookup would raise without naming it.
+    """
+    steps = {
+        "venv": lambda line: line == 'python3 -m venv "$HOME/uv-bootstrap"',
+        "on PATH": lambda line: line == 'export PATH="$HOME/uv-bootstrap/bin:$PATH"',
+        "install": lambda line: '"uv==${UV_VERSION}"' in line,
+        "uv": lambda line: line.startswith("uv "),
+    }
+    return [step for line in script for step, matches in steps.items() if matches(line)]
+
+
 class TestMacCi:
     """The [ci].mac opt-in: one job per macOS configuration, and its publishing.
 
@@ -4416,7 +4499,7 @@ class TestMacCi:
         ]
         assert _builds_a_wheel(python_build)
         for name in ("Wheel Deploy - macOS", "Conan Deploy - macOS"):
-            assert list(_upstreams(parsed[name])) == ["Python Build - macOS"], name
+            assert list(_artifact_sources(parsed[name])) == ["Python Build - macOS"], name
 
     def test_full_matrix_builds_each_configuration_in_its_own_job(self, tmp_path):
         """Without wheel_only: Release and Debug Library, Python, and both test builds.
@@ -4435,11 +4518,11 @@ class TestMacCi:
             "Release Build - macOS": ("Release", "testing", "except:tags"),
             "Debug Build - macOS": ("Debug", "testing", "except:tags"),
         }
-        assert sorted(_upstreams(parsed["Conan Deploy - macOS"])) == [
+        assert sorted(_artifact_sources(parsed["Conan Deploy - macOS"])) == [
             "Debug Library Build - macOS", "Python Build - macOS",
             "Release Library Build - macOS",
         ]
-        assert list(_upstreams(parsed["Wheel Deploy - macOS"])) == ["Python Build - macOS"]
+        assert list(_artifact_sources(parsed["Wheel Deploy - macOS"])) == ["Python Build - macOS"]
 
     def test_a_debug_python_build_exports_its_package_and_no_wheel(self, tmp_path, caplog):
         """With Debug in pybind_build_types, only the Release Python build makes a wheel.
@@ -4465,8 +4548,8 @@ class TestMacCi:
         assert not _builds_a_wheel(debug)
         assert job_gate(debug) == "always"
         assert "--export" in _job_build_tokens(debug)
-        assert list(_upstreams(parsed["Wheel Deploy - macOS"])) == [release_name]
-        assert debug_name in _upstreams(parsed["Conan Deploy - macOS"])
+        assert list(_artifact_sources(parsed["Wheel Deploy - macOS"])) == [release_name]
+        assert debug_name in _artifact_sources(parsed["Conan Deploy - macOS"])
         assert _no_mac_wheel_warnings(caplog.messages) == []
 
     def test_only_the_builds_take_a_mac_runner(self, tmp_path):
@@ -4517,15 +4600,13 @@ class TestMacCi:
             script = job["script"]
             assert [line for line in script if "curl" in line or "| sh" in line] == [], name
             assert re.fullmatch(r"\d+\.\d+\.\d+", _variable(job, "UV_VERSION")), name
-            venv = script.index('python3 -m venv "$HOME/uv-bootstrap"')
-            on_path = script.index('export PATH="$HOME/uv-bootstrap/bin:$PATH"')
-            install = next(i for i, line in enumerate(script) if '"uv==${UV_VERSION}"' in line)
-            first_uv = next(i for i, line in enumerate(script) if line.startswith("uv "))
-            assert venv < on_path < install < first_uv, (name, script)
-            assert script[install].startswith("pip install "), script[install]
-            assert script[install].endswith(
+            steps = _uv_bootstrap_steps(script)
+            assert steps[:4] == ["venv", "on PATH", "install", "uv"], (name, steps, script)
+            install = next(line for line in script if '"uv==${UV_VERSION}"' in line)
+            assert install.startswith("pip install "), (name, install)
+            assert install.endswith(
                 " --index-url https://public.aquapi.aquaveo.com/aquaveo/dev/+simple"
-            ), script[install]
+            ), (name, install)
 
     @pytest.mark.parametrize("matrix_table", [None, WHEEL_ONLY], ids=["full", "wheel_only"])
     def test_macos_tests_run_inline_under_split_tests(self, tmp_path, matrix_table):
@@ -4634,7 +4715,7 @@ class TestMacCi:
         assert "--export" in _job_build_tokens(python_build)
         assert not _builds_a_wheel(python_build)
         assert sorted(_mac_deploys(parsed)) == ["Conan Deploy - macOS"]
-        assert "Python Build - macOS" in _upstreams(parsed["Conan Deploy - macOS"])
+        assert "Python Build - macOS" in _artifact_sources(parsed["Conan Deploy - macOS"])
         warnings = _no_mac_wheel_warnings(caplog.messages)
         assert len(warnings) == 1, caplog.messages
         assert "[matrix].pybind_build_types" in warnings[0]

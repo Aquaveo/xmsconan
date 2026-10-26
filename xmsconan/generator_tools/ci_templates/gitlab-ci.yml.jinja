@@ -699,7 +699,8 @@ Repair Wheel:
    empty `needs:` is null to GitLab, which rejects the whole file, and with no
    `needs:` at all the job falls back to stage order and restores every other
    platform's `.export/` tarballs, to upload them a second time. Without
-   wheel_only the one "Conan Build" always exists. #>
+   wheel_only the one "Conan Build" always exists. Generation warns when the
+   job goes for want of a tag build (_platforms_without_a_tag_build). #>
 <% if not ci_wheel_only or ci_linux_export_jobs %>
 "Conan Deploy - Linux":
   stage: Deploy

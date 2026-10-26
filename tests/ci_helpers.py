@@ -261,15 +261,21 @@ def jobs_reaching(parsed, *, tags):
         if not isinstance(job, dict) or "script" not in job:
             continue
         branch, tag = _pipelines_running(name, job)
-        if tag if tags else branch:
+        runs = tag if tags else branch
+        if runs:
             reaching[name] = job
     return reaching
+
+
+def _need_name(need):
+    """The job a `needs:` entry names, written as a bare name or as a `job:` mapping."""
+    return need["job"] if isinstance(need, dict) else need
 
 
 def needed_jobs(job):
     """The jobs a job names under `needs:`, optional or not, artifacts or not."""
     for need in job.get("needs") or []:
-        yield need["job"] if isinstance(need, dict) else need
+        yield _need_name(need)
 
 
 def job_platform(name):
@@ -326,12 +332,18 @@ def need_violations(parsed):
             for need in job.get("needs") or []:
                 if isinstance(need, dict) and need.get("optional"):
                     continue
-                needed = need["job"] if isinstance(need, dict) else need
+                needed = _need_name(need)
                 if needed not in reaching:
                     problems.append(f"{pipeline}: {name} needs {needed!r}, which it does not run")
                 elif stages.index(reaching[needed]["stage"]) > stages.index(job["stage"]):
                     problems.append(f"{pipeline}: {name} needs {needed!r} from a later stage")
     return problems
+
+
+def _holds_back_a_deploy(job, stages):
+    """Whether stage order held a deploy back for `job`: an earlier stage, and a failure that counts."""
+    earlier = stages.index(job["stage"]) < stages.index("Deploy")
+    return earlier and job.get("allow_failure") is not True
 
 
 def deploy_wait_violations(parsed):
@@ -354,8 +366,7 @@ def deploy_wait_violations(parsed):
         platform = job_platform(name)
         waits = waits_on(name, reaching, stages)
         own = {other for other, upstream in reaching.items()
-               if job_platform(other) == platform and upstream.get("allow_failure") is not True
-               if stages.index(upstream["stage"]) < stages.index("Deploy")}
+               if job_platform(other) == platform and _holds_back_a_deploy(upstream, stages)}
         if not waits:
             problems.append(f"{name} waits on nothing, so it could publish before its build")
         foreign = sorted(up for up in waits if job_platform(up) != platform)
