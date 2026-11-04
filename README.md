@@ -4,6 +4,8 @@ Methods and Modules used to aid in xmsconan projects.
 
 > **Setting up a new library or trying to remember how a flag works?** See [docs/USAGE.md](docs/USAGE.md) — the consumer-facing guide. The rest of this README is a quick orientation.
 
+> **Cutting a release of an xms library** (including the VS2019 bridge track)? Follow [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Installation
 
 ```bash

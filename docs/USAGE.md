@@ -1103,6 +1103,8 @@ The msvc 192 (Visual Studio 2019) binaries that the Aquaveo desktop products (GM
 > This track stays, and is still the only route for two things: **wheels**, which CI deliberately does not publish for msvc 192 (a wheel's tags do not record which MSVC built it, so it would collide with the msvc 194 wheel on devpi — see §10.2 and §16.8), and **libraries whose repository has not opted in**. It is also what you want for a one-off local rebuild.
 >
 > If you are looking for the CI matrix, see §10.
+>
+> For the end-to-end release procedure this track is one part of — release order, recipe-revision checks, and the devpi wheel — see [RELEASING.md](RELEASING.md).
 
 Available both as `xmsconan vs2019 <subcommand>` and as the console script `xmsconan_vs2019 <subcommand>`. Three subcommands: `setup`, `build`, `upload`.
 
