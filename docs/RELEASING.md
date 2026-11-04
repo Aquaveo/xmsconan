@@ -410,8 +410,14 @@ start the next library in the order.
 - **Options a legacy recipe does not declare.** The legacy `boost/1.74.0.3` does
   not declare the conan-center boost options the modern profiles set, which is
   why the driver turns those defaults off; see USAGE §16.6 before adding a
-  profile option to the msvc 192 matrix, and confirm in the package's info that
-  an option you set actually took effect.
+  profile option to the msvc 192 matrix. How Conan 2.31 treats an option the
+  recipe does not declare depends on how it is scoped: a wildcard pattern
+  (`pkg/*:opt=val`, on the command line or in a profile) is ignored silently
+  with exit 0 and no change to the package id, while an exact reference
+  (`pkg/1.0:opt=val`) or the consumer (`&:opt=val`) fails with
+  `option 'opt' doesn't exist`. So a misspelled or undeclared wildcard option
+  looks like it worked; confirm in the package's info that an option you set
+  actually took effect.
 - **Use `conan export-pkg`, not `conan create`, for binary-only shims** (the
   republished third-party packages such as `boost/1.74.0.3`). Under `conan
   create` the recipe runs from the cache export folder, which has no payload, so
