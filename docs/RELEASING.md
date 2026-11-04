@@ -83,7 +83,7 @@ xmscore
 | xmsconan, **pinned and non-editable**, in every venv | `pip install "xmsconan[ci]==<version the tag pipeline used>" -i https://public.aquapi.aquaveo.com/aquaveo/dev/+simple` |
 | Conan `~=2.31.0` | Comes with the `[ci]` extra. Preflight rejects anything else. |
 | Credential files | `C:\Users\<user>\.config\tokens\conan` (Artifactory password for both Conan remotes, alone on one line), `C:\Users\<user>\.config\tokens\devpi` (devpi username on line 1, password on line 2), `C:\Users\<user>\.config\tokens\jfrog` (Artifactory access token, for the Artifactory UI/REST API — the steps below do not need it). Never commit or paste their contents. |
-| Conan logins | `xmsconan conan-setup --login --username <user> --password-file "$USERPROFILE/.config/tokens/conan"` for the `aquaveo` remote, and `vs2019 setup` (step 5.4) for `aquaveo-vs2019`. Both take the username from `--username`, then `$CONAN_LOGIN_USERNAME`, then `~/.xmsconan.toml`; `vs2019 setup` falls back to user `aquaveo` after that, so pass `--username` if your account is personal. |
+| Conan logins | `xmsconan conan-setup --login --username <user> --password-file "$USERPROFILE/.config/tokens/conan"` for the `aquaveo` remote, and `vs2019 setup` (step 5.4) for `aquaveo-vs2019`. The two resolve the username differently. `conan-setup` takes `--username`, then `~/.xmsconan.toml`, and nothing else; if neither names one, it hands Conan no credentials at all — the password file is ignored and Conan prompts — so **`--username` is required whenever you pass `--password-file` to `conan-setup`**. `vs2019 setup` takes `--username`, then `$CONAN_LOGIN_USERNAME`, then `~/.xmsconan.toml`, then falls back to user `aquaveo`, so pass `--username` there too if your account is personal. |
 | Fresh clones of the libraries, side by side under one `<root>` | `xmsconan vs2019 build --root <root>` expects `<root>/<library>/build.toml`. |
 | **Git Bash**, not PowerShell | PowerShell strips the quotes out of `--filter` JSON. |
 
@@ -97,7 +97,7 @@ python -c "import os, xmsconan; print(xmsconan.__version__, os.path.dirname(xmsc
 ## Procedure, per library
 
 Two steps publish to shared infrastructure that is hard to un-publish — the Conan
-upload in step 5.7 and the devpi upload in step 6.5. **Get a second person's go-ahead before
+upload in step 5.8 and the devpi upload in step 6.5. **Get a second person's go-ahead before
 each**, stating the library, version, remote/index, exactly what will be
 uploaded, and what you verified. Creating the release in step 3 triggers CI that
 publishes too, so treat it the same way. Building never publishes on its own.
@@ -166,7 +166,7 @@ live immediately; the only correction is delete-and-repush.
 
 If the library's `build.toml` sets `[ci].windows_vs2019 = true` (GitLab only,
 USAGE §10.2), the tag pipeline also published the msvc 192 Conan packages. Do
-steps 5.1–5.4, skip 5.5–5.7, run the two-remote check in 5.8, then step 6 if the
+steps 5.1–5.4, skip 5.5–5.8, run the two-remote check in 5.9, then step 6 if the
 library ships a wheel.
 
 ### 5. Build and publish the VS2019 Conan packages
@@ -193,10 +193,26 @@ library ships a wheel.
 
    Expect `[OK]` for the VS2019 toolset, the conan client and the remote.
 
-5. **Build.** From the 3.10 venv, then the pybind configuration again from the
+5. **Clear msvc 194 pybind packages of this version from the local cache**
+   before building. Wheel extraction stages **one** wheel per Python version,
+   chosen by recipe-revision timestamp and build type; an msvc 194 and an msvc
+   192 Release pybind package of the same recipe revision tie on both, so either
+   can be the one staged, and the filename and log line are identical. An msvc
+   194 wheel would then *replace* the msvc 192 one, and nothing after extraction
+   can tell. On a machine that also builds this library for VS2022:
+
+   ```bash
+   conan list "<library>/<version>:*" -p "compiler.version=194" -c
+   conan remove "<library>/<version>:*" -p "compiler.version=194" -c   # if the list is not empty
+   ```
+
+   Only the local cache is touched (no `-r`). Repeat before the step 6.2
+   fallback.
+
+6. **Build.** From the 3.10 venv, then the pybind configuration again from the
    3.13 venv. The 3.10 run also stages the wheel for step 6 (`--wheel-dir`; omit
    it for a library without pybind bindings), so the wheel comes from the same
-   binary that step 5.7 publishes:
+   binary that step 5.8 publishes:
 
    ```bash
    xmsconan vs2019 build --root <root> --only <library> --version <version> \
@@ -218,7 +234,7 @@ library ships a wheel.
    extraction is skipped when any configuration failed (USAGE §16.8), so a run
    with failures stages no wheel — see step 6.2.
 
-6. **Verify before publishing:**
+7. **Verify before publishing:**
 
    ```bash
    conan list "<library>/<version>#*:*" -c
@@ -235,7 +251,7 @@ library ships a wheel.
      `[vs2019_dependency_overrides]` names that dependency, a version the
      override allows.
 
-7. **Publish** (second-person go-ahead first):
+8. **Publish** (second-person go-ahead first):
 
    ```bash
    xmsconan vs2019 upload --library <library> --version <version>
@@ -244,7 +260,7 @@ library ships a wheel.
    Only `compiler.version=192` binaries go, and only to `aquaveo-vs2019`
    (USAGE §16.7).
 
-8. **Confirm both remotes carry the same recipe revision:**
+9. **Confirm both remotes carry the same recipe revision:**
 
    ```bash
    conan list "<library>/<version>#*" -r aquaveo
@@ -259,11 +275,12 @@ Only for libraries with pybind bindings.
    channel already carries for this library and match it; newer ABIs are covered
    by CI on `aquaveo/dev`.
 2. **The wheel directory** is the fresh, library-specific `--wheel-dir` from
-   step 5.5 — never a shared `wheelhouse/`. If that run staged nothing (a
+   step 5.6 — never a shared `wheelhouse/`. If that run staged nothing (a
    configuration failed, or the library's CI published the Conan packages so
-   step 5.5 was skipped), stage it with a pybind-only run from the 3.10 venv.
-   This **rebuilds** the package with `conan create`, giving a new local package
-   revision, so the wheel is not byte-for-byte the binary on `aquaveo-vs2019`:
+   step 5.6 was skipped), clear msvc 194 packages as in step 5.5, then stage it
+   with a pybind-only run from the 3.10 venv. This **rebuilds** the package with
+   `conan create`, giving a new local package revision, so the wheel is not
+   byte-for-byte the binary on `aquaveo-vs2019`:
 
    ```bash
    export PATH="/path/to/.venv310/Scripts:$PATH"
@@ -273,15 +290,14 @@ Only for libraries with pybind bindings.
      --log-dir <root>/vs2019-logs/<library>-<version>
    ```
 
-3. **Remove every wheel that is not going to the channel, and check the rest
-   are msvc 192.** Extraction copies every pybind wheel of that version in the
-   local Conan cache — any other Python version (a cp313 build, if one is in the
-   cache) and, on a machine that also builds msvc 194 locally, an msvc 194 build
-   of the same version, since it does not filter on `compiler.version` — and
-   `wheel-deploy` uploads every `*.whl` in the directory. The wheel filename does
-   not say which MSVC built it; confirm the package it came from with
-   `conan list "<library>/<version>:*" -c` (its `compiler.version` must be
-   `192`).
+   The rebuild re-exports the recipe, so confirm
+   `conan list "<library>/<version>#*" -c` still shows the recipe revision
+   recorded in step 4.4 before going further.
+
+3. **Remove every wheel that is not going to the channel.** Extraction copies a
+   wheel for every Python version it finds in the local Conan cache (a cp313
+   build, if one is there), and `wheel-deploy` uploads every `*.whl` in the
+   directory.
 4. **Repair**, if the library's `[ci].windows_wheel_repair` is `true` (USAGE
    §12.1). Run it from *outside* the wheel directory:
 
@@ -355,11 +371,13 @@ start the next library in the order.
 - **Verify a fresh publish with `pip install --no-cache-dir`.** pip caches the
   simple-index page, so a check seconds after upload reports
   `from versions: none` and looks like a failed upload.
-- **Extraction scans the whole Conan cache.** `--wheel-dir` picks up every
-  pybind wheel of that version in the cache, whatever its Python version or
-  `compiler.version`, and `collect_dependency_libs` stages DLLs from every package
-  in the cache. Inspect the wheel directory and the vendored DLLs before
-  deploying.
+- **Extraction scans the whole Conan cache.** `--wheel-dir` stages one wheel
+  per Python version from every pybind package of that version in the cache, and
+  does not filter on `compiler.version`: with an msvc 194 package of the same
+  recipe revision in the cache, its wheel can be staged *instead of* the msvc 192
+  one, under the identical filename. Clear those before building (step 5.5).
+  `collect_dependency_libs` likewise stages DLLs from every package in the cache;
+  inspect the vendored DLLs before deploying.
 - **GitHub: a Release, with a full SHA.** A bare tag push publishes the Conan
   packages and wheels, then fails `Upload Zipped Conan Packages` on every
   platform job (USAGE §10.1). Recover with
